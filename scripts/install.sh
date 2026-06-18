@@ -8,6 +8,7 @@ web_port="3000"
 public_web_url=""
 control_port="8080"
 control_bind_host="0.0.0.0"
+control_bind_host_was_set="0"
 control_url=""
 dir_was_set="0"
 version="latest"
@@ -66,6 +67,7 @@ while [ "$#" -gt 0 ]; do
     --control-bind-host)
       [ "$#" -ge 2 ] || { echo "missing value for --control-bind-host" >&2; exit 2; }
       control_bind_host="$2"
+      control_bind_host_was_set="1"
       shift 2
       ;;
     --control-url)
@@ -263,6 +265,17 @@ is_loopback_url() {
   esac
 }
 
+is_loopback_bind_host() {
+  case "$1" in
+    127.*|localhost|::1|\[::1\])
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 first_non_loopback_host() {
   if command -v ip >/dev/null 2>&1; then
     address="$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)"
@@ -300,8 +313,13 @@ default_public_web_url() {
 default_control_plane_url() {
   port="$1"
   public_url_for_host="$2"
+  bind_host="$3"
   if [ -n "$control_url" ]; then
     printf '%s' "$control_url"
+    return
+  fi
+  if is_loopback_bind_host "$bind_host"; then
+    printf 'http://127.0.0.1:%s' "$port"
     return
   fi
   if [ -n "$public_url_for_host" ]; then
@@ -330,7 +348,7 @@ default_control_plane_url() {
           ;;
       esac
       if [ -n "$host" ]; then
-        printf '%s://%s:%s' "$scheme" "$host" "$port"
+        printf 'http://%s:%s' "$host" "$port"
         return
       fi
     fi
@@ -406,7 +424,18 @@ ensure_public_auth_env() {
     saved_control_port="$control_port"
     set_env_value CONTROL_PLANE_PORT "$saved_control_port"
   fi
-  desired_control_url="$(default_control_plane_url "$saved_control_port" "$current_public_web_url")"
+  saved_control_bind_host="$(env_value CONTROL_PLANE_BIND_HOST)"
+  if [ "$control_bind_host_was_set" = "1" ]; then
+    saved_control_bind_host="$control_bind_host"
+    set_env_value CONTROL_PLANE_BIND_HOST "$saved_control_bind_host"
+  elif [ -z "$saved_control_bind_host" ]; then
+    saved_control_bind_host="$control_bind_host"
+    set_env_value CONTROL_PLANE_BIND_HOST "$saved_control_bind_host"
+  elif is_loopback_bind_host "$saved_control_bind_host"; then
+    saved_control_bind_host="0.0.0.0"
+    set_env_value CONTROL_PLANE_BIND_HOST "$saved_control_bind_host"
+  fi
+  desired_control_url="$(default_control_plane_url "$saved_control_port" "$current_public_web_url" "$saved_control_bind_host")"
   current_control_url="$(env_value CONTROL_PLANE_URL)"
   if [ -z "$current_control_url" ] || [ -n "$control_url" ] || is_loopback_url "$current_control_url"; then
     set_env_value CONTROL_PLANE_URL "$desired_control_url"
@@ -419,22 +448,23 @@ ensure_public_auth_env() {
 
   desired_trusted_origins="$(auth_trusted_origins "$current_public_web_url" "$saved_web_port")"
   current_trusted_origins="$(env_value BETTER_AUTH_TRUSTED_ORIGINS)"
-  if [ -z "$current_trusted_origins" ] || [ -n "$public_web_url" ]; then
+  if [ -z "$current_trusted_origins" ]; then
     set_env_value BETTER_AUTH_TRUSTED_ORIGINS "$desired_trusted_origins"
     return
   fi
-  case ",$current_trusted_origins," in
-    *,"$current_public_web_url",*)
-      ;;
-    *)
-      set_env_value BETTER_AUTH_TRUSTED_ORIGINS "$(append_origin_once "$current_trusted_origins" "$current_public_web_url")"
-      ;;
-  esac
+  merged_trusted_origins="$current_trusted_origins"
+  old_ifs="$IFS"
+  IFS=,
+  for origin in $desired_trusted_origins; do
+    merged_trusted_origins="$(append_origin_once "$merged_trusted_origins" "$origin")"
+  done
+  IFS="$old_ifs"
+  set_env_value BETTER_AUTH_TRUSTED_ORIGINS "$merged_trusted_origins"
 }
 
 if [ ! -f ".env" ]; then
   resolved_public_web_url="$(default_public_web_url "$web_port")"
-  resolved_control_url="$(default_control_plane_url "$control_port" "$resolved_public_web_url")"
+  resolved_control_url="$(default_control_plane_url "$control_port" "$resolved_public_web_url" "$control_bind_host")"
   resolved_trusted_origins="$(auth_trusted_origins "$resolved_public_web_url" "$web_port")"
   umask 077
   better_auth_secret="$(secret_or_exit BETTER_AUTH_SECRET)"
