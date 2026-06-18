@@ -35,20 +35,52 @@ export function parseTrustedOrigins(value = process.env.BETTER_AUTH_TRUSTED_ORIG
   return origins.length > 0 ? origins : undefined;
 }
 
-export function buildAuthOptions(database: SQLiteDatabase = createSQLiteDatabase()): BetterAuthOptions {
+function originFromURL(value: string | null | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function uniqueOrigins(origins: Array<string | undefined>): string[] | undefined {
+  const unique = [...new Set(origins.filter((origin): origin is string => Boolean(origin)))];
+  return unique.length > 0 ? unique : undefined;
+}
+
+export function resolveAuthBaseURL(): string | undefined {
   const isNextProductionBuild = process.env.NEXT_PHASE === "phase-production-build";
-  const trustedOrigins = parseTrustedOrigins();
+  return (
+    process.env.BETTER_AUTH_URL ??
+    process.env.PUBLIC_WEB_URL ??
+    (process.env.NODE_ENV === "test" || isNextProductionBuild ? "http://localhost:3000" : undefined)
+  );
+}
+
+export function resolveTrustedOrigins(request?: Request): string[] | undefined {
+  return uniqueOrigins([
+    ...(parseTrustedOrigins() ?? []),
+    originFromURL(process.env.BETTER_AUTH_URL),
+    originFromURL(process.env.PUBLIC_WEB_URL),
+    originFromURL(request?.url),
+  ]);
+}
+
+export function buildAuthOptions(database: SQLiteDatabase = createSQLiteDatabase()): BetterAuthOptions {
   return {
     database,
     secret:
       process.env.BETTER_AUTH_SECRET ??
       (process.env.NODE_ENV === "test"
         ? "test-better-auth-secret-32-bytes"
-        : isNextProductionBuild
+        : process.env.NEXT_PHASE === "phase-production-build"
           ? "build-better-auth-secret-32-bytes"
           : undefined),
-    baseURL: process.env.BETTER_AUTH_URL ?? (process.env.NODE_ENV === "test" || isNextProductionBuild ? "http://localhost:3000" : undefined),
-    trustedOrigins,
+    baseURL: resolveAuthBaseURL(),
+    trustedOrigins: (request?: Request) => resolveTrustedOrigins(request) ?? [],
     emailAndPassword: {
       enabled: true,
     },

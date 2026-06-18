@@ -5,6 +5,7 @@ release_repo="https://github.com/noxaaa/prism-oss/releases"
 install_dir="${HOME}/prism-oss"
 app_name="OSS Control Console"
 web_port="3000"
+public_web_url=""
 control_port="8080"
 control_bind_host="0.0.0.0"
 control_url=""
@@ -20,6 +21,7 @@ Options:
   --dir DIR             Installation directory. Defaults to the current repo when run from an OSS tree, otherwise $HOME/prism-oss.
   --app-name NAME       Console display name. Defaults to "OSS Control Console".
   --web-port PORT       Host port for the web console. Defaults to 3000.
+  --public-web-url URL  Browser URL for the web console. Defaults to the first non-loopback host IP when detected, otherwise http://127.0.0.1:PORT.
   --control-port PORT   Host port for the control-plane API. Defaults to 8080.
   --control-bind-host HOST
                          Host interface for the control-plane API. Defaults to 0.0.0.0.
@@ -49,6 +51,11 @@ while [ "$#" -gt 0 ]; do
     --web-port)
       [ "$#" -ge 2 ] || { echo "missing value for --web-port" >&2; exit 2; }
       web_port="$2"
+      shift 2
+      ;;
+    --public-web-url)
+      [ "$#" -ge 2 ] || { echo "missing value for --public-web-url" >&2; exit 2; }
+      public_web_url="$2"
       shift 2
       ;;
     --control-port)
@@ -245,10 +252,140 @@ env_value() {
   fi
 }
 
+is_loopback_url() {
+  case "$1" in
+    http://127.*|https://127.*|http://localhost|https://localhost|http://localhost:*|https://localhost:*|http://0.0.0.0|https://0.0.0.0|http://0.0.0.0:*|https://0.0.0.0:*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+first_non_loopback_host() {
+  if command -v ip >/dev/null 2>&1; then
+    address="$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)"
+    if [ -n "$address" ]; then
+      printf '%s' "$address"
+      return 0
+    fi
+  fi
+  if command -v hostname >/dev/null 2>&1; then
+    for address in $(hostname -I 2>/dev/null || true); do
+      case "$address" in
+        127.*|0.0.0.0|::1|fe80:*|"")
+          ;;
+        *:*)
+          ;;
+        *)
+          printf '%s' "$address"
+          return 0
+          ;;
+      esac
+    done
+  fi
+  printf '127.0.0.1'
+}
+
+default_public_web_url() {
+  port="$1"
+  if [ -n "$public_web_url" ]; then
+    printf '%s' "$public_web_url"
+    return
+  fi
+  printf 'http://%s:%s' "$(first_non_loopback_host)" "$port"
+}
+
+append_origin_once() {
+  current="$1"
+  origin="$2"
+  if [ -z "$origin" ]; then
+    printf '%s' "$current"
+    return
+  fi
+  case ",$current," in
+    *,"$origin",*)
+      printf '%s' "$current"
+      ;;
+    *)
+      if [ -z "$current" ]; then
+        printf '%s' "$origin"
+      else
+        printf '%s,%s' "$current" "$origin"
+      fi
+      ;;
+  esac
+}
+
+auth_trusted_origins() {
+  primary_url="$1"
+  port="$2"
+  origins=""
+  origins="$(append_origin_once "$origins" "$primary_url")"
+  origins="$(append_origin_once "$origins" "http://127.0.0.1:${port}")"
+  origins="$(append_origin_once "$origins" "http://localhost:${port}")"
+  printf '%s' "$origins"
+}
+
+set_env_value() {
+  key="$1"
+  value="$2"
+  tmp_env=".env.tmp.$$"
+  if [ -f ".env" ] && grep -q "^${key}=" ".env"; then
+    awk -v key="$key" -v value="$value" 'BEGIN { prefix = key "=" } index($0, prefix) == 1 { print key "=" value; next } { print }' ".env" > "$tmp_env"
+  else
+    if [ -f ".env" ]; then
+      cat ".env" > "$tmp_env"
+    else
+      : > "$tmp_env"
+    fi
+    printf '%s=%s\n' "$key" "$value" >> "$tmp_env"
+  fi
+  mv "$tmp_env" ".env"
+  chmod 600 ".env"
+}
+
+ensure_public_auth_env() {
+  saved_web_port="$(env_value WEB_PORT)"
+  if [ -z "$saved_web_port" ]; then
+    saved_web_port="$web_port"
+    set_env_value WEB_PORT "$saved_web_port"
+  fi
+
+  desired_public_web_url="$(default_public_web_url "$saved_web_port")"
+  current_public_web_url="$(env_value PUBLIC_WEB_URL)"
+  if [ -z "$current_public_web_url" ] || [ -n "$public_web_url" ] || is_loopback_url "$current_public_web_url"; then
+    set_env_value PUBLIC_WEB_URL "$desired_public_web_url"
+    current_public_web_url="$desired_public_web_url"
+  fi
+
+  current_better_auth_url="$(env_value BETTER_AUTH_URL)"
+  if [ -z "$current_better_auth_url" ] || [ -n "$public_web_url" ] || is_loopback_url "$current_better_auth_url"; then
+    set_env_value BETTER_AUTH_URL "$current_public_web_url"
+  fi
+
+  desired_trusted_origins="$(auth_trusted_origins "$current_public_web_url" "$saved_web_port")"
+  current_trusted_origins="$(env_value BETTER_AUTH_TRUSTED_ORIGINS)"
+  if [ -z "$current_trusted_origins" ] || [ -n "$public_web_url" ]; then
+    set_env_value BETTER_AUTH_TRUSTED_ORIGINS "$desired_trusted_origins"
+    return
+  fi
+  case ",$current_trusted_origins," in
+    *,"$current_public_web_url",*)
+      ;;
+    *)
+      set_env_value BETTER_AUTH_TRUSTED_ORIGINS "$(append_origin_once "$current_trusted_origins" "$current_public_web_url")"
+      ;;
+  esac
+}
+
 if [ ! -f ".env" ]; then
   if [ -z "$control_url" ]; then
     control_url="http://127.0.0.1:${control_port}"
   fi
+  resolved_public_web_url="$(default_public_web_url "$web_port")"
+  resolved_trusted_origins="$(auth_trusted_origins "$resolved_public_web_url" "$web_port")"
   umask 077
   better_auth_secret="$(secret_or_exit BETTER_AUTH_SECRET)"
   internal_jwt_secret="$(secret_or_exit CONTROL_PLANE_INTERNAL_JWT_SECRET)"
@@ -262,13 +399,15 @@ if [ ! -f ".env" ]; then
     printf 'WEB_PORT=%s\n' "$web_port"
     printf 'CONTROL_PLANE_PORT=%s\n' "$control_port"
     printf 'CONTROL_PLANE_BIND_HOST=%s\n' "$control_bind_host"
-    printf 'PUBLIC_WEB_URL=http://127.0.0.1:%s\n' "$web_port"
+    printf 'PUBLIC_WEB_URL=%s\n' "$resolved_public_web_url"
     printf 'CONTROL_PLANE_URL=%s\n' "$control_url"
     printf 'CONTROL_PLANE_INTERNAL_URL=http://control-plane:8080\n'
     printf 'PRISM_OSS_DATABASE_URL=/data/oss.db\n'
     printf 'QUEUE_REDIS_URL=redis://redis:6379/0\n'
     printf 'CACHE_REDIS_URL=redis://redis:6379/0\n'
     printf 'BETTER_AUTH_SECRET=%s\n' "$better_auth_secret"
+    printf 'BETTER_AUTH_URL=%s\n' "$resolved_public_web_url"
+    printf 'BETTER_AUTH_TRUSTED_ORIGINS=%s\n' "$resolved_trusted_origins"
     printf 'CONTROL_PLANE_INTERNAL_JWT_SECRET=%s\n' "$internal_jwt_secret"
     printf 'AGENT_TOKEN_SIGNING_SECRET=%s\n' "$agent_token_secret"
   } > "$tmp_env"
@@ -278,6 +417,8 @@ if [ ! -f ".env" ]; then
 else
   echo "Using existing .env"
 fi
+
+ensure_public_auth_env
 
 docker compose run -T --rm --no-deps agent-build </dev/null
 docker compose up -d --force-recreate --remove-orphans

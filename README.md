@@ -19,21 +19,21 @@ The easiest way to run the stack is Docker Compose:
 curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install.sh | bash
 ```
 
-The installer downloads the latest release archive, writes a local `.env` file when one does not exist, and starts the web console, control plane, migration job, and Redis with the included `docker-compose.yml`.
+The installer downloads the latest release archive, writes a local `.env` file when one does not exist, repairs old loopback auth URLs when it can detect a server address, and starts the web console, control plane, migration job, and Redis with the included `docker-compose.yml`.
 
-Open the console at `http://127.0.0.1:3000` on the local machine, or replace `127.0.0.1` with the server address for a remote host. Create the first owner account. This single-user edition disables further sign-ups after the first owner setup.
+Open the console at the URL printed by the installer. On a remote host, pass `--public-web-url http://YOUR_SERVER_IP:3000` when automatic address detection cannot infer the reachable URL. Create the first owner account. This single-user edition disables further sign-ups after the first owner setup.
 
 Pinned release flow:
 
 ```sh
-curl -fsSL https://github.com/noxaaa/prism-oss/releases/download/v0.1.2/install.sh -o install.sh
-sh ./install.sh --version v0.1.2
+curl -fsSL https://github.com/noxaaa/prism-oss/releases/download/v0.1.3/install.sh -o install.sh
+sh ./install.sh --version v0.1.3
 ```
 
 Useful options:
 
 ```sh
-./scripts/install.sh --version v0.1.2 --dir "$HOME/prism-oss" --app-name "OSS Control Console" --web-port 3000 --control-port 8080 --control-bind-host 0.0.0.0 --control-url http://YOUR_SERVER_IP:8080
+./scripts/install.sh --version v0.1.3 --dir "$HOME/prism-oss" --app-name "OSS Control Console" --web-port 3000 --public-web-url http://YOUR_SERVER_IP:3000 --control-port 8080 --control-bind-host 0.0.0.0 --control-url http://YOUR_SERVER_IP:8080
 ```
 
 See [Docker Compose operations](./docs/docker-compose.md) for configuration, upgrades, backups, logs, and reset steps.
