@@ -1,0 +1,295 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/noxaaa/prism-oss/internal/agent"
+	"github.com/noxaaa/prism-oss/internal/service"
+
+	"nhooyr.io/websocket"
+)
+
+type agentEnvelope struct {
+	Type      string `json:"type"`
+	MessageID string `json:"message_id"`
+	SentAt    string `json:"sent_at"`
+	Payload   any    `json:"payload"`
+}
+
+type agentIncomingEnvelope struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+func (server *ControlServer) handleAgentConnect(response http.ResponseWriter, request *http.Request) {
+	if server.controlService == nil {
+		writeError(response, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE")
+		return
+	}
+	token, ok := strings.CutPrefix(request.Header.Get("Authorization"), "Bearer ")
+	if !ok || strings.TrimSpace(token) == "" {
+		writeError(response, http.StatusUnauthorized, "UNAUTHENTICATED")
+		return
+	}
+	agentType := request.Header.Get("X-Agent-Type")
+	if _, err := server.controlService.ValidateAgentToken(request.Context(), agentType, token); err != nil {
+		writeError(response, http.StatusUnauthorized, "UNAUTHENTICATED")
+		return
+	}
+
+	conn, err := websocket.Accept(response, request, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+
+	authResult, err := server.controlService.AuthenticateAgentToken(request.Context(), agentType, token)
+	if err != nil {
+		_ = conn.Close(websocket.StatusPolicyViolation, "UNAUTHENTICATED")
+		return
+	}
+
+	messageType := "auth_success"
+	payload := map[string]any{
+		"agent_id":   authResult.AgentID,
+		"agent_type": authResult.AgentType,
+	}
+	if authResult.RegisteredWithToken {
+		messageType = "registration_success"
+		payload["agent_credential"] = authResult.AgentCredential
+		payload["agent_credential_file_hint"] = authResult.AgentCredentialFileHint
+	}
+	if err := writeAgentEnvelope(request.Context(), conn, messageType, payload); err != nil {
+		if authResult.RegisteredWithToken {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = server.controlService.ReleaseAgentRegistrationCredential(ctx, authResult)
+		}
+		return
+	}
+	registrationFinalized := !authResult.RegisteredWithToken
+	connectionGeneration := int64(0)
+	sessionActive := false
+	activateSession := func() {
+		if sessionActive {
+			return
+		}
+		connectionGeneration = server.agentStates.MarkConnected(authResult.OrganizationID, authResult.AgentType, authResult.AgentID)
+		sessionActive = true
+	}
+	if registrationFinalized {
+		activateSession()
+	}
+	defer func() {
+		if authResult.RegisteredWithToken && !registrationFinalized {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = server.controlService.ReleaseAgentRegistrationCredential(ctx, authResult)
+		}
+		if !sessionActive {
+			return
+		}
+		if !server.agentStates.MarkDisconnected(authResult.OrganizationID, authResult.AgentType, authResult.AgentID, connectionGeneration) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = server.markAgentDisconnected(ctx, authResult)
+	}()
+	server.handleAgentMessages(request.Context(), conn, authResult, &connectionGeneration, &registrationFinalized, activateSession)
+}
+
+func writeAgentEnvelope(ctx context.Context, conn *websocket.Conn, messageType string, payload any) error {
+	envelope := agentEnvelope{
+		Type:      messageType,
+		MessageID: messageType + "_" + time.Now().UTC().Format("20060102150405.000000000"),
+		SentAt:    time.Now().UTC().Format(time.RFC3339Nano),
+		Payload:   payload,
+	}
+	return conn.Write(ctx, websocket.MessageText, mustJSON(envelope))
+}
+
+func mustJSON(value any) []byte {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
+func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *websocket.Conn, authResult service.AgentAuthResult, connectionGeneration *int64, registrationFinalized *bool, activateSession func()) {
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		var envelope agentIncomingEnvelope
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_MESSAGE"})
+			continue
+		}
+		if !*registrationFinalized {
+			if envelope.Type != "registration_ack" {
+				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "REGISTRATION_NOT_FINALIZED"})
+				return
+			}
+		} else if !server.agentStates.IsCurrent(authResult.OrganizationID, authResult.AgentType, authResult.AgentID, *connectionGeneration) {
+			return
+		}
+		switch envelope.Type {
+		case "registration_ack":
+			if authResult.RegisteredWithToken && !*registrationFinalized {
+				var payload struct {
+					Status string `json:"status"`
+				}
+				if err := json.Unmarshal(envelope.Payload, &payload); err != nil || strings.ToUpper(strings.TrimSpace(payload.Status)) != "PERSISTED" {
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_REGISTRATION_ACK"})
+					return
+				}
+				if err := server.controlService.FinalizeAgentRegistrationDelivery(ctx, authResult); err != nil {
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "REGISTRATION_FINALIZE_FAILED"})
+					return
+				}
+				*registrationFinalized = true
+				activateSession()
+				if err := writeAgentEnvelope(ctx, conn, "registration_finalized", map[string]any{
+					"agent_id":   authResult.AgentID,
+					"agent_type": authResult.AgentType,
+				}); err != nil {
+					return
+				}
+			}
+		case "hello":
+			if err := server.markAgentConnected(ctx, authResult); err != nil {
+				if errors.Is(err, service.ErrNotFound) {
+					server.closeStaleAgentSession(ctx, conn, authResult)
+					return
+				}
+				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "STATE_UPDATE_FAILED"})
+				continue
+			}
+			if authResult.AgentType == "NODE" {
+				config, err := server.controlService.CompileNodeAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID)
+				if err != nil {
+					if errors.Is(err, service.ErrNotFound) {
+						server.closeStaleAgentSession(ctx, conn, authResult)
+						return
+					}
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "CONFIG_COMPILE_FAILED"})
+					continue
+				}
+				_ = writeAgentEnvelope(ctx, conn, "config_snapshot", config)
+			}
+		case "heartbeat":
+			if authResult.AgentType == "NODE" {
+				var payload struct {
+					AppliedConfigVersion int `json:"applied_config_version"`
+				}
+				if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_HEARTBEAT"})
+					continue
+				}
+				if err := server.controlService.MarkNodeAgentConnected(ctx, authResult.OrganizationID, authResult.AgentID); err != nil {
+					if errors.Is(err, service.ErrNotFound) {
+						server.closeStaleAgentSession(ctx, conn, authResult)
+						return
+					}
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "STATE_UPDATE_FAILED"})
+					continue
+				}
+				behind, err := server.controlService.NodeAgentConfigBehind(ctx, authResult.OrganizationID, authResult.AgentID, payload.AppliedConfigVersion)
+				if err != nil {
+					if errors.Is(err, service.ErrNotFound) {
+						server.closeStaleAgentSession(ctx, conn, authResult)
+						return
+					}
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "CONFIG_STATE_FAILED"})
+					continue
+				}
+				if !behind {
+					continue
+				}
+				config, err := server.controlService.CompileNodeAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID)
+				if err != nil {
+					if errors.Is(err, service.ErrNotFound) {
+						server.closeStaleAgentSession(ctx, conn, authResult)
+						return
+					}
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "CONFIG_COMPILE_FAILED"})
+					continue
+				}
+				_ = writeAgentEnvelope(ctx, conn, "config_snapshot", config)
+			} else if authResult.AgentType == "MONITOR" {
+				if err := server.markAgentConnected(ctx, authResult); err != nil {
+					if errors.Is(err, service.ErrNotFound) {
+						server.closeStaleAgentSession(ctx, conn, authResult)
+						return
+					}
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "STATE_UPDATE_FAILED"})
+					continue
+				}
+			}
+		case "config_ack":
+			var payload struct {
+				ConfigVersion int    `json:"config_version"`
+				Status        string `json:"status"`
+				ErrorMessage  string `json:"error_message"`
+			}
+			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_CONFIG_ACK"})
+				continue
+			}
+			if authResult.AgentType == "NODE" {
+				if err := server.controlService.AcknowledgeNodeAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID, payload.ConfigVersion, payload.Status, payload.ErrorMessage); err != nil {
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "CONFIG_ACK_FAILED"})
+				}
+			}
+		case "metrics":
+			var payload agent.MetricsPayload
+			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_METRICS"})
+				continue
+			}
+			if !server.agentStates.UpdateMetricsForConnection(authResult.OrganizationID, authResult.AgentType, authResult.AgentID, *connectionGeneration, payload) {
+				return
+			}
+		}
+	}
+}
+
+func (server *ControlServer) closeStaleAgentSession(ctx context.Context, conn *websocket.Conn, authResult service.AgentAuthResult) {
+	if authResult.AgentType == "NODE" {
+		_ = writeAgentEnvelope(ctx, conn, "config_snapshot", service.EmptyNodeAgentConfig(authResult.AgentID))
+	}
+	_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "AGENT_RECORD_NOT_FOUND"})
+	_ = conn.Close(websocket.StatusPolicyViolation, "AGENT_RECORD_NOT_FOUND")
+}
+
+func (server *ControlServer) markAgentConnected(ctx context.Context, authResult service.AgentAuthResult) error {
+	switch authResult.AgentType {
+	case "NODE":
+		return server.controlService.MarkNodeAgentConnected(ctx, authResult.OrganizationID, authResult.AgentID)
+	case "MONITOR":
+		return server.controlService.MarkMonitorAgentConnected(ctx, authResult.OrganizationID, authResult.AgentID)
+	default:
+		return nil
+	}
+}
+
+func (server *ControlServer) markAgentDisconnected(ctx context.Context, authResult service.AgentAuthResult) error {
+	switch authResult.AgentType {
+	case "NODE":
+		return server.controlService.MarkNodeAgentDisconnected(ctx, authResult.OrganizationID, authResult.AgentID)
+	case "MONITOR":
+		return server.controlService.MarkMonitorAgentDisconnected(ctx, authResult.OrganizationID, authResult.AgentID)
+	default:
+		return nil
+	}
+}

@@ -1,0 +1,14 @@
+.cache/
+.codegraph/
+.gocache/
+node_modules/
+.next/
+dist/
+coverage/
+*.db
+*.db-shm
+*.db-wal
+
+.env
+/node-agent
+/monitor-agent

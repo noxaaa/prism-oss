@@ -1,0 +1,28 @@
+{
+  "name": "@platform/root",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "test": "npm run lint:go && npm run test:go && npm run test:web",
+    "lint:go": "GOCACHE=$PWD/.cache/go-build GOLANGCI_LINT_CACHE=$PWD/.cache/golangci-lint golangci-lint run",
+    "test:go": "GOCACHE=$PWD/.cache/go-build go test ./...",
+    "test:web": "npm --workspace apps/web test",
+    "build:web": "npm --workspace apps/web run build"
+  },
+  "overrides": {
+    "autoprefixer": {
+      "postcss": "8.5.15"
+    },
+    "next": {
+      "postcss": "8.5.15"
+    },
+    "next@15.5.19": {
+      "postcss": "8.5.15"
+    }
+  },
+  "devDependencies": {
+    "postcss": "^8.5.15"
+  }
+}
