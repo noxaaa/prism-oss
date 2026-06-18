@@ -297,6 +297,47 @@ default_public_web_url() {
   printf 'http://%s:%s' "$(first_non_loopback_host)" "$port"
 }
 
+default_control_plane_url() {
+  port="$1"
+  public_url_for_host="$2"
+  if [ -n "$control_url" ]; then
+    printf '%s' "$control_url"
+    return
+  fi
+  if [ -n "$public_url_for_host" ]; then
+    case "$public_url_for_host" in
+      *://*)
+        scheme="${public_url_for_host%%://*}"
+        rest="${public_url_for_host#*://}"
+        ;;
+      *)
+        scheme="http"
+        rest="$public_url_for_host"
+        ;;
+    esac
+    host_port="${rest%%/*}"
+    host_port="${host_port##*@}"
+    if [ -n "$host_port" ]; then
+      case "$host_port" in
+        \[*\])
+          host="$host_port"
+          ;;
+        \[*\]:*)
+          host="${host_port%:*}"
+          ;;
+        *)
+          host="${host_port%%:*}"
+          ;;
+      esac
+      if [ -n "$host" ]; then
+        printf '%s://%s:%s' "$scheme" "$host" "$port"
+        return
+      fi
+    fi
+  fi
+  printf 'http://%s:%s' "$(first_non_loopback_host)" "$port"
+}
+
 append_origin_once() {
   current="$1"
   origin="$2"
@@ -360,6 +401,17 @@ ensure_public_auth_env() {
     current_public_web_url="$desired_public_web_url"
   fi
 
+  saved_control_port="$(env_value CONTROL_PLANE_PORT)"
+  if [ -z "$saved_control_port" ]; then
+    saved_control_port="$control_port"
+    set_env_value CONTROL_PLANE_PORT "$saved_control_port"
+  fi
+  desired_control_url="$(default_control_plane_url "$saved_control_port" "$current_public_web_url")"
+  current_control_url="$(env_value CONTROL_PLANE_URL)"
+  if [ -z "$current_control_url" ] || [ -n "$control_url" ] || is_loopback_url "$current_control_url"; then
+    set_env_value CONTROL_PLANE_URL "$desired_control_url"
+  fi
+
   current_better_auth_url="$(env_value BETTER_AUTH_URL)"
   if [ -z "$current_better_auth_url" ] || [ -n "$public_web_url" ] || is_loopback_url "$current_better_auth_url"; then
     set_env_value BETTER_AUTH_URL "$current_public_web_url"
@@ -381,10 +433,8 @@ ensure_public_auth_env() {
 }
 
 if [ ! -f ".env" ]; then
-  if [ -z "$control_url" ]; then
-    control_url="http://127.0.0.1:${control_port}"
-  fi
   resolved_public_web_url="$(default_public_web_url "$web_port")"
+  resolved_control_url="$(default_control_plane_url "$control_port" "$resolved_public_web_url")"
   resolved_trusted_origins="$(auth_trusted_origins "$resolved_public_web_url" "$web_port")"
   umask 077
   better_auth_secret="$(secret_or_exit BETTER_AUTH_SECRET)"
@@ -400,7 +450,7 @@ if [ ! -f ".env" ]; then
     printf 'CONTROL_PLANE_PORT=%s\n' "$control_port"
     printf 'CONTROL_PLANE_BIND_HOST=%s\n' "$control_bind_host"
     printf 'PUBLIC_WEB_URL=%s\n' "$resolved_public_web_url"
-    printf 'CONTROL_PLANE_URL=%s\n' "$control_url"
+    printf 'CONTROL_PLANE_URL=%s\n' "$resolved_control_url"
     printf 'CONTROL_PLANE_INTERNAL_URL=http://control-plane:8080\n'
     printf 'PRISM_OSS_DATABASE_URL=/data/oss.db\n'
     printf 'QUEUE_REDIS_URL=redis://redis:6379/0\n'

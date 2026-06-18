@@ -13,7 +13,7 @@ Common settings:
 - `CONTROL_PLANE_PORT`: host port for the control-plane API. Default: `8080`.
 - `CONTROL_PLANE_BIND_HOST`: host interface for the control-plane API. Default: `0.0.0.0`.
 - `PUBLIC_WEB_URL`: browser URL for the web console. Set this explicitly when automatic address detection does not match the URL you use in the browser.
-- `CONTROL_PLANE_URL`: URL that agents use to reach the control plane. For agents on other hosts, set this to a reachable host or DNS name, not localhost.
+- `CONTROL_PLANE_URL`: URL that agents use to reach the control plane. The installer derives this from `PUBLIC_WEB_URL` unless `--control-url` is provided. For agents on other hosts, this must be a reachable host or DNS name, not localhost.
 - `BETTER_AUTH_URL`: optional auth base URL override. Defaults to `PUBLIC_WEB_URL`.
 - `BETTER_AUTH_TRUSTED_ORIGINS`: comma-separated browser origins accepted by the auth service. The installer includes `PUBLIC_WEB_URL`, `127.0.0.1`, and `localhost` by default.
 - `PRISM_OSS_DATABASE_URL`: SQLite database path inside the containers. Default: `/data/oss.db`.
@@ -39,7 +39,7 @@ The installer builds `./node-agent` and `./monitor-agent` in the repository root
 ./scripts/install.sh --version latest
 ```
 
-The installer downloads the selected release archive, replaces source-managed files, repairs generated loopback auth URLs when needed, rebuilds agent binaries, and runs `docker compose up -d --force-recreate --remove-orphans`. The `migrate` service runs core migrations before the control plane starts. Existing secrets, custom `.env` values, and Docker volumes are preserved.
+The installer downloads the selected release archive, replaces source-managed files, repairs generated loopback auth/control URLs when needed, rebuilds agent binaries, and runs `docker compose up -d --force-recreate --remove-orphans`. The `migrate` service runs core migrations before the control plane starts. Existing secrets, custom `.env` values, and Docker volumes are preserved.
 
 For a pinned upgrade, pass an explicit tag:
 
