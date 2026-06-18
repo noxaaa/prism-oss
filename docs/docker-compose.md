@@ -43,7 +43,7 @@ The installer downloads the selected release archive, replaces source-managed fi
 For a pinned upgrade, pass an explicit tag:
 
 ```sh
-./scripts/install.sh --version v0.1.1
+./scripts/install.sh --version v0.1.2
 ```
 
 ## Backup

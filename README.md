@@ -26,14 +26,14 @@ Open the console at `http://127.0.0.1:3000` on the local machine, or replace `12
 Pinned release flow:
 
 ```sh
-curl -fsSL https://github.com/noxaaa/prism-oss/releases/download/v0.1.1/install.sh -o install.sh
-sh ./install.sh --version v0.1.1
+curl -fsSL https://github.com/noxaaa/prism-oss/releases/download/v0.1.2/install.sh -o install.sh
+sh ./install.sh --version v0.1.2
 ```
 
 Useful options:
 
 ```sh
-./scripts/install.sh --version v0.1.1 --dir "$HOME/prism-oss" --app-name "OSS Control Console" --web-port 3000 --control-port 8080 --control-bind-host 0.0.0.0 --control-url http://YOUR_SERVER_IP:8080
+./scripts/install.sh --version v0.1.2 --dir "$HOME/prism-oss" --app-name "OSS Control Console" --web-port 3000 --control-port 8080 --control-bind-host 0.0.0.0 --control-url http://YOUR_SERVER_IP:8080
 ```
 
 See [Docker Compose operations](./docs/docker-compose.md) for configuration, upgrades, backups, logs, and reset steps.

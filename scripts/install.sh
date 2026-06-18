@@ -279,7 +279,7 @@ else
   echo "Using existing .env"
 fi
 
-docker compose run -T --rm --no-deps agent-build
+docker compose run -T --rm --no-deps agent-build </dev/null
 docker compose up -d --force-recreate --remove-orphans
 
 console_url="$(env_value PUBLIC_WEB_URL)"
