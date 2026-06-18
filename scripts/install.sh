@@ -6,7 +6,7 @@ install_dir="${HOME}/prism-oss"
 app_name="OSS Control Console"
 web_port="3000"
 control_port="8080"
-control_bind_host="127.0.0.1"
+control_bind_host="0.0.0.0"
 control_url=""
 dir_was_set="0"
 version="latest"
@@ -22,7 +22,7 @@ Options:
   --web-port PORT       Host port for the web console. Defaults to 3000.
   --control-port PORT   Host port for the control-plane API. Defaults to 8080.
   --control-bind-host HOST
-                         Host interface for the control-plane API. Defaults to 127.0.0.1.
+                         Host interface for the control-plane API. Defaults to 0.0.0.0.
   --control-url URL      URL that node and monitor agents use to reach the control plane.
   -h, --help            Show this help.
 USAGE
@@ -247,15 +247,7 @@ env_value() {
 
 if [ ! -f ".env" ]; then
   if [ -z "$control_url" ]; then
-    case "$control_bind_host" in
-      127.0.0.1|localhost)
-        control_url="http://127.0.0.1:${control_port}"
-        ;;
-      *)
-        echo "--control-url is required when --control-bind-host is not loopback" >&2
-        exit 1
-        ;;
-    esac
+    control_url="http://127.0.0.1:${control_port}"
   fi
   umask 077
   better_auth_secret="$(secret_or_exit BETTER_AUTH_SECRET)"
@@ -287,7 +279,7 @@ else
   echo "Using existing .env"
 fi
 
-docker compose run --rm --no-deps agent-build
+docker compose run -T --rm --no-deps agent-build
 docker compose up -d --force-recreate --remove-orphans
 
 console_url="$(env_value PUBLIC_WEB_URL)"

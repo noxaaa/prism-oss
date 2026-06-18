@@ -21,19 +21,19 @@ curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install.
 
 The installer downloads the latest release archive, writes a local `.env` file when one does not exist, and starts the web console, control plane, migration job, and Redis with the included `docker-compose.yml`.
 
-Open the console at `http://127.0.0.1:3000` and create the first owner account. This single-user edition disables further sign-ups after the first owner setup.
+Open the console at `http://127.0.0.1:3000` on the local machine, or replace `127.0.0.1` with the server address for a remote host. Create the first owner account. This single-user edition disables further sign-ups after the first owner setup.
 
 Pinned release flow:
 
 ```sh
-curl -fsSL https://github.com/noxaaa/prism-oss/releases/download/v0.1.0/install.sh -o install.sh
-sh ./install.sh --version v0.1.0
+curl -fsSL https://github.com/noxaaa/prism-oss/releases/download/v0.1.1/install.sh -o install.sh
+sh ./install.sh --version v0.1.1
 ```
 
 Useful options:
 
 ```sh
-./scripts/install.sh --version v0.1.0 --dir "$HOME/prism-oss" --app-name "OSS Control Console" --web-port 3000 --control-port 8080 --control-bind-host 127.0.0.1 --control-url http://127.0.0.1:8080
+./scripts/install.sh --version v0.1.1 --dir "$HOME/prism-oss" --app-name "OSS Control Console" --web-port 3000 --control-port 8080 --control-bind-host 0.0.0.0 --control-url http://YOUR_SERVER_IP:8080
 ```
 
 See [Docker Compose operations](./docs/docker-compose.md) for configuration, upgrades, backups, logs, and reset steps.

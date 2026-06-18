@@ -9,11 +9,11 @@ The installer writes a local `.env` file on first run. Keep this file private be
 Common settings:
 
 - `APP_NAME`: display name shown in the console.
-- `WEB_PORT`: host port for the web console. Default: `3000`.
+- `WEB_PORT`: host port for the web console. Default: `3000`; the port is published on `0.0.0.0`.
 - `CONTROL_PLANE_PORT`: host port for the control-plane API. Default: `8080`.
-- `CONTROL_PLANE_BIND_HOST`: host interface for the control-plane API. Default: `127.0.0.1`; use `0.0.0.0` when agents on other hosts must connect.
+- `CONTROL_PLANE_BIND_HOST`: host interface for the control-plane API. Default: `0.0.0.0`.
 - `PUBLIC_WEB_URL`: browser URL for the web console.
-- `CONTROL_PLANE_URL`: URL that agents use to reach the control plane. When `CONTROL_PLANE_BIND_HOST=0.0.0.0`, set this to a reachable host or DNS name, not localhost.
+- `CONTROL_PLANE_URL`: URL that agents use to reach the control plane. For agents on other hosts, set this to a reachable host or DNS name, not localhost.
 - `BETTER_AUTH_URL`: optional auth base URL override. Defaults to `PUBLIC_WEB_URL`.
 - `PRISM_OSS_DATABASE_URL`: SQLite database path inside the containers. Default: `/data/oss.db`.
 
@@ -43,7 +43,7 @@ The installer downloads the selected release archive, replaces source-managed fi
 For a pinned upgrade, pass an explicit tag:
 
 ```sh
-./scripts/install.sh --version v0.1.0
+./scripts/install.sh --version v0.1.1
 ```
 
 ## Backup
