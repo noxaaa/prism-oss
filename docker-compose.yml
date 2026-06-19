@@ -21,7 +21,7 @@ services:
   agent-build:
     image: golang:1.24-bookworm
     working_dir: /workspace
-    command: ["sh", "-lc", "/usr/local/go/bin/go build -o /workspace/node-agent ./cmd/node-agent && /usr/local/go/bin/go build -o /workspace/monitor-agent ./cmd/monitor-agent"]
+    command: ["sh", "-lc", "/usr/local/go/bin/go build -o /workspace/node-agent ./cmd/node-agent"]
     environment:
       PRISM_EDITION: oss
     volumes:
@@ -45,6 +45,7 @@ services:
       PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://127.0.0.1:3000}
       CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:-http://127.0.0.1:8080}
       CONTROL_PLANE_INTERNAL_URL: ${CONTROL_PLANE_INTERNAL_URL:-http://control-plane:8080}
+      AGENT_RELEASE_VERSION: ${AGENT_RELEASE_VERSION:-latest}
       CONTROL_PLANE_INTERNAL_JWT_SECRET: ${CONTROL_PLANE_INTERNAL_JWT_SECRET:?set CONTROL_PLANE_INTERNAL_JWT_SECRET in .env}
       AGENT_TOKEN_SIGNING_SECRET: ${AGENT_TOKEN_SIGNING_SECRET:?set AGENT_TOKEN_SIGNING_SECRET in .env}
       DATABASE_URL: ${PRISM_OSS_DATABASE_URL:-/data/oss.db}

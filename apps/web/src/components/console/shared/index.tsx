@@ -168,11 +168,11 @@ export function ControlledTextField({
   );
 }
 
-export function TextAreaField({ label, name, placeholder }: { label: string; name: string; placeholder: string }) {
+export function TextAreaField({ defaultValue, label, name, placeholder }: { defaultValue?: string; label: string; name: string; placeholder: string }) {
   return (
     <Field>
       <FieldLabel htmlFor={name}>{label}</FieldLabel>
-      <Textarea id={name} name={name} placeholder={placeholder} />
+      <Textarea defaultValue={defaultValue} id={name} name={name} placeholder={placeholder} />
     </Field>
   );
 }
@@ -296,6 +296,27 @@ export function monitorGroupName(groups: MonitorGroup[], id: string): string {
 }
 
 export async function copyText(value: string, successMessage = "Copied.") {
-  await navigator.clipboard.writeText(value);
-  toast.success(successMessage);
+  try {
+    await navigator.clipboard.writeText(value);
+    toast.success(successMessage);
+    return;
+  } catch {
+    // Some browsers block Clipboard API outside secure contexts. Fall back to the legacy selection path.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("copy failed");
+    }
+    toast.success(successMessage);
+  } finally {
+    document.body.removeChild(textarea);
+  }
 }

@@ -25,6 +25,7 @@ type ControlServerOptions struct {
 	InternalTokenTTL        time.Duration
 	AppName                 string
 	ControlPlaneURL         string
+	AgentReleaseVersion     string
 	AgentTokenSigningSecret []byte
 	AgentStateRegistry      *AgentStateRegistry
 	Edition                 edition.Provider
@@ -49,6 +50,7 @@ func NewControlServer(options ControlServerOptions) *ControlServer {
 		controlService = service.NewControlServiceWithOptions(options.RepositoryStore, service.ControlServiceOptions{
 			AppName:                 options.AppName,
 			ControlPlaneURL:         options.ControlPlaneURL,
+			AgentReleaseVersion:     options.AgentReleaseVersion,
 			AgentTokenSigningSecret: options.AgentTokenSigningSecret,
 			Edition:                 provider,
 		})
@@ -112,19 +114,21 @@ func (server *ControlServer) routes() {
 	server.mux.HandleFunc("GET /internal/v1/nodes/{node_id}/registration-tokens", server.withInternalIdentity(server.handleListNodeRegistrationTokens))
 	server.mux.HandleFunc("POST /internal/v1/nodes/{node_id}/registration-token", server.withInternalIdentity(server.handleCreateNodeRegistrationToken))
 	server.mux.HandleFunc("DELETE /internal/v1/nodes/{node_id}/registration-tokens/{token_id}", server.withInternalIdentity(server.handleRevokeNodeRegistrationToken))
-	server.mux.HandleFunc("GET /internal/v1/monitor-groups", server.withInternalIdentity(server.handleListMonitorGroups))
-	server.mux.HandleFunc("POST /internal/v1/monitor-groups", server.withInternalIdentity(server.handleCreateMonitorGroup))
-	server.mux.HandleFunc("PATCH /internal/v1/monitor-groups/{group_id}", server.withInternalIdentity(server.handleUpdateMonitorGroup))
-	server.mux.HandleFunc("DELETE /internal/v1/monitor-groups/{group_id}", server.withInternalIdentity(server.handleDeleteMonitorGroup))
-	server.mux.HandleFunc("GET /internal/v1/monitors", server.withInternalIdentity(server.handleListMonitors))
-	server.mux.HandleFunc("POST /internal/v1/monitors", server.withInternalIdentity(server.handleCreateMonitor))
-	server.mux.HandleFunc("GET /internal/v1/monitors/{monitor_id}", server.withInternalIdentity(server.handleGetMonitor))
-	server.mux.HandleFunc("GET /internal/v1/monitors/{monitor_id}/metrics/stream", server.withInternalIdentity(server.handleMonitorMetricsStream))
-	server.mux.HandleFunc("PATCH /internal/v1/monitors/{monitor_id}", server.withInternalIdentity(server.handleUpdateMonitor))
-	server.mux.HandleFunc("DELETE /internal/v1/monitors/{monitor_id}", server.withInternalIdentity(server.handleDeleteMonitor))
-	server.mux.HandleFunc("GET /internal/v1/monitors/{monitor_id}/registration-tokens", server.withInternalIdentity(server.handleListMonitorRegistrationTokens))
-	server.mux.HandleFunc("POST /internal/v1/monitors/{monitor_id}/registration-token", server.withInternalIdentity(server.handleCreateMonitorRegistrationToken))
-	server.mux.HandleFunc("DELETE /internal/v1/monitors/{monitor_id}/registration-tokens/{token_id}", server.withInternalIdentity(server.handleRevokeMonitorRegistrationToken))
+	if server.edition.Has(edition.CapabilityMonitors) {
+		server.mux.HandleFunc("GET /internal/v1/monitor-groups", server.withInternalIdentity(server.handleListMonitorGroups))
+		server.mux.HandleFunc("POST /internal/v1/monitor-groups", server.withInternalIdentity(server.handleCreateMonitorGroup))
+		server.mux.HandleFunc("PATCH /internal/v1/monitor-groups/{group_id}", server.withInternalIdentity(server.handleUpdateMonitorGroup))
+		server.mux.HandleFunc("DELETE /internal/v1/monitor-groups/{group_id}", server.withInternalIdentity(server.handleDeleteMonitorGroup))
+		server.mux.HandleFunc("GET /internal/v1/monitors", server.withInternalIdentity(server.handleListMonitors))
+		server.mux.HandleFunc("POST /internal/v1/monitors", server.withInternalIdentity(server.handleCreateMonitor))
+		server.mux.HandleFunc("GET /internal/v1/monitors/{monitor_id}", server.withInternalIdentity(server.handleGetMonitor))
+		server.mux.HandleFunc("GET /internal/v1/monitors/{monitor_id}/metrics/stream", server.withInternalIdentity(server.handleMonitorMetricsStream))
+		server.mux.HandleFunc("PATCH /internal/v1/monitors/{monitor_id}", server.withInternalIdentity(server.handleUpdateMonitor))
+		server.mux.HandleFunc("DELETE /internal/v1/monitors/{monitor_id}", server.withInternalIdentity(server.handleDeleteMonitor))
+		server.mux.HandleFunc("GET /internal/v1/monitors/{monitor_id}/registration-tokens", server.withInternalIdentity(server.handleListMonitorRegistrationTokens))
+		server.mux.HandleFunc("POST /internal/v1/monitors/{monitor_id}/registration-token", server.withInternalIdentity(server.handleCreateMonitorRegistrationToken))
+		server.mux.HandleFunc("DELETE /internal/v1/monitors/{monitor_id}/registration-tokens/{token_id}", server.withInternalIdentity(server.handleRevokeMonitorRegistrationToken))
+	}
 	server.mux.HandleFunc("GET /internal/v1/targets", server.withInternalIdentity(server.handleListTargets))
 	server.mux.HandleFunc("POST /internal/v1/targets", server.withInternalIdentity(server.handleCreateTarget))
 	server.mux.HandleFunc("PATCH /internal/v1/targets/{target_id}", server.withInternalIdentity(server.handleUpdateTarget))

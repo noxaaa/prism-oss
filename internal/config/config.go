@@ -19,6 +19,7 @@ type ControlPlaneConfig struct {
 	CacheDriver             string
 	CacheRedisURL           string
 	AgentTokenSigningSecret string
+	AgentReleaseVersion     string
 	DNSSecretEncryptionKey  string
 	LogLevel                string
 }
@@ -38,6 +39,7 @@ func LoadControlPlane() (ControlPlaneConfig, error) {
 		CacheDriver:             envOrDefault("CACHE_DRIVER", "redis"),
 		CacheRedisURL:           os.Getenv("CACHE_REDIS_URL"),
 		AgentTokenSigningSecret: os.Getenv("AGENT_TOKEN_SIGNING_SECRET"),
+		AgentReleaseVersion:     envOrDefault("AGENT_RELEASE_VERSION", "latest"),
 		DNSSecretEncryptionKey:  os.Getenv("DNS_SECRET_ENCRYPTION_KEY"),
 		LogLevel:                envOrDefault("LOG_LEVEL", "info"),
 	}

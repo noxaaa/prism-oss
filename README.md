@@ -5,7 +5,7 @@ This repository contains a single-user forwarding control plane and agent stack 
 ## Features
 
 - TCP and UDP forwarding with Proxy Protocol support.
-- Node and monitor agents with outbound control-plane connections.
+- Node agents with outbound control-plane connections.
 - Single-user account setup and local authorization.
 - Targets, target groups, rules, import/export, basic metrics, and audit records.
 - Core goose migrations only.

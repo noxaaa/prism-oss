@@ -8,12 +8,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"strconv"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/noxaaa/prism-oss/internal/domain"
 	"github.com/noxaaa/prism-oss/internal/repo"
+	"github.com/noxaaa/prism-oss/pkg/edition"
 )
 
 func (service *ControlService) ListRegistrationTokens(ctx context.Context, identity InternalIdentity, agentType string, agentID string) ([]RegistrationTokenPayload, error) {
@@ -106,6 +107,9 @@ func (service *ControlService) authenticateAgentToken(ctx context.Context, agent
 	token = strings.TrimSpace(token)
 	if agentType != "NODE" && agentType != "MONITOR" {
 		return AgentAuthResult{}, ErrInvalidInput
+	}
+	if agentType == "MONITOR" && !service.edition.Has(edition.CapabilityMonitors) {
+		return AgentAuthResult{}, ErrForbidden
 	}
 	if token == "" || len(service.agentTokenSigningSecret) == 0 {
 		return AgentAuthResult{}, ErrForbidden
@@ -303,9 +307,34 @@ func hmacTokenHash(secret []byte, token string) string {
 }
 
 func (service *ControlService) installCommand(agentType string, token string) string {
-	binary := "node-agent"
 	if agentType == "MONITOR" {
-		binary = "monitor-agent"
+		return fmt.Sprintf("APP_NAME=%s ./monitor-agent install --control-url %s --registration-token %s --credential-file agent-credential.json", shellQuote(service.appName), shellQuote(service.controlPlaneURL), shellQuote(token))
 	}
-	return fmt.Sprintf("APP_NAME=%s ./%s install --control-url %s --registration-token %s --credential-file agent-credential.json", strconv.Quote(service.appName), binary, service.controlPlaneURL, token)
+	releaseVersion := service.nodeAgentReleaseVersion()
+	return fmt.Sprintf(
+		"(tmp=$(mktemp) && curl -fsSL %s -o \"$tmp\" && APP_NAME=%s sh \"$tmp\" --version %s --control-url %s --registration-token %s --credential-file agent-credential.json; status=$?; rm -f \"${tmp:-}\"; exit \"$status\")",
+		shellQuote(nodeAgentInstallerURL(releaseVersion)),
+		shellQuote(service.appName),
+		shellQuote(releaseVersion),
+		shellQuote(service.controlPlaneURL),
+		shellQuote(token),
+	)
+}
+
+func (service *ControlService) nodeAgentReleaseVersion() string {
+	if service.agentReleaseVersion == "" {
+		return "latest"
+	}
+	return service.agentReleaseVersion
+}
+
+func nodeAgentInstallerURL(version string) string {
+	if version == "" || version == "latest" {
+		return "https://github.com/noxaaa/prism-oss/releases/latest/download/install-node-agent.sh"
+	}
+	return "https://github.com/noxaaa/prism-oss/releases/download/" + url.PathEscape(version) + "/install-node-agent.sh"
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

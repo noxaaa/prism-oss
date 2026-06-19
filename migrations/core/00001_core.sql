@@ -115,41 +115,6 @@ CREATE TABLE node_port_ranges (
   CHECK(enabled IN (0, 1)),
   FOREIGN KEY (organization_id, node_id) REFERENCES nodes(organization_id, id) ON DELETE CASCADE
 );
-CREATE TABLE monitor_groups (
-  id TEXT PRIMARY KEY,
-  organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  deleted_at TEXT,
-  UNIQUE(organization_id, id)
-);
-CREATE TABLE monitors (
-  id TEXT PRIMARY KEY,
-  organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  status TEXT NOT NULL,
-  desired_config_version INTEGER NOT NULL DEFAULT 0,
-  applied_config_version INTEGER NOT NULL DEFAULT 0,
-  last_seen_at TEXT,
-  registered_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  deleted_at TEXT,
-  UNIQUE(organization_id, id),
-  CHECK(status IN ('PENDING', 'ONLINE', 'OFFLINE', 'DISABLED'))
-);
-CREATE TABLE monitor_group_members (
-  id TEXT PRIMARY KEY,
-  organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-  monitor_id TEXT NOT NULL,
-  monitor_group_id TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(monitor_id, monitor_group_id),
-  FOREIGN KEY (organization_id, monitor_id) REFERENCES monitors(organization_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (organization_id, monitor_group_id) REFERENCES monitor_groups(organization_id, id) ON DELETE CASCADE
-);
 CREATE TABLE agent_registration_tokens (
   id TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
@@ -185,13 +150,6 @@ CREATE TRIGGER validate_agent_registration_tokens_agent_insert BEFORE INSERT ON 
         AND nodes.id = NEW.agent_id
         AND nodes.deleted_at IS NULL
     );
-  SELECT RAISE(ABORT, 'MONITOR registration token must reference a same-organization monitor')
-  WHERE NEW.agent_type = 'MONITOR'
-    AND NOT EXISTS (
-    SELECT 1 FROM monitors WHERE monitors.organization_id = NEW.organization_id
-        AND monitors.id = NEW.agent_id
-        AND monitors.deleted_at IS NULL
-    );
 END;
 -- +goose StatementEnd
 -- +goose StatementBegin
@@ -202,13 +160,6 @@ CREATE TRIGGER validate_agent_registration_tokens_agent_update BEFORE UPDATE OF 
     SELECT 1 FROM nodes WHERE nodes.organization_id = NEW.organization_id
         AND nodes.id = NEW.agent_id
         AND nodes.deleted_at IS NULL
-    );
-  SELECT RAISE(ABORT, 'MONITOR registration token must reference a same-organization monitor')
-  WHERE NEW.agent_type = 'MONITOR'
-    AND NOT EXISTS (
-    SELECT 1 FROM monitors WHERE monitors.organization_id = NEW.organization_id
-        AND monitors.id = NEW.agent_id
-        AND monitors.deleted_at IS NULL
     );
 END;
 -- +goose StatementEnd
@@ -221,13 +172,6 @@ CREATE TRIGGER validate_agent_credentials_agent_insert BEFORE INSERT ON agent_cr
         AND nodes.id = NEW.agent_id
         AND nodes.deleted_at IS NULL
     );
-  SELECT RAISE(ABORT, 'MONITOR credential must reference a same-organization monitor')
-  WHERE NEW.agent_type = 'MONITOR'
-    AND NOT EXISTS (
-    SELECT 1 FROM monitors WHERE monitors.organization_id = NEW.organization_id
-        AND monitors.id = NEW.agent_id
-        AND monitors.deleted_at IS NULL
-    );
 END;
 -- +goose StatementEnd
 -- +goose StatementBegin
@@ -238,13 +182,6 @@ CREATE TRIGGER validate_agent_credentials_agent_update BEFORE UPDATE OF organiza
     SELECT 1 FROM nodes WHERE nodes.organization_id = NEW.organization_id
         AND nodes.id = NEW.agent_id
         AND nodes.deleted_at IS NULL
-    );
-  SELECT RAISE(ABORT, 'MONITOR credential must reference a same-organization monitor')
-  WHERE NEW.agent_type = 'MONITOR'
-    AND NOT EXISTS (
-    SELECT 1 FROM monitors WHERE monitors.organization_id = NEW.organization_id
-        AND monitors.id = NEW.agent_id
-        AND monitors.deleted_at IS NULL
     );
 END;
 -- +goose StatementEnd
@@ -297,34 +234,6 @@ CREATE TRIGGER revoke_node_agent_auth_on_soft_delete AFTER UPDATE OF deleted_at 
   SET revoked_at = COALESCE(revoked_at, NEW.deleted_at)
   WHERE organization_id = NEW.organization_id
     AND agent_type = 'NODE'
-    AND agent_id = NEW.id;
-END;
--- +goose StatementEnd
--- +goose StatementBegin
-CREATE TRIGGER revoke_monitor_agent_auth_on_delete AFTER DELETE ON monitors BEGIN
-  UPDATE agent_registration_tokens
-  SET revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-  WHERE organization_id = OLD.organization_id
-    AND agent_type = 'MONITOR'
-    AND agent_id = OLD.id;
-  UPDATE agent_credentials
-  SET revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-  WHERE organization_id = OLD.organization_id
-    AND agent_type = 'MONITOR'
-    AND agent_id = OLD.id;
-END;
--- +goose StatementEnd
--- +goose StatementBegin
-CREATE TRIGGER revoke_monitor_agent_auth_on_soft_delete AFTER UPDATE OF deleted_at ON monitors WHEN NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL BEGIN
-  UPDATE agent_registration_tokens
-  SET revoked_at = COALESCE(revoked_at, NEW.deleted_at)
-  WHERE organization_id = NEW.organization_id
-    AND agent_type = 'MONITOR'
-    AND agent_id = NEW.id;
-  UPDATE agent_credentials
-  SET revoked_at = COALESCE(revoked_at, NEW.deleted_at)
-  WHERE organization_id = NEW.organization_id
-    AND agent_type = 'MONITOR'
     AND agent_id = NEW.id;
 END;
 -- +goose StatementEnd
@@ -744,8 +653,6 @@ DROP TRIGGER IF EXISTS validate_inbound_binding_listen_ip_update;
 DROP TRIGGER IF EXISTS validate_inbound_binding_listen_ip_insert;
 DROP TRIGGER IF EXISTS validate_forwarding_rules_inbound_update;
 DROP TRIGGER IF EXISTS validate_forwarding_rules_inbound_insert;
-DROP TRIGGER IF EXISTS revoke_monitor_agent_auth_on_soft_delete;
-DROP TRIGGER IF EXISTS revoke_monitor_agent_auth_on_delete;
 DROP TRIGGER IF EXISTS revoke_node_agent_auth_on_soft_delete;
 DROP TRIGGER IF EXISTS revoke_node_agent_auth_on_delete;
 DROP TRIGGER IF EXISTS validate_agent_credentials_registration_token_update;
@@ -766,9 +673,6 @@ DROP TABLE IF EXISTS target_groups;
 DROP TABLE IF EXISTS targets;
 DROP TABLE IF EXISTS agent_credentials;
 DROP TABLE IF EXISTS agent_registration_tokens;
-DROP TABLE IF EXISTS monitor_group_members;
-DROP TABLE IF EXISTS monitors;
-DROP TABLE IF EXISTS monitor_groups;
 DROP TABLE IF EXISTS node_port_ranges;
 DROP TABLE IF EXISTS node_listen_ips;
 DROP TABLE IF EXISTS node_group_members;

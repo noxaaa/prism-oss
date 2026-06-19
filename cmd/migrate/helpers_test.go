@@ -71,10 +71,12 @@ func seedTenantFixture(t *testing.T, db *sql.DB) {
 	ruleStatements := []string{
 		`INSERT INTO forwarding_rules (id, organization_id, owner_user_id, name, enabled, protocol, match_type, inbound_binding_id, target_id, target_group_id, config_version, created_at, updated_at) VALUES ('rule_a', 'org_a', 'user_a', 'Rule A', 1, 'TCP', 'ANY_INBOUND', 'inbound_rule_a', 'target_a', NULL, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 		`INSERT INTO forwarding_rules (id, organization_id, owner_user_id, name, enabled, protocol, match_type, inbound_binding_id, target_id, target_group_id, config_version, created_at, updated_at) VALUES ('rule_b', 'org_b', 'user_b', 'Rule B', 1, 'TCP', 'ANY_INBOUND', 'inbound_rule_b', 'target_b', NULL, 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-		`INSERT INTO monitors (id, organization_id, name, status, created_at, updated_at) VALUES ('monitor_a', 'org_a', 'Monitor A', 'ONLINE', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	}
 	for _, statement := range ruleStatements {
 		mustExec(t, db, statement)
+	}
+	if tableExists(t, db, "monitors") {
+		mustExec(t, db, `INSERT INTO monitors (id, organization_id, name, status, created_at, updated_at) VALUES ('monitor_a', 'org_a', 'Monitor A', 'ONLINE', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
 	}
 }
 

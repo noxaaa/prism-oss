@@ -43,6 +43,7 @@ func main() {
 		RepositoryStore:         store,
 		AppName:                 cfg.AppName,
 		ControlPlaneURL:         cfg.ControlPlaneURL,
+		AgentReleaseVersion:     cfg.AgentReleaseVersion,
 		AgentTokenSigningSecret: []byte(cfg.AgentTokenSigningSecret),
 		Edition:                 controlEdition,
 	})

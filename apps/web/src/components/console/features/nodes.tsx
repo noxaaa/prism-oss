@@ -7,6 +7,7 @@ import {
   FileJsonIcon,
   MoreHorizontalIcon,
   NetworkIcon,
+  PencilIcon,
   PlusIcon,
   RadarIcon,
   RefreshCwIcon,
@@ -14,6 +15,7 @@ import {
   ServerIcon,
   ShieldIcon,
   TargetIcon,
+  Trash2Icon,
   UploadIcon,
   UsersIcon,
 } from "lucide-react";
@@ -128,19 +130,32 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
   const canReadMetrics = hasPermission(session, "nodes.read") && hasPermission(session, "traffic.read_all");
   const nodeGroups = useControlList<NodeGroup>("/api/control/node-groups");
   const nodes = useControlList<NodeResource>("/api/control/nodes");
-  const [token, setToken] = useState<RegistrationToken | null>(null);
   const [nodeGroupCreateOpen, setNodeGroupCreateOpen] = useState(false);
   const [nodeCreateOpen, setNodeCreateOpen] = useState(false);
+  const [editingNodeGroup, setEditingNodeGroup] = useState<NodeGroup | null>(null);
+  const [deletingNodeGroup, setDeletingNodeGroup] = useState<NodeGroup | null>(null);
+  const [editingNode, setEditingNode] = useState<NodeResource | null>(null);
+  const [deletingNode, setDeletingNode] = useState<NodeResource | null>(null);
+  const [installCommandFallback, setInstallCommandFallback] = useState<{ nodeName: string; command: string } | null>(null);
 
   async function refreshAll() {
     await Promise.all([nodeGroups.refresh(), nodes.refresh()]);
   }
 
-  async function createToken(nodeID: string) {
+  async function copyInstallCommand(node: NodeResource) {
     try {
-      const result = await controlPost<RegistrationToken>(`/api/control/nodes/${nodeID}/registration-token`, { ttl_hours: 24 });
-      setToken(result);
-      toast.success(t("nodes.registrationTokenCreated"));
+      const result = await controlPost<RegistrationToken>(`/api/control/nodes/${node.id}/registration-token`, { ttl_hours: 24 });
+      if (!result.install_command) {
+        toast.error(t("nodes.installCommandMissing"));
+        return;
+      }
+      try {
+        await copyText(result.install_command, t("nodes.installCommandCopied"));
+        setInstallCommandFallback(null);
+      } catch {
+        setInstallCommandFallback({ nodeName: node.name, command: result.install_command });
+        toast.error(t("nodes.installCommandCopyFailed"));
+      }
     } catch (error) {
       toast.error(localizeControlError(error, locale));
     }
@@ -158,6 +173,10 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
         <>
           <NodeGroupCreateDrawer onCreated={refreshAll} onOpenChange={setNodeGroupCreateOpen} open={nodeGroupCreateOpen} />
           <NodeCreateDrawer groups={nodeGroups.data} onCreated={refreshAll} onOpenChange={setNodeCreateOpen} open={nodeCreateOpen} />
+          <NodeGroupEditDrawer group={editingNodeGroup} onOpenChange={(open) => !open && setEditingNodeGroup(null)} onUpdated={refreshAll} />
+          <NodeGroupDeleteDialog group={deletingNodeGroup} onDeleted={refreshAll} onOpenChange={(open) => !open && setDeletingNodeGroup(null)} />
+          <NodeEditDrawer groups={nodeGroups.data} node={editingNode} onOpenChange={(open) => !open && setEditingNode(null)} onUpdated={refreshAll} />
+          <NodeDeleteDialog node={deletingNode} onDeleted={refreshAll} onOpenChange={(open) => !open && setDeletingNode(null)} />
           <div className="flex flex-wrap justify-end gap-2">
             <Button onClick={() => setNodeGroupCreateOpen(true)} type="button" variant="outline">
               <PlusIcon data-icon="inline-start" />
@@ -171,19 +190,59 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
         </>
       ) : null}
 
-      {token?.install_command ? (
+      {installCommandFallback ? (
         <Alert>
-          <FileJsonIcon />
-          <AlertTitle>{t("nodes.installCommand")}</AlertTitle>
-          <AlertDescription>
-            <code className="block overflow-auto rounded-lg bg-muted p-3 text-xs">{token.install_command}</code>
-            <Button className="mt-3" onClick={() => copyText(token.install_command ?? "", t("common.copied"))} size="sm" type="button" variant="outline">
-              <CopyIcon data-icon="inline-start" />
-              {t("common.copy")}
-            </Button>
+          <AlertTitle>{t("nodes.installCommandReady")}</AlertTitle>
+          <AlertDescription className="flex flex-col gap-3">
+            <span>{t("nodes.installCommandCopyFailedDescription", { name: installCommandFallback.nodeName })}</span>
+            <Textarea readOnly value={installCommandFallback.command} />
           </AlertDescription>
         </Alert>
       ) : null}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("nodes.nodeGroups")}</CardTitle>
+          <CardDescription>{t("nodes.nodeGroupsDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DataState loading={nodeGroups.loading} error={nodeGroups.error}>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("field.name")}</TableHead>
+                  <TableHead>{t("field.description")}</TableHead>
+                  <TableHead>{t("nodes.nodes")}</TableHead>
+                  {canManage ? <TableHead>{t("common.actions")}</TableHead> : null}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {nodeGroups.data.map((group) => (
+                  <TableRow key={group.id}>
+                    <TableCell>{group.name}</TableCell>
+                    <TableCell>{group.description || t("common.none")}</TableCell>
+                    <TableCell>{nodes.data.filter((node) => node.group_ids.includes(group.id)).length}</TableCell>
+                    {canManage ? (
+                      <TableCell>
+                        <div className="flex flex-wrap gap-2">
+                          <Button onClick={() => setEditingNodeGroup(group)} size="sm" type="button" variant="outline">
+                            <PencilIcon data-icon="inline-start" />
+                            {t("common.edit")}
+                          </Button>
+                          <Button onClick={() => setDeletingNodeGroup(group)} size="sm" type="button" variant="outline">
+                            <Trash2Icon data-icon="inline-start" />
+                            {t("common.delete")}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    ) : null}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </DataState>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -225,7 +284,29 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                     <TableCell>{node.applied_config_version}/{node.desired_config_version}</TableCell>
                     {canManage ? (
                       <TableCell>
-                        <Button onClick={() => createToken(node.id)} size="sm" type="button" variant="outline">{t("nodes.token")}</Button>
+                        <div className="flex flex-wrap gap-2">
+                          <Button onClick={() => copyInstallCommand(node)} size="sm" type="button" variant="outline">
+                            <CopyIcon data-icon="inline-start" />
+                            {t("nodes.copyInstallCommand")}
+                          </Button>
+                          <Button onClick={() => setEditingNode(node)} size="sm" type="button" variant="outline">
+                            <PencilIcon data-icon="inline-start" />
+                            {t("common.edit")}
+                          </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button aria-label={t("common.actions")} size="icon-sm" type="button" variant="outline">
+                                <MoreHorizontalIcon />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => setDeletingNode(node)}>
+                                <Trash2Icon data-icon="inline-start" />
+                                {t("common.delete")}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
                       </TableCell>
                     ) : null}
                   </TableRow>
@@ -278,26 +359,75 @@ function NodeCreateDrawer({ groups, onCreated, onOpenChange, open }: { groups: N
           <SheetDescription>{t("nodes.createNodeDescription")}</SheetDescription>
         </SheetHeader>
         <div className="px-4 pb-4">
-          <NodeCreateForm groups={groups} onCreated={handleCreated} />
+          <NodeMutationForm groups={groups} onSaved={handleCreated} />
         </div>
       </SheetContent>
     </Sheet>
   );
 }
 
-function NodeGroupCreateForm({ onCreated }: { onCreated: () => Promise<void> }) {
+function NodeEditDrawer({ groups, node, onOpenChange, onUpdated }: { groups: NodeGroup[]; node: NodeResource | null; onOpenChange: (open: boolean) => void; onUpdated: () => Promise<void> }) {
+  const { t } = useI18n();
+  async function handleUpdated() {
+    await onUpdated();
+    onOpenChange(false);
+  }
+
+  return (
+    <Sheet onOpenChange={onOpenChange} open={Boolean(node)}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-xl" side="right">
+        <SheetHeader>
+          <SheetTitle>{t("nodes.editNode")}</SheetTitle>
+          <SheetDescription>{t("nodes.editNodeDescription")}</SheetDescription>
+        </SheetHeader>
+        <div className="px-4 pb-4">
+          {node ? <NodeMutationForm groups={groups} node={node} onSaved={handleUpdated} /> : null}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function NodeGroupEditDrawer({ group, onOpenChange, onUpdated }: { group: NodeGroup | null; onOpenChange: (open: boolean) => void; onUpdated: () => Promise<void> }) {
+  const { t } = useI18n();
+  async function handleUpdated() {
+    await onUpdated();
+    onOpenChange(false);
+  }
+
+  return (
+    <Sheet onOpenChange={onOpenChange} open={Boolean(group)}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-xl" side="right">
+        <SheetHeader>
+          <SheetTitle>{t("nodes.editNodeGroup")}</SheetTitle>
+          <SheetDescription>{t("nodes.editNodeGroupDescription")}</SheetDescription>
+        </SheetHeader>
+        <div className="px-4 pb-4">
+          {group ? <NodeGroupCreateForm group={group} onCreated={handleUpdated} /> : null}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function NodeGroupCreateForm({ group, onCreated }: { group?: NodeGroup; onCreated: () => Promise<void> }) {
   const { locale, t } = useI18n();
-  async function createGroup(event: FormEvent<HTMLFormElement>) {
+  async function saveGroup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     try {
-      await controlPost<NodeGroup>("/api/control/node-groups", {
+      const payload = {
         name: form.get("name"),
         description: form.get("description"),
-      });
+      };
+      if (group) {
+        await controlPatch<NodeGroup>(`/api/control/node-groups/${group.id}`, payload);
+      } else {
+        await controlPost<NodeGroup>("/api/control/node-groups", payload);
+      }
       formElement.reset();
-      toast.success(t("nodes.nodeGroupCreated"));
+      toast.success(group ? t("nodes.nodeGroupUpdated") : t("nodes.nodeGroupCreated"));
       await onCreated();
     } catch (error) {
       toast.error(localizeControlError(error, locale));
@@ -305,66 +435,199 @@ function NodeGroupCreateForm({ onCreated }: { onCreated: () => Promise<void> }) 
   }
 
   return (
-    <form className="flex flex-col gap-5" onSubmit={createGroup}>
+    <form className="flex flex-col gap-5" onSubmit={saveGroup}>
       <FieldGroup>
-        <TextField label={t("field.name")} name="name" placeholder={t("nodes.nodeGroupNamePlaceholder")} />
-        <TextAreaField label={t("field.description")} name="description" placeholder={t("nodes.nodeGroupDescriptionPlaceholder")} />
+        <TextField defaultValue={group?.name ?? ""} label={t("field.name")} name="name" placeholder={t("nodes.nodeGroupNamePlaceholder")} />
+        <TextAreaField defaultValue={group?.description ?? ""} label={t("field.description")} name="description" placeholder={t("nodes.nodeGroupDescriptionPlaceholder")} />
       </FieldGroup>
       <Button type="submit">
-        <PlusIcon data-icon="inline-start" />
-        {t("targets.createGroup")}
+        {group ? <PencilIcon data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
+        {group ? t("common.save") : t("targets.createGroup")}
       </Button>
     </form>
   );
 }
 
-function NodeCreateForm({ groups, onCreated }: { groups: NodeGroup[]; onCreated: () => Promise<void> }) {
+function NodeMutationForm({ groups, node, onSaved }: { groups: NodeGroup[]; node?: NodeResource; onSaved: () => Promise<void> }) {
   const { locale, t } = useI18n();
-  const [nodeGroupIDs, setNodeGroupIDs] = useState<string[]>([]);
-  const [protocol, setProtocol] = useState("TCP");
+  const initialProtocol = initialPortProtocol(node);
+  const initialPortRange = node?.port_ranges[0];
+  const initialStartPort = initialPortRange?.start_port ? String(initialPortRange.start_port) : "";
+  const initialEndPort = initialPortRange?.end_port ? String(initialPortRange.end_port) : "";
+  const [nodeGroupIDs, setNodeGroupIDs] = useState<string[]>(node?.group_ids ?? []);
+  const [protocol, setProtocol] = useState(initialProtocol);
+  const [listenIPs, setListenIPs] = useState<Array<{ listen_ip: string; display_name: string }>>(
+    node?.listen_ips?.length ? node.listen_ips.map((item) => ({ listen_ip: item.listen_ip, display_name: item.display_name })) : [{ listen_ip: "0.0.0.0", display_name: "default" }],
+  );
   const groupOptions = groups.map((group) => ({ value: group.id, label: group.name }));
   const localizedProtocolOptions = protocolOptions.map((option) => ({ ...option, label: localizeEnum(option.value, locale) }));
 
-  async function createNode(event: FormEvent<HTMLFormElement>) {
+  function updateListenIP(index: number, field: "listen_ip" | "display_name", value: string) {
+    setListenIPs((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, [field]: value } : item)));
+  }
+
+  function addListenIP() {
+    setListenIPs((current) => [...current, { listen_ip: "", display_name: "" }]);
+  }
+
+  function removeListenIP(index: number) {
+    setListenIPs((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  async function saveNode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
+    const normalizedListenIPs = listenIPs
+      .map((item) => ({ listen_ip: item.listen_ip.trim(), display_name: item.display_name.trim() }))
+      .filter((item) => item.listen_ip !== "");
+    if (normalizedListenIPs.length === 0) {
+      normalizedListenIPs.push({ listen_ip: "0.0.0.0", display_name: "default" });
+    }
+    const startPortValue = String(form.get("start_port") ?? "");
+    const endPortValue = String(form.get("end_port") ?? "");
+    const portControlsChanged = protocol !== initialProtocol || startPortValue !== initialStartPort || endPortValue !== initialEndPort;
+    const portRanges = node && node.port_ranges.length > 0 && !portControlsChanged
+      ? node.port_ranges.map((range) => ({ protocol: range.protocol, start_port: range.start_port, end_port: range.end_port }))
+      : nodePortRangesForSelection(protocol, Number(startPortValue || 10000), Number(endPortValue || 20000));
     try {
-      await controlPost<NodeResource>("/api/control/nodes", {
+      const payload = {
         name: form.get("name"),
         public_description: form.get("public_description"),
         group_ids: nodeGroupIDs,
-        listen_ips: [{ listen_ip: form.get("listen_ip"), display_name: form.get("display_name") }],
-        port_ranges: nodePortRangesForSelection(protocol, Number(form.get("start_port")), Number(form.get("end_port"))),
-      });
+        listen_ips: normalizedListenIPs,
+        port_ranges: portRanges,
+      };
+      if (node) {
+        await controlPatch<NodeResource>(`/api/control/nodes/${node.id}`, payload);
+      } else {
+        await controlPost<NodeResource>("/api/control/nodes", payload);
+      }
       formElement.reset();
       setNodeGroupIDs([]);
-      toast.success(t("nodes.nodeCreated"));
-      await onCreated();
+      toast.success(node ? t("nodes.nodeUpdated") : t("nodes.nodeCreated"));
+      await onSaved();
     } catch (error) {
       toast.error(localizeControlError(error, locale));
     }
   }
 
   return (
-    <form className="flex flex-col gap-5" onSubmit={createNode}>
+    <form className="flex flex-col gap-5" onSubmit={saveNode}>
       <FieldGroup>
-        <TextField label={t("field.name")} name="name" placeholder="entry-node-a" />
+        <TextField defaultValue={node?.name ?? ""} label={t("field.name")} name="name" placeholder="entry-node-a" />
         <ResourceMultiSelect label={t("nodes.nodeGroups")} onValueChange={setNodeGroupIDs} options={groupOptions} values={nodeGroupIDs} />
-        <TextField label={t("rules.listenIP")} name="listen_ip" placeholder="0.0.0.0" />
-        <TextField label={t("nodes.listenIPLabel")} name="display_name" placeholder="default" />
+        <FieldSet>
+          <FieldLegend>{t("nodes.listenIPs")}</FieldLegend>
+          <FieldDescription>{t("nodes.listenIPsDescription")}</FieldDescription>
+          <div className="flex flex-col gap-3">
+            {listenIPs.map((item, index) => (
+              <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]" key={index}>
+                <Field>
+                  <FieldLabel>{t("rules.listenIP")}</FieldLabel>
+                  <Input onChange={(event) => updateListenIP(index, "listen_ip", event.target.value)} placeholder="0.0.0.0" value={item.listen_ip} />
+                </Field>
+                <Field>
+                  <FieldLabel>{t("nodes.listenIPLabel")}</FieldLabel>
+                  <Input onChange={(event) => updateListenIP(index, "display_name", event.target.value)} placeholder="default" value={item.display_name} />
+                </Field>
+                <Button className="self-end" disabled={listenIPs.length === 1} onClick={() => removeListenIP(index)} type="button" variant="outline">
+                  <Trash2Icon />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Button onClick={addListenIP} type="button" variant="outline">
+            <PlusIcon data-icon="inline-start" />
+            {t("nodes.addListenIP")}
+          </Button>
+        </FieldSet>
         <EnumSelect label={t("rules.protocol")} onValueChange={setProtocol} options={localizedProtocolOptions} value={protocol} />
         <div className="grid gap-3 md:grid-cols-2">
-          <TextField label={t("nodes.startPort")} name="start_port" placeholder="10000" type="number" />
-          <TextField label={t("nodes.endPort")} name="end_port" placeholder="20000" type="number" />
+          <TextField defaultValue={initialStartPort} label={t("nodes.startPort")} name="start_port" placeholder="10000" required={false} type="number" />
+          <TextField defaultValue={initialEndPort} label={t("nodes.endPort")} name="end_port" placeholder="20000" required={false} type="number" />
         </div>
-        <TextAreaField label={t("nodes.publicDescription")} name="public_description" placeholder="Connect through edge.example.com." />
+        <TextAreaField defaultValue={node?.public_description ?? ""} label={t("nodes.publicDescription")} name="public_description" placeholder="Connect through edge.example.com." />
       </FieldGroup>
       <Button disabled={nodeGroupIDs.length === 0} type="submit">
-        <PlusIcon data-icon="inline-start" />
-        {t("nodes.createNode")}
+        {node ? <PencilIcon data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
+        {node ? t("common.save") : t("nodes.createNode")}
       </Button>
     </form>
+  );
+}
+
+function initialPortProtocol(node?: NodeResource) {
+  const protocols = new Set((node?.port_ranges ?? []).map((range) => range.protocol));
+  if (protocols.has("TCP") && protocols.has("UDP")) {
+    return "TCP_UDP";
+  }
+  return node?.port_ranges[0]?.protocol ?? "TCP";
+}
+
+function NodeDeleteDialog({ node, onDeleted, onOpenChange }: { node: NodeResource | null; onDeleted: () => Promise<void>; onOpenChange: (open: boolean) => void }) {
+  const { locale, t } = useI18n();
+
+  async function deleteNode() {
+    if (!node) {
+      return;
+    }
+    try {
+      await controlDelete<{ deleted: boolean }>(`/api/control/nodes/${node.id}`);
+      toast.success(t("nodes.nodeDeleted"));
+      await onDeleted();
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={Boolean(node)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("nodes.deleteNode")}</DialogTitle>
+          <DialogDescription>{t("nodes.deleteNodeQuestion", { name: node?.name ?? "" })}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)} type="button" variant="outline">{t("common.cancel")}</Button>
+          <Button onClick={deleteNode} type="button" variant="destructive">{t("common.delete")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function NodeGroupDeleteDialog({ group, onDeleted, onOpenChange }: { group: NodeGroup | null; onDeleted: () => Promise<void>; onOpenChange: (open: boolean) => void }) {
+  const { locale, t } = useI18n();
+
+  async function deleteGroup() {
+    if (!group) {
+      return;
+    }
+    try {
+      await controlDelete<{ deleted: boolean }>(`/api/control/node-groups/${group.id}`);
+      toast.success(t("nodes.nodeGroupDeleted"));
+      await onDeleted();
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={Boolean(group)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("nodes.deleteNodeGroup")}</DialogTitle>
+          <DialogDescription>{t("nodes.deleteNodeGroupQuestion", { name: group?.name ?? "" })}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)} type="button" variant="outline">{t("common.cancel")}</Button>
+          <Button onClick={deleteGroup} type="button" variant="destructive">{t("common.delete")}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

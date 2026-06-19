@@ -133,8 +133,6 @@ func ossOwnerRequiredError() error {
 func singleUserPermissions() []string {
 	return []string{
 		string(domain.PermissionAuditLogsRead),
-		string(domain.PermissionMonitorsManage),
-		string(domain.PermissionMonitorsRead),
 		string(domain.PermissionNodesManage),
 		string(domain.PermissionNodesRead),
 		string(domain.PermissionOrganizationRead),

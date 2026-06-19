@@ -52,7 +52,6 @@ func OSSProvider() Provider {
 			CapabilityTargets,
 			CapabilityRules,
 			CapabilityNodes,
-			CapabilityMonitors,
 			CapabilityBasicMetrics,
 			CapabilitySingleUserAuth,
 		},

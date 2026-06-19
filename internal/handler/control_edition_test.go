@@ -14,10 +14,11 @@ import (
 	"github.com/noxaaa/prism-oss/internal/auth"
 	"github.com/noxaaa/prism-oss/internal/domain"
 	"github.com/noxaaa/prism-oss/internal/repo"
+	"github.com/noxaaa/prism-oss/internal/service"
 	"github.com/noxaaa/prism-oss/pkg/edition"
 )
 
-func TestOSSControlServerDoesNotRegisterRBACRoutes(t *testing.T) {
+func TestOSSControlServerDoesNotRegisterRBACOrMonitorRoutes(t *testing.T) {
 	signer := auth.HMACInternalTokenSigner{Secret: []byte("test-secret")}
 	server := NewControlServer(ControlServerOptions{
 		TokenVerifier: signer,
@@ -35,6 +36,9 @@ func TestOSSControlServerDoesNotRegisterRBACRoutes(t *testing.T) {
 	for _, path := range []string{
 		"/internal/v1/organizations/current/members",
 		"/internal/v1/organizations/current/roles",
+		"/internal/v1/monitor-groups",
+		"/internal/v1/monitors",
+		"/internal/v1/monitors/monitor_1/registration-token",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Authorization", "Bearer "+token)
@@ -43,6 +47,25 @@ func TestOSSControlServerDoesNotRegisterRBACRoutes(t *testing.T) {
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("expected OSS route %s to be unregistered, got %d body=%s", path, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestOSSControlServerRejectsMonitorAgentConnect(t *testing.T) {
+	server := NewControlServer(ControlServerOptions{
+		ControlService: service.NewControlServiceWithOptions(nil, service.ControlServiceOptions{
+			AgentTokenSigningSecret: []byte("agent-secret"),
+			Edition:                 edition.OSSProvider(),
+		}),
+		Edition: edition.OSSProvider(),
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/agent/v1/connect", nil)
+	request.Header.Set("Authorization", "Bearer monitor-token")
+	request.Header.Set("X-Agent-Type", "MONITOR")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected OSS monitor agent connect to be rejected, got %d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -75,6 +98,8 @@ func TestOSSControlServerBootstrapsWithCoreOnlySchema(t *testing.T) {
 	assertPermission(t, bootstrapResponse.Data.Permissions, string(domain.PermissionNodesManage))
 	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "members.manage")
 	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "roles.manage")
+	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "monitors.read")
+	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "monitors.manage")
 	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "dns.manage")
 	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "health_checks.manage")
 	assertScope(t, bootstrapResponse.Data.ResourceScopes, "NODE_GROUP", "*", "MANAGE")

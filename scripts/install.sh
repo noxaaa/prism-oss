@@ -26,7 +26,7 @@ Options:
   --control-port PORT   Host port for the control-plane API. Defaults to 8080.
   --control-bind-host HOST
                          Host interface for the control-plane API. Defaults to 0.0.0.0.
-  --control-url URL      URL that node and monitor agents use to reach the control plane.
+  --control-url URL      URL that node agents use to reach the control plane.
   -h, --help            Show this help.
 USAGE
 }
@@ -158,16 +158,64 @@ validate_module_path() {
   fi
 }
 
+url_path_escape() {
+  printf '%s' "$1" | sed 's/%/%25/g; s/+/%2B/g; s/&/%26/g; s#/#%2F#g; s/ /%20/g; s/#/%23/g; s/?/%3F/g'
+}
+
+url_path_unescape() {
+  value="$1"
+  decoded=""
+  while [ -n "$value" ]; do
+    case "$value" in
+      *%[0123456789ABCDEFabcdef][0123456789ABCDEFabcdef]*)
+        prefix="${value%%\%[0123456789ABCDEFabcdef][0123456789ABCDEFabcdef]*}"
+        rest="${value#"$prefix"%}"
+        hex="${rest%"${rest#??}"}"
+        char="$(printf "\\$(printf '%03o' "0x$hex")")"
+        decoded="${decoded}${prefix}${char}"
+        value="${rest#??}"
+        ;;
+      *)
+        decoded="${decoded}${value}"
+        value=""
+        ;;
+    esac
+  done
+  printf '%s' "$decoded"
+}
+
 release_download_base() {
-  if [ "$version" = "latest" ]; then
+  release_version="${1:-$version}"
+  if [ "$release_version" = "latest" ]; then
     printf '%s/latest/download' "$release_repo"
   else
-    printf '%s/download/%s' "$release_repo" "$version"
+    escaped_release_version="$(url_path_escape "$release_version")"
+    printf '%s/download/%s' "$release_repo" "$escaped_release_version"
   fi
 }
 
 release_source_url() {
-  printf '%s/prism-oss-source.tar.gz' "$(release_download_base)"
+  source_version="${1:-$version}"
+  printf '%s/prism-oss-source.tar.gz' "$(release_download_base "$source_version")"
+}
+
+resolve_release_version() {
+  if [ "$version" != "latest" ]; then
+    printf '%s' "$version"
+    return
+  fi
+  effective_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$release_repo/latest" 2>/dev/null || true)"
+  case "$effective_url" in
+    */tag/*)
+      tag="${effective_url##*/tag/}"
+      tag="${tag%%[?#]*}"
+      if [ -n "$tag" ]; then
+        url_path_unescape "$tag"
+        return
+      fi
+      ;;
+  esac
+  printf 'latest'
 }
 
 download_public_url() {
@@ -178,7 +226,8 @@ download_public_url() {
 
 download_release_source() {
   output_path="$1"
-  download_public_url "$(release_source_url)" "$output_path"
+  source_version="${2:-$version}"
+  download_public_url "$(release_source_url "$source_version")" "$output_path"
 }
 
 first_path_in_dir() {
@@ -206,14 +255,15 @@ prepare_install_dir() {
 download_release() {
   destination="$1"
   prepare_install_dir "$destination"
+  resolved_version="$(resolve_release_version)"
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/prism-oss-install.XXXXXX")"
   archive_path="$tmp_dir/prism-oss-source.tar.gz"
   extract_dir="$tmp_dir/extract"
   trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
   mkdir -p "$extract_dir"
 
-  echo "Downloading OSS release ${version}"
-  download_release_source "$archive_path"
+  echo "Downloading OSS release ${resolved_version}"
+  download_release_source "$archive_path" "$resolved_version"
   tar -xzf "$archive_path" -C "$extract_dir"
 
   source_root=""
@@ -256,7 +306,7 @@ download_release() {
     "$destination/monitor-agent"
 
   (cd "$source_root" && tar -cf - .) | (cd "$destination" && tar -xf -)
-  printf '%s\n' "$version" > "$destination/.prism-oss-version"
+  printf '%s\n' "$resolved_version" > "$destination/.prism-oss-version"
   rm -rf "$tmp_dir"
   trap - EXIT HUP INT TERM
 }
@@ -449,6 +499,12 @@ set_env_value() {
 }
 
 ensure_public_auth_env() {
+  installed_version="$(cat .prism-oss-version 2>/dev/null || true)"
+  if [ -z "$installed_version" ]; then
+    installed_version="$version"
+  fi
+  set_env_value AGENT_RELEASE_VERSION "$installed_version"
+
   saved_web_port="$(env_value WEB_PORT)"
   if [ -z "$saved_web_port" ]; then
     saved_web_port="$web_port"
@@ -522,6 +578,7 @@ if [ ! -f ".env" ]; then
     printf 'APP_NAME=%s\n' "$app_name"
     printf 'APP_ENV=production\n'
     printf 'PRISM_EDITION=oss\n'
+    printf 'AGENT_RELEASE_VERSION=%s\n' "$version"
     printf 'WEB_PORT=%s\n' "$web_port"
     printf 'CONTROL_PLANE_PORT=%s\n' "$control_port"
     printf 'CONTROL_PLANE_BIND_HOST=%s\n' "$control_bind_host"
@@ -586,7 +643,6 @@ Useful commands:
   docker compose ps
   docker compose logs -f web control-plane
   ./node-agent --help
-  ./monitor-agent --help
   docker compose down
   docker compose down -v --remove-orphans
 EOF

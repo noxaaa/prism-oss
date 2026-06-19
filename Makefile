@@ -19,7 +19,6 @@ build-web:
 
 build-agents:
 	go build -o node-agent ./cmd/node-agent
-	go build -o monitor-agent ./cmd/monitor-agent
 
 migrate:
 	go run ./cmd/migrate -database "$${DATABASE_URL:-./local.db}" up

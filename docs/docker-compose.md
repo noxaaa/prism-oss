@@ -14,6 +14,7 @@ Common settings:
 - `CONTROL_PLANE_BIND_HOST`: host interface for the control-plane API. Default: `0.0.0.0`.
 - `PUBLIC_WEB_URL`: browser URL for the web console. Set this explicitly when automatic address detection does not match the URL you use in the browser.
 - `CONTROL_PLANE_URL`: URL that agents use to reach the control plane. The installer derives this as `http://<PUBLIC_WEB_URL host>:<CONTROL_PLANE_PORT>` unless `--control-url` is provided. For agents on other hosts, this must be a reachable host or DNS name, not localhost. If `CONTROL_PLANE_BIND_HOST` is loopback, the generated URL stays loopback.
+- `AGENT_RELEASE_VERSION`: GitHub Release tag used by copied node install commands. The installer writes the installed tag so remote node-agent binaries match the running control plane.
 - `BETTER_AUTH_URL`: optional auth base URL override. Defaults to `PUBLIC_WEB_URL`.
 - `BETTER_AUTH_TRUSTED_ORIGINS`: comma-separated browser origins accepted by the auth service. The installer includes `PUBLIC_WEB_URL`, `127.0.0.1`, and `localhost` by default.
 - `OSS_SETUP_TOKEN`: one-time first-owner setup token. Keep it private; sign-up is rejected without it until the first owner completes setup.
@@ -32,20 +33,26 @@ docker compose down
 
 Open the setup URL printed by the installer and create the first owner account. The setup URL includes `OSS_SETUP_TOKEN`; sign-up is rejected without that token until the first owner completes setup. After that account exists, this single-user edition disables further sign-ups.
 
-The installer builds `./node-agent` and `./monitor-agent` in the repository root before starting the stack. Those binaries are used by the agent install commands shown in the console.
+The installer builds `./node-agent` in the repository root before starting the stack. The console copy action uses the GitHub Release `install-node-agent.sh` helper so remote nodes can download the matching `node-agent` binary without a preinstalled executable.
 
 ## Upgrade
+
+```sh
+./scripts/upgrade.sh --version latest
+```
+
+The upgrade helper downloads the selected release installer and runs it against the current directory. The installer downloads the selected release archive, replaces source-managed files, repairs generated loopback auth/control URLs when the control-plane port is publicly bound, rebuilds the local node-agent binary, and runs `docker compose up -d --force-recreate --remove-orphans`. The `migrate` service runs core migrations before the control plane starts. Existing secrets, custom trusted origins, custom `.env` values, and Docker volumes are preserved.
+
+You can also run the installer directly when you need to pass the full install options again:
 
 ```sh
 ./scripts/install.sh --version latest
 ```
 
-The installer downloads the selected release archive, replaces source-managed files, repairs generated loopback auth/control URLs when the control-plane port is publicly bound, rebuilds agent binaries, and runs `docker compose up -d --force-recreate --remove-orphans`. The `migrate` service runs core migrations before the control plane starts. Existing secrets, custom trusted origins, custom `.env` values, and Docker volumes are preserved.
-
 For a pinned upgrade, pass an explicit tag:
 
 ```sh
-./scripts/install.sh --version v0.1.3
+./scripts/upgrade.sh --version v0.1.3
 ```
 
 ## Backup

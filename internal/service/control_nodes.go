@@ -116,6 +116,9 @@ func (service *ControlService) DeleteNodeGroup(ctx context.Context, identity Int
 		if err := ensureNoRulesForNodeGroup(ctx, repositories, identity.OrganizationID, nodeGroupID); err != nil {
 			return err
 		}
+		if err := ensureNoNodesForNodeGroup(ctx, repositories, identity.OrganizationID, nodeGroupID); err != nil {
+			return err
+		}
 		deletedAt := service.timestamp()
 		if err := repositories.NodeGroups().DeleteNodeGroup(ctx, identity.OrganizationID, nodeGroupID, deletedAt); err != nil {
 			return err
@@ -123,6 +126,29 @@ func (service *ControlService) DeleteNodeGroup(ctx context.Context, identity Int
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "node_groups.delete", "NODE_GROUP", nodeGroupID, ""))
 	})
 	return mapServiceError(err)
+}
+
+func ensureNoNodesForNodeGroup(ctx context.Context, repositories repo.Repositories, organizationID string, nodeGroupID string) error {
+	nodes, err := repositories.Nodes().ListNodesByOrganization(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		for _, groupID := range node.GroupIDs {
+			if groupID == nodeGroupID {
+				return &controlServiceError{
+					Code:    "NODE_GROUP_IN_USE",
+					Message: "The node group is still assigned to one or more nodes.",
+					Details: map[string]any{
+						"node_group_id": nodeGroupID,
+						"node_id":       node.ID,
+					},
+					Cause: ErrConflict,
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (service *ControlService) ListNodes(ctx context.Context, identity InternalIdentity) ([]NodePayload, error) {

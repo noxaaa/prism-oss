@@ -17,10 +17,24 @@ jobs:
           set -euo pipefail
           assets_dir="$(mktemp -d)"
           cp scripts/install.sh "$assets_dir/install.sh"
+          cp scripts/install-node-agent.sh "$assets_dir/install-node-agent.sh"
+          cp scripts/upgrade.sh "$assets_dir/upgrade.sh"
+          GOOS=linux GOARCH=amd64 go build -o "$assets_dir/node-agent" ./cmd/node-agent
+          tar -C "$assets_dir" -czf "$assets_dir/node-agent-linux-amd64.tar.gz" node-agent
+          rm "$assets_dir/node-agent"
+          GOOS=linux GOARCH=arm64 go build -o "$assets_dir/node-agent" ./cmd/node-agent
+          tar -C "$assets_dir" -czf "$assets_dir/node-agent-linux-arm64.tar.gz" node-agent
+          rm "$assets_dir/node-agent"
           git archive --format=tar.gz --output="$assets_dir/prism-oss-source.tar.gz" HEAD
+          (cd "$assets_dir" && sha256sum install.sh install-node-agent.sh upgrade.sh node-agent-linux-amd64.tar.gz node-agent-linux-arm64.tar.gz prism-oss-source.tar.gz > SHA256SUMS)
           echo "ASSETS_DIR=$assets_dir" >> "$GITHUB_ENV"
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ env.ASSETS_DIR }}/install.sh
+            ${{ env.ASSETS_DIR }}/install-node-agent.sh
+            ${{ env.ASSETS_DIR }}/upgrade.sh
+            ${{ env.ASSETS_DIR }}/node-agent-linux-amd64.tar.gz
+            ${{ env.ASSETS_DIR }}/node-agent-linux-arm64.tar.gz
+            ${{ env.ASSETS_DIR }}/SHA256SUMS
             ${{ env.ASSETS_DIR }}/prism-oss-source.tar.gz

@@ -549,14 +549,27 @@ func validateListenIPs(values []NodeListenIP) ([]NodeListenIP, error) {
 	for _, value := range values {
 		value.ListenIP = strings.TrimSpace(value.ListenIP)
 		value.DisplayName = strings.TrimSpace(value.DisplayName)
-		if value.ListenIP == "" || net.ParseIP(value.ListenIP) == nil || len(value.DisplayName) > 120 {
+		if value.ListenIP == "" {
+			continue
+		}
+		if net.ParseIP(value.ListenIP) == nil || len(value.DisplayName) > 120 {
 			return nil, ErrInvalidRequest
 		}
 		if seen[value.ListenIP] {
 			return nil, ErrInvalidRequest
 		}
+		if value.DisplayName == "" {
+			if value.ListenIP == "0.0.0.0" {
+				value.DisplayName = "default"
+			} else {
+				value.DisplayName = value.ListenIP
+			}
+		}
 		seen[value.ListenIP] = true
 		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		return []NodeListenIP{{ListenIP: "0.0.0.0", DisplayName: "default"}}, nil
 	}
 	return normalized, nil
 }
@@ -566,6 +579,15 @@ func validatePortRanges(values []NodePortRange) ([]NodePortRange, error) {
 	seen := make(map[string]bool)
 	for _, value := range values {
 		value.Protocol = strings.ToUpper(strings.TrimSpace(value.Protocol))
+		if value.Protocol == "" {
+			value.Protocol = "TCP"
+		}
+		if value.StartPort == 0 {
+			value.StartPort = 10000
+		}
+		if value.EndPort == 0 {
+			value.EndPort = 20000
+		}
 		if value.Protocol != "TCP" && value.Protocol != "UDP" {
 			return nil, ErrInvalidRequest
 		}
@@ -578,6 +600,9 @@ func validatePortRanges(values []NodePortRange) ([]NodePortRange, error) {
 		}
 		seen[key] = true
 		normalized = append(normalized, value)
+	}
+	if len(normalized) == 0 {
+		return []NodePortRange{{Protocol: "TCP", StartPort: 10000, EndPort: 20000}}, nil
 	}
 	return normalized, nil
 }

@@ -64,6 +64,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { bytes, controlDelete, controlGet, controlPatch, controlPost, optionLabel, shortDate } from "@/components/console/control-api";
+import { defaultConsoleRegistry } from "@/components/console/edition-registry";
 import { hasAnyPermission } from "@/components/console/permissions";
 import { useI18n } from "@/components/console/i18n";
 import { ResourceMultiSelect, ResourceSelect } from "@/components/console/resource-select";
@@ -109,8 +110,9 @@ import type {
 export function AdminOverviewPage() {
   const { locale, t } = useI18n();
   const { session } = useConsoleSession();
+  const hasMonitorsCapability = defaultConsoleRegistry.capabilities.includes("monitors");
   const canReadNodes = hasAnyPermission(session, ["nodes.read", "nodes.manage"]);
-  const canReadMonitors = hasAnyPermission(session, ["monitors.read", "monitors.manage"]);
+  const canReadMonitors = hasMonitorsCapability && hasAnyPermission(session, ["monitors.read", "monitors.manage"]);
   const canReadRules = hasAnyPermission(session, ["rules.read_all", "rules.manage_all", "rules.manage_own"]);
   const canReadTargets = hasAnyPermission(session, ["targets.read", "targets.manage"]);
   const nodes = useControlList<NodeResource>(canReadNodes ? "/api/control/nodes" : "");
@@ -122,7 +124,7 @@ export function AdminOverviewPage() {
     <PageStack>
       <SummaryGrid>
         <SummaryCard icon={<ServerIcon />} label={t("overview.nodes")} value={nodes.data.length} />
-        <SummaryCard icon={<RadarIcon />} label={t("overview.monitors")} value={monitors.data.length} />
+        {hasMonitorsCapability ? <SummaryCard icon={<RadarIcon />} label={t("overview.monitors")} value={monitors.data.length} /> : null}
         <SummaryCard icon={<RouteIcon />} label={t("overview.rules")} value={rules.data.length} />
         <SummaryCard icon={<TargetIcon />} label={t("overview.targets")} value={targets.data.length} />
       </SummaryGrid>

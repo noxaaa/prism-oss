@@ -30,6 +30,7 @@ type ControlService struct {
 	newID                   func() string
 	appName                 string
 	controlPlaneURL         string
+	agentReleaseVersion     string
 	agentTokenSigningSecret []byte
 	edition                 edition.Provider
 	authorizer              controlAuthorizer
@@ -42,6 +43,7 @@ func NewControlService(store repo.UnitOfWork) *ControlService {
 type ControlServiceOptions struct {
 	AppName                 string
 	ControlPlaneURL         string
+	AgentReleaseVersion     string
 	AgentTokenSigningSecret []byte
 	Edition                 edition.Provider
 }
@@ -57,6 +59,7 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 		newID:                   func() string { return uuid.NewString() },
 		appName:                 options.AppName,
 		controlPlaneURL:         options.ControlPlaneURL,
+		agentReleaseVersion:     options.AgentReleaseVersion,
 		agentTokenSigningSecret: append([]byte(nil), options.AgentTokenSigningSecret...),
 		edition:                 provider,
 		authorizer:              defaultControlAuthorizer(),

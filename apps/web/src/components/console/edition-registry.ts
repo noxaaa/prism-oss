@@ -2,7 +2,6 @@ import {
   ActivityIcon,
   LayoutDashboardIcon,
   NetworkIcon,
-  RadarIcon,
   RouteIcon,
   ServerIcon,
   SettingsIcon,
@@ -16,7 +15,6 @@ export enum Capability {
   Targets = "targets",
   Rules = "rules",
   Nodes = "nodes",
-  Monitors = "monitors",
   BasicMetrics = "basic_metrics",
   SingleUserAuth = "single_user_auth",
 }
@@ -44,13 +42,12 @@ export const overviewItem: ConsoleNavItem = {
   icon: LayoutDashboardIcon,
   key: "overview",
   labelKey: "nav.overview",
-  permissions: ["nodes.read", "nodes.manage", "monitors.read", "monitors.manage", "targets.read", "targets.manage", "rules.read_all", "rules.manage_all", "rules.manage_own"],
+  permissions: ["nodes.read", "nodes.manage", "targets.read", "targets.manage", "rules.read_all", "rules.manage_all", "rules.manage_own"],
 };
 
 export const coreAdminItems: ConsoleNavItem[] = [
   overviewItem,
   { href: "/console/admin/nodes", icon: ServerIcon, key: "nodes", labelKey: "nav.nodes", permissions: ["nodes.read", "nodes.manage"] },
-  { href: "/console/admin/monitors", icon: RadarIcon, key: "monitors", labelKey: "nav.monitors", permissions: ["monitors.read", "monitors.manage"] },
   { href: "/console/admin/targets", icon: TargetIcon, key: "targets", labelKey: "nav.targets", permissions: ["targets.read", "targets.manage"] },
   { href: "/console/admin/rules", icon: RouteIcon, key: "rules", labelKey: "nav.rules", permissions: ["rules.read_all", "rules.manage_all", "rules.manage_own"] },
   { href: "/console/admin/settings", icon: SettingsIcon, key: "settings", labelKey: "nav.settings", permissions: ["organization.read", "organization.update"] },
@@ -66,8 +63,6 @@ export const coreUserItems: ConsoleNavItem[] = [
 export const ossConsoleRegistry: ConsoleRegistry = {
   adminWorkspacePermissions: [
     "audit_logs.read",
-    "monitors.read",
-    "monitors.manage",
     "nodes.read",
     "nodes.manage",
     "organization.update",
@@ -83,7 +78,6 @@ export const ossConsoleRegistry: ConsoleRegistry = {
     Capability.Targets,
     Capability.Rules,
     Capability.Nodes,
-    Capability.Monitors,
     Capability.BasicMetrics,
     Capability.SingleUserAuth,
   ],

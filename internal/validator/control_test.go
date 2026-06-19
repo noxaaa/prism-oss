@@ -138,6 +138,49 @@ func TestValidateTargetGroupRequestAllowsEmptyMembers(t *testing.T) {
 	}
 }
 
+func TestValidateNodeRequestDefaultsListenIPsAndPortRange(t *testing.T) {
+	node, err := ValidateNodeRequest(NodeRequest{
+		Name:     "edge-a",
+		GroupIDs: []string{" node_group_a "},
+	})
+	if err != nil {
+		t.Fatalf("empty listen IPs and port ranges should default: %v", err)
+	}
+	if len(node.ListenIPs) != 1 || node.ListenIPs[0].ListenIP != "0.0.0.0" || node.ListenIPs[0].DisplayName != "default" {
+		t.Fatalf("expected default listen IP 0.0.0.0/default, got %#v", node.ListenIPs)
+	}
+	if len(node.PortRanges) != 1 || node.PortRanges[0].Protocol != "TCP" || node.PortRanges[0].StartPort != 10000 || node.PortRanges[0].EndPort != 20000 {
+		t.Fatalf("expected default TCP 10000-20000 port range, got %#v", node.PortRanges)
+	}
+}
+
+func TestValidateNodeRequestNormalizesMultipleListenIPsAndBlankLabels(t *testing.T) {
+	node, err := ValidateNodeRequest(NodeRequest{
+		Name:     "edge-a",
+		GroupIDs: []string{"node_group_a"},
+		ListenIPs: []NodeListenIP{
+			{ListenIP: " 0.0.0.0 "},
+			{ListenIP: " 192.0.2.10 "},
+		},
+		PortRanges: []NodePortRange{{Protocol: "tcp"}},
+	})
+	if err != nil {
+		t.Fatalf("multiple listen IPs should be valid: %v", err)
+	}
+	if len(node.ListenIPs) != 2 {
+		t.Fatalf("expected two listen IPs, got %#v", node.ListenIPs)
+	}
+	if node.ListenIPs[0].DisplayName != "default" {
+		t.Fatalf("expected wildcard listen IP label default, got %#v", node.ListenIPs[0])
+	}
+	if node.ListenIPs[1].DisplayName != "192.0.2.10" {
+		t.Fatalf("expected blank custom IP label to use IP, got %#v", node.ListenIPs[1])
+	}
+	if len(node.PortRanges) != 1 || node.PortRanges[0].Protocol != "TCP" || node.PortRanges[0].StartPort != 10000 || node.PortRanges[0].EndPort != 20000 {
+		t.Fatalf("expected blank ports to default under normalized protocol, got %#v", node.PortRanges)
+	}
+}
+
 func validRuleRequest(match RuleMatchRequest) RuleRequest {
 	return validRuleRequestWithProtocol("TCP", match)
 }
