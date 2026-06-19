@@ -17,12 +17,7 @@ jobs:
           set -euo pipefail
           assets_dir="$(mktemp -d)"
           cp scripts/install.sh "$assets_dir/install.sh"
-          tar -czf "$assets_dir/prism-oss-source.tar.gz" \
-            --exclude-vcs \
-            --exclude='./node_modules' \
-            --exclude='./apps/web/node_modules' \
-            --exclude='./apps/web/.next' \
-            -C "$GITHUB_WORKSPACE" .
+          git archive --format=tar.gz --output="$assets_dir/prism-oss-source.tar.gz" HEAD
           echo "ASSETS_DIR=$assets_dir" >> "$GITHUB_ENV"
       - uses: softprops/action-gh-release@v2
         with:
