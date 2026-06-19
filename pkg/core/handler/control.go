@@ -29,6 +29,7 @@ type ControlServerOptions struct {
 	AgentTokenSigningSecret []byte
 	AgentStateRegistry      *AgentStateRegistry
 	Edition                 edition.Provider
+	RouteExtensions         []ControlRouteExtension
 }
 
 type ControlServer struct {
@@ -37,6 +38,7 @@ type ControlServer struct {
 	controlService  *service.ControlService
 	agentStates     *AgentStateRegistry
 	edition         edition.Provider
+	routeExtensions []ControlRouteExtension
 	mux             *http.ServeMux
 }
 
@@ -61,6 +63,7 @@ func NewControlServer(options ControlServerOptions) *ControlServer {
 		controlService:  controlService,
 		agentStates:     options.AgentStateRegistry,
 		edition:         provider,
+		routeExtensions: append([]ControlRouteExtension(nil), options.RouteExtensions...),
 		mux:             http.NewServeMux(),
 	}
 	if server.agentStates == nil {
@@ -96,6 +99,9 @@ func (server *ControlServer) routes() {
 	server.mux.HandleFunc("GET /internal/v1/session", server.withWebUser(auth.WebUserTokenPurposeSession, server.handleSession))
 	if server.edition.Has(edition.CapabilityRBAC) {
 		server.routesRBAC()
+	}
+	for _, extension := range server.routeExtensions {
+		extension.RegisterControlRoutes(controlRouteRegistry{server: server})
 	}
 	server.mux.HandleFunc("GET /internal/v1/resource-options/node-groups", server.withInternalIdentity(server.handleNodeGroupOptions))
 	server.mux.HandleFunc("GET /internal/v1/resource-options/node-group-listen-ips", server.withInternalIdentity(server.handleNodeGroupListenIPOptions))

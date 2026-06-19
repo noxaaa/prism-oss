@@ -10,6 +10,10 @@ import (
 )
 
 func (service *ControlService) Bootstrap(ctx context.Context, identity WebUserIdentity, input BootstrapInput) (SessionResult, error) {
+	if service.sessionBackend != nil {
+		result, err := service.sessionBackend.Bootstrap(ctx, identity, input)
+		return result, mapServiceError(err)
+	}
 	var result SessionResult
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		session, err := service.bootstrapSingleUser(ctx, repositories, identity, input)
@@ -23,6 +27,10 @@ func (service *ControlService) Bootstrap(ctx context.Context, identity WebUserId
 }
 
 func (service *ControlService) SessionForWebUser(ctx context.Context, identity WebUserIdentity) (SessionResult, error) {
+	if service.sessionBackend != nil {
+		result, err := service.sessionBackend.SessionForWebUser(ctx, identity)
+		return result, mapServiceError(err)
+	}
 	var result SessionResult
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		session, err := service.sessionForSingleUser(ctx, repositories, identity)
@@ -38,6 +46,10 @@ func (service *ControlService) SessionForWebUser(ctx context.Context, identity W
 func (service *ControlService) SessionForInternalIdentity(ctx context.Context, identity InternalIdentity) (SessionResult, error) {
 	if !service.hasPermission(identity, string(domain.PermissionOrganizationRead)) {
 		return SessionResult{}, ErrForbidden
+	}
+	if service.sessionBackend != nil {
+		result, err := service.sessionBackend.SessionForInternalIdentity(ctx, identity)
+		return result, mapServiceError(err)
 	}
 	var result SessionResult
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {

@@ -33,7 +33,9 @@ type ControlService struct {
 	agentReleaseVersion     string
 	agentTokenSigningSecret []byte
 	edition                 edition.Provider
-	authorizer              controlAuthorizer
+	authorizer              Authorizer
+	sessionBackend          SessionBackend
+	rbacBackend             RBACBackend
 }
 
 func NewControlService(store repo.UnitOfWork) *ControlService {
@@ -46,6 +48,9 @@ type ControlServiceOptions struct {
 	AgentReleaseVersion     string
 	AgentTokenSigningSecret []byte
 	Edition                 edition.Provider
+	Authorizer              Authorizer
+	SessionBackend          SessionBackend
+	RBACBackend             RBACBackend
 }
 
 func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceOptions) *ControlService {
@@ -53,7 +58,7 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 	if provider == nil {
 		provider = defaultControlEdition()
 	}
-	return &ControlService{
+	service := &ControlService{
 		store:                   store,
 		now:                     func() time.Time { return time.Now().UTC() },
 		newID:                   func() string { return uuid.NewString() },
@@ -62,8 +67,14 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 		agentReleaseVersion:     options.AgentReleaseVersion,
 		agentTokenSigningSecret: append([]byte(nil), options.AgentTokenSigningSecret...),
 		edition:                 provider,
-		authorizer:              defaultControlAuthorizer(),
+		authorizer:              options.Authorizer,
+		sessionBackend:          options.SessionBackend,
+		rbacBackend:             options.RBACBackend,
 	}
+	if service.authorizer == nil {
+		service.authorizer = defaultControlAuthorizer()
+	}
+	return service
 }
 
 func (service *ControlService) timestamp() string {

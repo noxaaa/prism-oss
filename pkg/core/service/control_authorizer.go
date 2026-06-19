@@ -7,7 +7,7 @@ import (
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
 
-type controlAuthorizer interface {
+type Authorizer interface {
 	HasPermission(identity InternalIdentity, permission string) bool
 	AllowedNodeGroupIDs(identity InternalIdentity, requestedAccess string) map[string]bool
 	EnsureCanDelegateRoleScopes(ctx context.Context, repositories repo.Repositories, identity InternalIdentity, scopes []repo.ResourceScopeRecord) error

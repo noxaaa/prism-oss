@@ -14,7 +14,7 @@ func defaultControlEdition() edition.Provider {
 	return edition.OSSProvider()
 }
 
-func defaultControlAuthorizer() controlAuthorizer {
+func defaultControlAuthorizer() Authorizer {
 	return singleUserAuthorizer{}
 }
 

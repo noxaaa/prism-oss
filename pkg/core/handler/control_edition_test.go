@@ -69,6 +69,55 @@ func TestOSSControlServerRejectsMonitorAgentConnect(t *testing.T) {
 	}
 }
 
+func TestControlServerRouteExtensionReceivesInternalIdentity(t *testing.T) {
+	signer := auth.HMACInternalTokenSigner{Secret: []byte("test-secret")}
+	server := NewControlServer(ControlServerOptions{
+		TokenVerifier: signer,
+		Edition:       edition.OSSProvider(),
+		RouteExtensions: []ControlRouteExtension{
+			testControlRouteExtension{register: func(registry ControlRouteRegistry) {
+				registry.HandleInternal("GET /internal/v1/extension-test", func(response http.ResponseWriter, request *http.Request, identity service.InternalIdentity) {
+					WriteServiceResponse(response, http.StatusOK, map[string]any{
+						"user_id":      identity.UserID,
+						"has_service":  registry.ControlService() != nil,
+						"edition_key":  string(registry.Edition().Key()),
+						"resource_len": len(identity.ResourceScopes),
+					}, nil)
+				})
+			}},
+		},
+	})
+	token := signInternalToken(t, signer, auth.InternalClaims{
+		UserID:         "user_extension",
+		OrganizationID: "org_extension",
+		MemberID:       "member_extension",
+		Roles:          []string{"owner"},
+		Permissions:    []string{string(domain.PermissionOrganizationRead)},
+		ResourceScopes: []auth.ResourceScopeClaim{{ResourceType: "NODE_GROUP", ResourceID: "*", AccessLevel: "MANAGE"}},
+		ExpiresAt:      time.Now().Add(time.Minute),
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/internal/v1/extension-test", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected extension route 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Data struct {
+			UserID      string `json:"user_id"`
+			HasService  bool   `json:"has_service"`
+			EditionKey  string `json:"edition_key"`
+			ResourceLen int    `json:"resource_len"`
+		} `json:"data"`
+	}
+	decodeJSON(t, response, &payload)
+	if payload.Data.UserID != "user_extension" || payload.Data.EditionKey != string(edition.KeyOSS) || payload.Data.ResourceLen != 1 {
+		t.Fatalf("unexpected extension payload: %#v", payload.Data)
+	}
+}
+
 func TestOSSControlServerBootstrapsWithCoreOnlySchema(t *testing.T) {
 	db, store := openMigratedOSSControlTestStore(t)
 	defer closeTestDB(db)
@@ -147,6 +196,14 @@ func TestOSSControlServerBootstrapsWithCoreOnlySchema(t *testing.T) {
 		t.Fatalf("expected second OSS user bootstrap to be forbidden, got %d body=%s", otherBootstrap.Code, otherBootstrap.Body.String())
 	}
 	assertOSSErrorCode(t, otherBootstrap, "OSS_OWNER_REQUIRED")
+}
+
+type testControlRouteExtension struct {
+	register func(ControlRouteRegistry)
+}
+
+func (extension testControlRouteExtension) RegisterControlRoutes(registry ControlRouteRegistry) {
+	extension.register(registry)
 }
 
 func openMigratedOSSControlTestStore(t *testing.T) (*sql.DB, *repo.SQLiteStore) {
