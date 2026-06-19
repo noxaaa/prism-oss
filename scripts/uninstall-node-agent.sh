@@ -1,33 +1,29 @@
 #!/usr/bin/env sh
 set -eu
 
-version="latest"
-control_url=""
-registration_token=""
-credential_file="/var/lib/prism-node-agent/agent-credential.json"
 service_name="prism-node-agent"
 install_dir="/opt/prism-node-agent"
 config_file="/etc/prism-node-agent/agent.env"
-app_name="${APP_NAME:-OSS Control Console}"
+purge=""
+local_binary=""
 repo="https://github.com/noxaaa/prism-oss"
+version="latest"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --version) version="${2:-}"; shift 2 ;;
-    --control-url) control_url="${2:-}"; shift 2 ;;
-    --registration-token) registration_token="${2:-}"; shift 2 ;;
-    --credential-file) credential_file="${2:-}"; shift 2 ;;
     --service-name) service_name="${2:-}"; shift 2 ;;
     --install-dir) install_dir="${2:-}"; shift 2 ;;
     --config-file) config_file="${2:-}"; shift 2 ;;
-    --app-name) app_name="${2:-}"; shift 2 ;;
+    --purge) purge="--purge"; shift ;;
+    --node-agent) local_binary="${2:-}"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
-if [ -z "$control_url" ] || [ -z "$registration_token" ]; then
-  echo "--control-url and --registration-token are required" >&2
-  exit 2
+if [ -n "$local_binary" ]; then
+  "$local_binary" uninstall --service-name "$service_name" --install-dir "$install_dir" --config-file "$config_file" $purge
+  exit 0
 fi
 
 url_path_escape() {
@@ -68,12 +64,4 @@ curl -fsSL "${base}/${asset}" -o "$tmp_dir/${asset}"
 )
 
 tar -xzf "$tmp_dir/${asset}" -C "$tmp_dir"
-
-"$tmp_dir/node-agent" install \
-  --app-name "$app_name" \
-  --control-url "$control_url" \
-  --registration-token "$registration_token" \
-  --credential-file "$credential_file" \
-  --service-name "$service_name" \
-  --install-dir "$install_dir" \
-  --config-file "$config_file"
+"$tmp_dir/node-agent" uninstall --service-name "$service_name" --install-dir "$install_dir" --config-file "$config_file" $purge

@@ -6,35 +6,88 @@ on:
 
 permissions:
   contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/noxaaa
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push runtime images
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          commit="${GITHUB_SHA}"
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            -f apps/web/Dockerfile \
+            -t "${REGISTRY}/prism-oss-web:${version}" \
+            -t "${REGISTRY}/prism-oss-web:latest" \
+            .
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            -f Dockerfile.control-plane \
+            --build-arg VERSION="${version}" \
+            --build-arg COMMIT="${commit}" \
+            --build-arg BUILD_TIME="${build_time}" \
+            -t "${REGISTRY}/prism-oss-control-plane:${version}" \
+            -t "${REGISTRY}/prism-oss-control-plane:latest" \
+            .
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            -f Dockerfile.migrate \
+            --build-arg VERSION="${version}" \
+            --build-arg COMMIT="${commit}" \
+            --build-arg BUILD_TIME="${build_time}" \
+            -t "${REGISTRY}/prism-oss-migrate:${version}" \
+            -t "${REGISTRY}/prism-oss-migrate:latest" \
+            .
+
       - name: Prepare release assets
         run: |
           set -euo pipefail
           assets_dir="$(mktemp -d)"
+          version="${GITHUB_REF_NAME}"
+          commit="${GITHUB_SHA}"
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ldflags="-X github.com/noxaaa/prism-oss/pkg/core/buildinfo.Version=${version} -X github.com/noxaaa/prism-oss/pkg/core/buildinfo.Commit=${commit} -X github.com/noxaaa/prism-oss/pkg/core/buildinfo.BuildTime=${build_time}"
           cp scripts/install.sh "$assets_dir/install.sh"
           cp scripts/install-node-agent.sh "$assets_dir/install-node-agent.sh"
+          cp scripts/uninstall-node-agent.sh "$assets_dir/uninstall-node-agent.sh"
           cp scripts/upgrade.sh "$assets_dir/upgrade.sh"
-          GOOS=linux GOARCH=amd64 go build -o "$assets_dir/node-agent" ./cmd/node-agent
-          tar -C "$assets_dir" -czf "$assets_dir/node-agent-linux-amd64.tar.gz" node-agent
-          rm "$assets_dir/node-agent"
-          GOOS=linux GOARCH=arm64 go build -o "$assets_dir/node-agent" ./cmd/node-agent
-          tar -C "$assets_dir" -czf "$assets_dir/node-agent-linux-arm64.tar.gz" node-agent
-          rm "$assets_dir/node-agent"
-          git archive --format=tar.gz --output="$assets_dir/prism-oss-source.tar.gz" HEAD
-          (cd "$assets_dir" && sha256sum install.sh install-node-agent.sh upgrade.sh node-agent-linux-amd64.tar.gz node-agent-linux-arm64.tar.gz prism-oss-source.tar.gz > SHA256SUMS)
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" go build -ldflags "$ldflags" -o "$assets_dir/node-agent" ./cmd/node-agent
+            tar -C "$assets_dir" -czf "$assets_dir/node-agent-linux-${arch}.tar.gz" node-agent
+            rm "$assets_dir/node-agent"
+            GOOS=linux GOARCH="$arch" go build -ldflags "$ldflags" -o "$assets_dir/control-plane-oss-linux-${arch}" ./cmd/control-plane-oss
+            GOOS=linux GOARCH="$arch" go build -ldflags "$ldflags" -o "$assets_dir/migrate" ./cmd/migrate
+            tar -czf "$assets_dir/migrate-linux-${arch}.tar.gz" -C "$assets_dir" migrate -C "$GITHUB_WORKSPACE" migrations/core
+            rm "$assets_dir/migrate"
+          done
+          (cd "$assets_dir" && sha256sum * > SHA256SUMS)
           echo "ASSETS_DIR=$assets_dir" >> "$GITHUB_ENV"
+
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ env.ASSETS_DIR }}/install.sh
-            ${{ env.ASSETS_DIR }}/install-node-agent.sh
             ${{ env.ASSETS_DIR }}/upgrade.sh
+            ${{ env.ASSETS_DIR }}/install-node-agent.sh
+            ${{ env.ASSETS_DIR }}/uninstall-node-agent.sh
             ${{ env.ASSETS_DIR }}/node-agent-linux-amd64.tar.gz
             ${{ env.ASSETS_DIR }}/node-agent-linux-arm64.tar.gz
+            ${{ env.ASSETS_DIR }}/control-plane-oss-linux-amd64
+            ${{ env.ASSETS_DIR }}/control-plane-oss-linux-arm64
+            ${{ env.ASSETS_DIR }}/migrate-linux-amd64.tar.gz
+            ${{ env.ASSETS_DIR }}/migrate-linux-arm64.tar.gz
             ${{ env.ASSETS_DIR }}/SHA256SUMS
-            ${{ env.ASSETS_DIR }}/prism-oss-source.tar.gz

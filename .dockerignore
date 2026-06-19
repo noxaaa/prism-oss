@@ -1,0 +1,13 @@
+.cache/
+.git/
+.github/
+.gocache/
+.next/
+.env
+node_modules/
+apps/web/.next/
+apps/web/node_modules/
+coverage/
+*.db
+*.db-shm
+*.db-wal

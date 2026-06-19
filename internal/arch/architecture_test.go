@@ -57,7 +57,7 @@ func TestSourceFilesStayBelowLineLimit(t *testing.T) {
 
 func TestDatabaseAccessIsLimitedToRepositoryAndMigrate(t *testing.T) {
 	forEachGoFile(t, func(path string, content string) {
-		if strings.Contains(path, "/internal/repo/") || strings.Contains(path, "/cmd/migrate/") {
+		if strings.Contains(path, "/pkg/core/repo/") || strings.Contains(path, "/cmd/migrate/") {
 			return
 		}
 		forbidden := []string{"database/sql", "sql.DB", "sql.Tx", "SELECT ", "INSERT ", "UPDATE ", "DELETE FROM "}
@@ -71,13 +71,13 @@ func TestDatabaseAccessIsLimitedToRepositoryAndMigrate(t *testing.T) {
 
 func TestServicesDoNotImportTransportOrValidatorLayers(t *testing.T) {
 	forEachGoFile(t, func(path string, content string) {
-		if !strings.Contains(path, "/internal/service/") {
+		if !strings.Contains(path, "/pkg/core/service/") {
 			return
 		}
 		forbidden := []string{
 			"\"net/http\"",
-			"github.com/noxaaa/prism-oss/internal/handler",
-			"github.com/noxaaa/prism-oss/internal/validator",
+			"github.com/noxaaa/prism-oss/pkg/core/handler",
+			"github.com/noxaaa/prism-oss/pkg/core/validator",
 		}
 		for _, token := range forbidden {
 			if strings.Contains(content, token) {
@@ -91,14 +91,14 @@ func TestAgentsDoNotImportControlPlaneOrInfrastructureAdapters(t *testing.T) {
 	forEachGoFile(t, func(path string, content string) {
 		if !strings.Contains(path, "/cmd/node-agent/") &&
 			!strings.Contains(path, "/cmd/monitor-agent/") &&
-			!strings.Contains(path, "/internal/agent/") {
+			!strings.Contains(path, "/pkg/core/agent/") {
 			return
 		}
 		forbidden := []string{
-			"github.com/noxaaa/prism-oss/internal/config",
+			"github.com/noxaaa/prism-oss/pkg/core/config",
 			"github.com/noxaaa/prism-oss/internal/dns",
-			"github.com/noxaaa/prism-oss/internal/cache",
-			"github.com/noxaaa/prism-oss/internal/queue",
+			"github.com/noxaaa/prism-oss/pkg/core/cache",
+			"github.com/noxaaa/prism-oss/pkg/core/queue",
 			"github.com/hibiken/asynq",
 			"github.com/redis/",
 			"DATABASE_DRIVER",

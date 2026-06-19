@@ -4,16 +4,21 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 type Key string
 
 const (
-	KeyOSS  Key = "oss"
-	KeyFull Key = "full"
+	KeyOSS Key = "oss"
 )
 
 var ErrUnsupportedEdition = errors.New("unsupported edition")
+
+var (
+	providersMu sync.RWMutex
+	providers   = map[Key]Provider{}
+)
 
 type Capability string
 
@@ -59,48 +64,53 @@ func OSSProvider() Provider {
 	}
 }
 
-func FullProvider() Provider {
-	return staticProvider{
-		key: KeyFull,
-		capabilities: []Capability{
-			CapabilityCoreForwarding,
-			CapabilityTargets,
-			CapabilityRules,
-			CapabilityNodes,
-			CapabilityMonitors,
-			CapabilityBasicMetrics,
-			CapabilitySingleUserAuth,
-			CapabilityRBAC,
-			CapabilityMultiUser,
-			CapabilityCommercialHealth,
-			CapabilityDNS,
-		},
-		migrationDirs: []string{"migrations/core", "migrations/commercial"},
+func RegisterProvider(provider Provider) error {
+	if provider == nil {
+		return errors.New("edition provider is required")
+	}
+	key := provider.Key()
+	if key == "" {
+		return errors.New("edition provider key is required")
+	}
+
+	providersMu.Lock()
+	defer providersMu.Unlock()
+	if _, exists := providers[key]; exists {
+		return fmt.Errorf("edition provider %q is already registered", key)
+	}
+	providers[key] = provider
+	return nil
+}
+
+func MustRegisterProvider(provider Provider) {
+	if err := RegisterProvider(provider); err != nil {
+		panic(err)
 	}
 }
 
 func ProviderForKey(key Key) (Provider, error) {
-	switch key {
-	case KeyOSS:
-		return OSSProvider(), nil
-	case KeyFull:
-		return FullProvider(), nil
-	default:
-		return nil, fmt.Errorf("%w %q", ErrUnsupportedEdition, key)
+	if key == "" {
+		key = defaultKey()
 	}
+
+	providersMu.RLock()
+	provider, ok := providers[key]
+	providersMu.RUnlock()
+	if ok {
+		return provider, nil
+	}
+	return nil, fmt.Errorf("%w %q", ErrUnsupportedEdition, key)
 }
 
 func KeyFromString(value string) (Key, error) {
-	switch strings.TrimSpace(value) {
-	case "":
+	key := Key(strings.TrimSpace(value))
+	if key == "" {
 		return defaultKey(), nil
-	case string(KeyOSS):
-		return KeyOSS, nil
-	case string(KeyFull):
-		return KeyFull, nil
-	default:
-		return "", fmt.Errorf("%w %q", ErrUnsupportedEdition, value)
 	}
+	if _, err := ProviderForKey(key); err != nil {
+		return "", err
+	}
+	return key, nil
 }
 
 func (provider staticProvider) Key() Key {

@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/noxaaa/prism-oss/internal/auth"
-	"github.com/noxaaa/prism-oss/internal/config"
-	"github.com/noxaaa/prism-oss/internal/handler"
-	"github.com/noxaaa/prism-oss/internal/repo"
+	"github.com/noxaaa/prism-oss/pkg/core/auth"
+	"github.com/noxaaa/prism-oss/pkg/core/config"
+	"github.com/noxaaa/prism-oss/pkg/core/handler"
+	"github.com/noxaaa/prism-oss/pkg/core/repo"
 	"github.com/noxaaa/prism-oss/pkg/edition"
 )
 
@@ -63,7 +63,7 @@ func ossControlPlaneEdition() (edition.Provider, error) {
 	if key != edition.KeyOSS {
 		return nil, fmt.Errorf("cmd/control-plane-oss requires PRISM_EDITION=oss or unset; use the regular build target for PRISM_EDITION=full")
 	}
-	return edition.OSSProvider(), nil
+	return edition.ProviderForKey(key)
 }
 
 func envOrDefault(key string, fallback string) string {

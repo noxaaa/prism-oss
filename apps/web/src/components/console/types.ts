@@ -99,6 +99,15 @@ export type NodeResource = {
   config_status_updated_at?: string;
   last_seen_at?: string;
   registered_at?: string;
+  agent_version: string;
+  agent_commit: string;
+  agent_build_time: string;
+  agent_auto_update_enabled: boolean;
+  desired_agent_version: string;
+  agent_update_status: string;
+  agent_update_error?: string;
+  agent_update_started_at?: string;
+  agent_update_finished_at?: string;
   group_ids: string[];
   listen_ips: NodeListenIP[];
   port_ranges: NodePortRange[];

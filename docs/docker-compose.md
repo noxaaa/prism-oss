@@ -1,10 +1,10 @@
 # Docker Compose
 
-This guide covers the Docker Compose installation created by `scripts/install.sh`.
+This guide covers the Docker Compose installation created by `scripts/install.sh`. Release installs use prebuilt GHCR images and release binaries; they do not compile Go or npm assets on the target host.
 
 ## Configuration
 
-The installer writes a local `.env` file on first run. Keep this file private because it contains authentication and agent secrets. On later runs, the installer preserves secrets and custom values, but it may repair old loopback auth URLs so the console works when opened through a server IP or DNS name.
+The installer writes a local `.env` file on first run. Keep this file private because it contains authentication and agent secrets. On later runs, the upgrade helper preserves secrets and custom values while updating the image tag used by Compose.
 
 Common settings:
 
@@ -15,6 +15,8 @@ Common settings:
 - `PUBLIC_WEB_URL`: browser URL for the web console. Set this explicitly when automatic address detection does not match the URL you use in the browser.
 - `CONTROL_PLANE_URL`: URL that agents use to reach the control plane. The installer derives this as `http://<PUBLIC_WEB_URL host>:<CONTROL_PLANE_PORT>` unless `--control-url` is provided. For agents on other hosts, this must be a reachable host or DNS name, not localhost. If `CONTROL_PLANE_BIND_HOST` is loopback, the generated URL stays loopback.
 - `AGENT_RELEASE_VERSION`: GitHub Release tag used by copied node install commands. The installer writes the installed tag so remote node-agent binaries match the running control plane.
+- `PRISM_IMAGE_REGISTRY`: image registry namespace. Default: `ghcr.io/noxaaa`.
+- `PRISM_IMAGE_TAG`: image tag used for `prism-oss-web`, `prism-oss-control-plane`, and `prism-oss-migrate`.
 - `BETTER_AUTH_URL`: optional auth base URL override. Defaults to `PUBLIC_WEB_URL`.
 - `BETTER_AUTH_TRUSTED_ORIGINS`: comma-separated browser origins accepted by the auth service. The installer includes `PUBLIC_WEB_URL`, `127.0.0.1`, and `localhost` by default.
 - `OSS_SETUP_TOKEN`: one-time first-owner setup token. Keep it private; sign-up is rejected without it until the first owner completes setup.
@@ -33,15 +35,15 @@ docker compose down
 
 Open the setup URL printed by the installer and create the first owner account. The setup URL includes `OSS_SETUP_TOKEN`; sign-up is rejected without that token until the first owner completes setup. After that account exists, this single-user edition disables further sign-ups.
 
-The installer builds `./node-agent` in the repository root before starting the stack. The console copy action uses the GitHub Release `install-node-agent.sh` helper so remote nodes can download the matching `node-agent` binary without a preinstalled executable.
+The console copy action uses the GitHub Release `install-node-agent.sh` helper so remote nodes download, verify, install, and run the matching `node-agent` binary as a systemd service.
 
 ## Upgrade
 
 ```sh
-./scripts/upgrade.sh --version latest
+./upgrade.sh --version latest
 ```
 
-The upgrade helper downloads the selected release installer and runs it against the current directory. The installer downloads the selected release archive, replaces source-managed files, repairs generated loopback auth/control URLs when the control-plane port is publicly bound, rebuilds the local node-agent binary, and runs `docker compose up -d --force-recreate --remove-orphans`. The `migrate` service runs core migrations before the control plane starts. Existing secrets, custom trusted origins, custom `.env` values, and Docker volumes are preserved.
+The upgrade helper updates `PRISM_IMAGE_TAG` and `AGENT_RELEASE_VERSION`, pulls the selected release images, runs the `migrate` image, and restarts the Compose services. Existing secrets, custom trusted origins, custom `.env` values, and Docker volumes are preserved.
 
 You can also run the installer directly when you need to pass the full install options again:
 
@@ -52,7 +54,7 @@ You can also run the installer directly when you need to pass the full install o
 For a pinned upgrade, pass an explicit tag:
 
 ```sh
-./scripts/upgrade.sh --version v0.1.3
+./upgrade.sh --version v0.1.3
 ```
 
 ## Backup
@@ -61,7 +63,8 @@ The SQLite database lives in the `sqlite-data` Docker volume. To copy it out:
 
 ```sh
 docker compose stop web control-plane
-docker compose run --rm -v "$PWD:/backup" migrate sh -lc 'cp /data/oss.db /backup/oss.db.backup && for suffix in -wal -shm; do if [ -f "/data/oss.db${suffix}" ]; then cp "/data/oss.db${suffix}" "/backup/oss.db.backup${suffix}"; fi; done'
+docker compose cp control-plane:/data/oss.db ./oss.db.backup
+for suffix in '-wal' '-shm'; do docker compose cp "control-plane:/data/oss.db${suffix}" "./oss.db.backup${suffix}" || true; done
 docker compose up -d
 ```
 

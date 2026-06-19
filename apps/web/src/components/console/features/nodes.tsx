@@ -4,28 +4,19 @@ import {
   ActivityIcon,
   CopyIcon,
   DownloadIcon,
-  FileJsonIcon,
   MoreHorizontalIcon,
   NetworkIcon,
   PencilIcon,
   PlusIcon,
-  RadarIcon,
   RefreshCwIcon,
-  RouteIcon,
   ServerIcon,
-  ShieldIcon,
-  TargetIcon,
   Trash2Icon,
-  UploadIcon,
-  UsersIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -37,22 +28,11 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldSet, FieldLegend } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import {
   Sheet,
@@ -61,21 +41,18 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { bytes, controlDelete, controlGet, controlPatch, controlPost, optionLabel, shortDate } from "@/components/console/control-api";
+import { bytes, controlDelete, controlPatch, controlPost, shortDate } from "@/components/console/control-api";
 import { localizeControlError, localizeEnum, useI18n } from "@/components/console/i18n";
 import { hasPermission } from "@/components/console/permissions";
-import { ResourceMultiSelect, ResourceSelect } from "@/components/console/resource-select";
+import { ResourceMultiSelect } from "@/components/console/resource-select";
 import { useConsoleSession } from "@/components/console/shell";
 import {
-  ControlledTextField,
   DataState,
   EnumSelect,
   PageStack,
-  ResourceTable,
   StatusBadge,
   SummaryCard,
   SummaryGrid,
@@ -83,29 +60,15 @@ import {
   TextField,
   copyText,
   duration,
-  ensureFirstValue,
   groupName,
-  monitorGroupName,
   percent,
   useControlList,
 } from "@/components/console/shared";
-import { cn } from "@/lib/utils";
 import type {
   AgentMetrics,
-  Member,
-  Monitor,
-  MonitorGroup,
   NodeGroup,
   NodeResource,
   RegistrationToken,
-  ResourceOption,
-  Role,
-  Rule,
-  RuleExportPayload,
-  RuleImportResult,
-  RuleTraffic,
-  Target,
-  TargetGroup,
 } from "@/components/console/types";
 
 const protocolOptions = [
@@ -137,6 +100,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
   const [editingNode, setEditingNode] = useState<NodeResource | null>(null);
   const [deletingNode, setDeletingNode] = useState<NodeResource | null>(null);
   const [installCommandFallback, setInstallCommandFallback] = useState<{ nodeName: string; command: string } | null>(null);
+  const [agentActionNodeID, setAgentActionNodeID] = useState<string | null>(null);
 
   async function refreshAll() {
     await Promise.all([nodeGroups.refresh(), nodes.refresh()]);
@@ -158,6 +122,32 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
       }
     } catch (error) {
       toast.error(localizeControlError(error, locale));
+    }
+  }
+
+  async function updateAgentAutoUpdate(node: NodeResource, enabled: boolean) {
+    setAgentActionNodeID(node.id);
+    try {
+      await controlPatch<NodeResource>(`/api/control/nodes/${node.id}/agent-update-policy`, { enabled });
+      toast.success(enabled ? t("nodes.agentAutoUpdateEnabled") : t("nodes.agentAutoUpdateDisabled"));
+      await nodes.refresh();
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    } finally {
+      setAgentActionNodeID(null);
+    }
+  }
+
+  async function requestAgentUpgrade(node: NodeResource) {
+    setAgentActionNodeID(node.id);
+    try {
+      await controlPost<NodeResource>(`/api/control/nodes/${node.id}/agent-upgrade`, {});
+      toast.success(t("nodes.agentUpgradeQueued"));
+      await nodes.refresh();
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    } finally {
+      setAgentActionNodeID(null);
     }
   }
 
@@ -261,6 +251,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                 <TableRow>
                   <TableHead>{t("field.name")}</TableHead>
                   <TableHead>{t("overview.status")}</TableHead>
+                  <TableHead>{t("nodes.agent")}</TableHead>
                   <TableHead>{t("nodes.groups")}</TableHead>
                   <TableHead>{t("nodes.listenIPs")}</TableHead>
                   <TableHead>{t("nodes.ports")}</TableHead>
@@ -278,6 +269,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                       </div>
                     </TableCell>
                     <TableCell><StatusBadge value={node.status} /></TableCell>
+                    <TableCell><NodeAgentSummary node={node} /></TableCell>
                     <TableCell>{node.group_ids.map((id) => groupName(nodeGroups.data, id)).join(", ")}</TableCell>
                     <TableCell>{node.listen_ips.map((item) => item.listen_ip).join(", ")}</TableCell>
                     <TableCell>{node.port_ranges.map((range) => `${localizeEnum(range.protocol, locale)} ${range.start_port}-${range.end_port}`).join(", ")}</TableCell>
@@ -285,6 +277,12 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                     {canManage ? (
                       <TableCell>
                         <div className="flex flex-wrap gap-2">
+                          <NodeAgentUpdateControls
+                            actionNodeID={agentActionNodeID}
+                            node={node}
+                            onToggleAutoUpdate={updateAgentAutoUpdate}
+                            onUpgrade={requestAgentUpgrade}
+                          />
                           <Button onClick={() => copyInstallCommand(node)} size="sm" type="button" variant="outline">
                             <CopyIcon data-icon="inline-start" />
                             {t("nodes.copyInstallCommand")}
@@ -319,6 +317,73 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
 
       {canReadMetrics ? <NodeMetricsPanel nodes={nodes.data} /> : null}
     </PageStack>
+  );
+}
+
+function NodeAgentSummary({ node }: { node: NodeResource }) {
+  const { locale, t } = useI18n();
+  const targetVersion = node.desired_agent_version || t("common.unknown");
+  return (
+    <div className="flex min-w-44 flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-xs">{node.agent_version || t("common.unknown")}</span>
+        <StatusBadge value={node.agent_update_status || "IDLE"} />
+      </div>
+      <span className="text-xs text-muted-foreground">{t("nodes.agentTargetVersion", { version: targetVersion })}</span>
+      {node.agent_build_time ? <span className="text-xs text-muted-foreground">{shortDate(node.agent_build_time, locale)}</span> : null}
+      {node.agent_update_error ? <span className="max-w-56 text-xs text-destructive">{node.agent_update_error}</span> : null}
+    </div>
+  );
+}
+
+function NodeAgentDetails({ node }: { node: NodeResource }) {
+  const { t } = useI18n();
+  return (
+    <div className="grid gap-3 rounded-md border p-3 text-sm md:grid-cols-2">
+      <div>
+        <div className="text-xs text-muted-foreground">{t("nodes.currentAgentVersion")}</div>
+        <div className="font-mono">{node.agent_version || t("common.unknown")}</div>
+      </div>
+      <div>
+        <div className="text-xs text-muted-foreground">{t("nodes.targetAgentVersion")}</div>
+        <div className="font-mono">{node.desired_agent_version || t("common.unknown")}</div>
+      </div>
+      <div>
+        <div className="text-xs text-muted-foreground">{t("nodes.agentAutoUpdate")}</div>
+        <div>{node.agent_auto_update_enabled ? t("common.enabled") : t("common.disabled")}</div>
+      </div>
+      <div>
+        <div className="text-xs text-muted-foreground">{t("nodes.agentUpdateStatus")}</div>
+        <StatusBadge value={node.agent_update_status || "IDLE"} />
+      </div>
+    </div>
+  );
+}
+
+function NodeAgentUpdateControls({
+  actionNodeID,
+  node,
+  onToggleAutoUpdate,
+  onUpgrade,
+}: {
+  actionNodeID: string | null;
+  node: NodeResource;
+  onToggleAutoUpdate: (node: NodeResource, enabled: boolean) => Promise<void>;
+  onUpgrade: (node: NodeResource) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const busy = actionNodeID === node.id;
+  return (
+    <div className="flex min-w-40 flex-col gap-2">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Switch aria-label={t("nodes.agentAutoUpdate")} checked={node.agent_auto_update_enabled} disabled={busy} onCheckedChange={(checked) => onToggleAutoUpdate(node, checked === true)} />
+        <span>{t("nodes.agentAutoUpdate")}</span>
+      </div>
+      <Button disabled={busy} onClick={() => onUpgrade(node)} size="sm" type="button" variant="outline">
+        <DownloadIcon data-icon="inline-start" />
+        {t("nodes.upgradeAgent")}
+      </Button>
+    </div>
   );
 }
 
@@ -381,7 +446,13 @@ function NodeEditDrawer({ groups, node, onOpenChange, onUpdated }: { groups: Nod
           <SheetDescription>{t("nodes.editNodeDescription")}</SheetDescription>
         </SheetHeader>
         <div className="px-4 pb-4">
-          {node ? <NodeMutationForm groups={groups} node={node} onSaved={handleUpdated} /> : null}
+          {node ? (
+            <div className="flex flex-col gap-5">
+              <NodeAgentDetails node={node} />
+              <Separator />
+              <NodeMutationForm groups={groups} node={node} onSaved={handleUpdated} />
+            </div>
+          ) : null}
         </div>
       </SheetContent>
     </Sheet>
@@ -671,6 +742,7 @@ function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
               <TableRow>
                 <TableHead>{t("overview.node")}</TableHead>
                 <TableHead>{t("overview.status")}</TableHead>
+                <TableHead>{t("nodes.agent")}</TableHead>
                 <TableHead>TCP</TableHead>
                 <TableHead>UDP/s</TableHead>
                 <TableHead>{t("nodes.bandwidth")}</TableHead>
@@ -696,6 +768,7 @@ function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
                       </div>
                     </TableCell>
                     <TableCell><StatusBadge value={metrics.status ?? node.status} /></TableCell>
+                    <TableCell><NodeAgentSummary node={node} /></TableCell>
                     <TableCell>{metrics.tcp_connections ?? 0}</TableCell>
                     <TableCell>{metrics.udp_packets_per_second ?? 0}</TableCell>
                     <TableCell>{metrics.bandwidth_bps ?? 0} bps</TableCell>
