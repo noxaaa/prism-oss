@@ -281,12 +281,17 @@ export function AuthScreen({ appName, registrationClosed }: { appName: string; r
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [errorDescription, setErrorDescription] = useState("");
+  const [setupToken, setSetupToken] = useState("");
 
   useEffect(() => {
     if (registrationClosed && mode === "sign-up") {
       setMode("sign-in");
     }
   }, [mode, registrationClosed]);
+
+  useEffect(() => {
+    setSetupToken(new URLSearchParams(window.location.search).get("setup_token") ?? "");
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -296,7 +301,10 @@ export function AuthScreen({ appName, registrationClosed }: { appName: string; r
     const form = new FormData(event.currentTarget);
     const response = await fetch(`/api/auth/${mode}/email`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(mode === "sign-up" && setupToken ? { "x-oss-setup-token": setupToken } : {}),
+      },
       body: JSON.stringify({
         email: form.get("email"),
         password: form.get("password"),

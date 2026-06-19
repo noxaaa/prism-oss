@@ -16,6 +16,7 @@ Common settings:
 - `CONTROL_PLANE_URL`: URL that agents use to reach the control plane. The installer derives this as `http://<PUBLIC_WEB_URL host>:<CONTROL_PLANE_PORT>` unless `--control-url` is provided. For agents on other hosts, this must be a reachable host or DNS name, not localhost. If `CONTROL_PLANE_BIND_HOST` is loopback, the generated URL stays loopback.
 - `BETTER_AUTH_URL`: optional auth base URL override. Defaults to `PUBLIC_WEB_URL`.
 - `BETTER_AUTH_TRUSTED_ORIGINS`: comma-separated browser origins accepted by the auth service. The installer includes `PUBLIC_WEB_URL`, `127.0.0.1`, and `localhost` by default.
+- `OSS_SETUP_TOKEN`: one-time first-owner setup token. Keep it private; sign-up is rejected without it until the first owner completes setup.
 - `PRISM_OSS_DATABASE_URL`: SQLite database path inside the containers. Default: `/data/oss.db`.
 
 Do not edit generated secrets after the first start unless you are intentionally rotating credentials.
@@ -29,7 +30,7 @@ docker compose logs -f web control-plane
 docker compose down
 ```
 
-Open the web console at the `PUBLIC_WEB_URL` value and create the first owner account. After that account exists, this single-user edition disables further sign-ups.
+Open the setup URL printed by the installer and create the first owner account. The setup URL includes `OSS_SETUP_TOKEN`; sign-up is rejected without that token until the first owner completes setup. After that account exists, this single-user edition disables further sign-ups.
 
 The installer builds `./node-agent` and `./monitor-agent` in the repository root before starting the stack. Those binaries are used by the agent install commands shown in the console.
 

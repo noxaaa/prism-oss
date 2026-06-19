@@ -4,7 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
-import { isAuthSignUpPath, resolveSignupPolicy } from "./oss-signup-policy";
+import { isAuthSignUpPath, isValidOSSSignupSetupToken, resolveSignupPolicy } from "./oss-signup-policy";
 
 describe("OSS signup policy", () => {
   it("allows OSS sign-up before the first organization exists", () => {
@@ -42,6 +42,21 @@ describe("OSS signup policy", () => {
     expect(isAuthSignUpPath("http://localhost:3000/api/auth/sign-up/email")).toBe(true);
     expect(isAuthSignUpPath("http://localhost:3000/api/auth/sign-in/email")).toBe(false);
     expect(isAuthSignUpPath("http://localhost:3000/api/control/bootstrap")).toBe(false);
+  });
+
+  it("requires a valid setup token for first-owner sign-up", () => {
+    expect(isValidOSSSignupSetupToken(new Request("http://localhost:3000/api/auth/sign-up/email"), "secret")).toBe(false);
+    expect(isValidOSSSignupSetupToken(new Request("http://localhost:3000/api/auth/sign-up/email?setup_token=secret"), "secret")).toBe(true);
+    expect(
+      isValidOSSSignupSetupToken(
+        new Request("http://localhost:3000/api/auth/sign-up/email", {
+          headers: { "x-oss-setup-token": "secret" },
+        }),
+        "secret",
+      ),
+    ).toBe(true);
+    expect(isValidOSSSignupSetupToken(new Request("http://localhost:3000/api/auth/sign-up/email?setup_token=wrong"), "secret")).toBe(false);
+    expect(isValidOSSSignupSetupToken(new Request("http://localhost:3000/api/auth/sign-up/email"), "")).toBe(false);
   });
 });
 

@@ -44,11 +44,14 @@ describe("console i18n", () => {
 
   it("localizes OSS single-user auth errors without rendering backend English messages", () => {
     const signupError = new ControlAPIError(403, "OSS_SIGNUP_DISABLED", "OSS registration is closed.");
+    const setupTokenError = new ControlAPIError(403, "OSS_SETUP_TOKEN_REQUIRED", "A valid OSS setup token is required.");
     const ownerError = new ControlAPIError(403, "OSS_OWNER_REQUIRED", "Only the owner can access this OSS instance.");
 
     expect(localizeControlError(signupError, "zh-CN")).toBe("此 OSS 实例已完成初始化，不能再注册新账号。");
+    expect(localizeControlError(setupTokenError, "zh-CN")).toBe("请使用安装器打印的 setup URL 创建第一个 owner 账号。");
     expect(localizeControlError(ownerError, "zh-CN")).toBe("此 OSS 实例仅允许初始化时创建的 owner 登录。");
     expect(localizeControlError(signupError, "zh-CN")).not.toContain("OSS registration is closed.");
+    expect(localizeControlError(setupTokenError, "zh-CN")).not.toContain("A valid OSS setup token is required.");
     expect(localizeControlError(ownerError, "zh-CN")).not.toContain("Only the owner can access this OSS instance.");
   });
 

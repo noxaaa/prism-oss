@@ -17,6 +17,15 @@ export function isAuthSignUpPath(url: string): boolean {
   return new URL(url).pathname === "/api/auth/sign-up/email";
 }
 
+export function isValidOSSSignupSetupToken(request: Request, expectedToken = process.env.OSS_SETUP_TOKEN): boolean {
+  if (!expectedToken) {
+    return false;
+  }
+  const url = new URL(request.url);
+  const requestToken = request.headers.get("x-oss-setup-token") ?? url.searchParams.get("setup_token");
+  return requestToken === expectedToken;
+}
+
 export function webEditionFromEnv(value = process.env.NEXT_PUBLIC_PRISM_EDITION): WebEdition {
   if (value === undefined || value === "") {
     return "oss";

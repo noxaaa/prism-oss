@@ -111,9 +111,35 @@ generate_secret() {
   exit 1
 }
 
+generate_url_safe_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 48 | tr -d '\n'
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
+    return
+  fi
+  echo "openssl or python3 is required to generate secrets" >&2
+  exit 1
+}
+
 secret_or_exit() {
   name="$1"
   secret="$(generate_secret)" || {
+    echo "failed to generate ${name}" >&2
+    exit 1
+  }
+  if [ -z "$secret" ]; then
+    echo "generated empty ${name}" >&2
+    exit 1
+  fi
+  printf '%s' "$secret"
+}
+
+setup_token_or_exit() {
+  name="$1"
+  secret="$(generate_url_safe_secret)" || {
     echo "failed to generate ${name}" >&2
     exit 1
   }
@@ -387,6 +413,23 @@ auth_trusted_origins() {
   printf '%s' "$origins"
 }
 
+url_query_encode() {
+  value="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    VALUE="$value" python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["VALUE"], safe=""))'
+    return
+  fi
+  printf '%s' "$value" | sed \
+    -e 's/%/%25/g' \
+    -e 's/+/%2B/g' \
+    -e 's/\//%2F/g' \
+    -e 's/=/%3D/g' \
+    -e 's/ /%20/g' \
+    -e 's/?/%3F/g' \
+    -e 's/&/%26/g' \
+    -e 's/#/%23/g'
+}
+
 set_env_value() {
   key="$1"
   value="$2"
@@ -431,14 +474,16 @@ ensure_public_auth_env() {
   elif [ -z "$saved_control_bind_host" ]; then
     saved_control_bind_host="$control_bind_host"
     set_env_value CONTROL_PLANE_BIND_HOST "$saved_control_bind_host"
-  elif is_loopback_bind_host "$saved_control_bind_host"; then
-    saved_control_bind_host="0.0.0.0"
-    set_env_value CONTROL_PLANE_BIND_HOST "$saved_control_bind_host"
   fi
   desired_control_url="$(default_control_plane_url "$saved_control_port" "$current_public_web_url" "$saved_control_bind_host")"
   current_control_url="$(env_value CONTROL_PLANE_URL)"
-  if [ -z "$current_control_url" ] || [ -n "$control_url" ] || is_loopback_url "$current_control_url"; then
+  if [ -z "$current_control_url" ] || [ -n "$control_url" ] || [ -n "$public_web_url" ] || [ "$control_bind_host_was_set" = "1" ] || is_loopback_url "$current_control_url"; then
     set_env_value CONTROL_PLANE_URL "$desired_control_url"
+  fi
+
+  current_setup_token="$(env_value OSS_SETUP_TOKEN)"
+  if [ -z "$current_setup_token" ]; then
+    set_env_value OSS_SETUP_TOKEN "$(setup_token_or_exit OSS_SETUP_TOKEN)"
   fi
 
   current_better_auth_url="$(env_value BETTER_AUTH_URL)"
@@ -470,6 +515,7 @@ if [ ! -f ".env" ]; then
   better_auth_secret="$(secret_or_exit BETTER_AUTH_SECRET)"
   internal_jwt_secret="$(secret_or_exit CONTROL_PLANE_INTERNAL_JWT_SECRET)"
   agent_token_secret="$(secret_or_exit AGENT_TOKEN_SIGNING_SECRET)"
+  setup_token="$(setup_token_or_exit OSS_SETUP_TOKEN)"
   tmp_env=".env.tmp.$$"
   trap 'rm -f "$tmp_env"' EXIT HUP INT TERM
   {
@@ -488,6 +534,7 @@ if [ ! -f ".env" ]; then
     printf 'BETTER_AUTH_SECRET=%s\n' "$better_auth_secret"
     printf 'BETTER_AUTH_URL=%s\n' "$resolved_public_web_url"
     printf 'BETTER_AUTH_TRUSTED_ORIGINS=%s\n' "$resolved_trusted_origins"
+    printf 'OSS_SETUP_TOKEN=%s\n' "$setup_token"
     printf 'CONTROL_PLANE_INTERNAL_JWT_SECRET=%s\n' "$internal_jwt_secret"
     printf 'AGENT_TOKEN_SIGNING_SECRET=%s\n' "$agent_token_secret"
   } > "$tmp_env"
@@ -511,14 +558,28 @@ if [ -z "$console_url" ]; then
   fi
   console_url="http://127.0.0.1:${saved_web_port}"
 fi
+setup_token="$(env_value OSS_SETUP_TOKEN)"
+setup_url="$console_url"
+if [ -n "$setup_token" ]; then
+  encoded_setup_token="$(url_query_encode "$setup_token")"
+  case "$setup_url" in
+    *\?*)
+      setup_url="${setup_url}&setup_token=${encoded_setup_token}"
+      ;;
+    *)
+      setup_url="${setup_url}?setup_token=${encoded_setup_token}"
+      ;;
+  esac
+fi
 
 cat <<EOF
 
 Started the stack.
 
 Console: ${console_url}
+Setup URL: ${setup_url}
 
-Create the first owner account in the browser. After owner setup, sign-up is disabled for this single-user edition.
+Create the first owner account using the setup URL. After owner setup, sign-up is disabled for this single-user edition.
 
 Useful commands:
   cd "$install_dir"

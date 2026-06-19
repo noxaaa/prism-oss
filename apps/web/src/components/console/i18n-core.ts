@@ -319,6 +319,7 @@ const commonMessages = {
   "error.VALIDATION_FAILED": { en: "The request payload is invalid.", zh: "请求内容无效。" },
   "error.QUOTA_EXCEEDED": { en: "The request exceeds the configured quota.", zh: "请求超出了当前配额。" },
   "error.OSS_SIGNUP_DISABLED": { en: "This OSS instance has already been initialized. New account registration is closed.", zh: "此 OSS 实例已完成初始化，不能再注册新账号。" },
+  "error.OSS_SETUP_TOKEN_REQUIRED": { en: "Use the setup URL printed by the installer to create the first owner account.", zh: "请使用安装器打印的 setup URL 创建第一个 owner 账号。" },
   "error.OSS_OWNER_REQUIRED": { en: "This OSS instance only allows the owner account created during setup.", zh: "此 OSS 实例仅允许初始化时创建的 owner 登录。" },
   "error.RULE_PORT_CONFLICT": { en: "The listen port is already reserved by another enabled rule.", zh: "监听端口已被其他开启中的规则占用。" },
   "error.RULE_DUPLICATE_SNI": { en: "Another enabled rule already uses this SNI on the selected listener.", zh: "所选入口上已有开启中的规则使用该 SNI。" },

@@ -21,7 +21,7 @@ curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install.
 
 The installer downloads the latest release archive, writes a local `.env` file when one does not exist, repairs old loopback auth URLs when it can detect a server address, and starts the web console, control plane, migration job, and Redis with the included `docker-compose.yml`.
 
-Open the console at the URL printed by the installer. On a remote host, pass `--public-web-url http://YOUR_SERVER_IP:3000` when automatic address detection cannot infer the reachable URL. The installer derives the default agent control URL from the same host over plain HTTP unless `--control-url` is provided; when `--control-bind-host 127.0.0.1` is used, agent commands stay loopback-only. Create the first owner account. This single-user edition disables further sign-ups after the first owner setup.
+Open the setup URL printed by the installer. On a remote host, pass `--public-web-url http://YOUR_SERVER_IP:3000` when automatic address detection cannot infer the reachable URL. The installer derives the default agent control URL from the same host over plain HTTP unless `--control-url` is provided; when `--control-bind-host 127.0.0.1` is used, agent commands stay loopback-only. Create the first owner account from the setup URL. This single-user edition disables further sign-ups after the first owner setup.
 
 Pinned release flow:
 
