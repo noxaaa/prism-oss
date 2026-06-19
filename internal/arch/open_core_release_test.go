@@ -622,10 +622,10 @@ func TestOSSComposeRepairsSQLiteVolumeOwnershipBeforeMigration(t *testing.T) {
 
 	for _, relative := range []string{"scripts/install.sh"} {
 		source := readText(t, filepath.Join(root, filepath.FromSlash(relative)))
-		permissionCommand := "docker compose run -T --rm sqlite-permissions"
-		migrateCommand := "docker compose run -T --rm migrate up"
-		if !strings.Contains(source, permissionCommand) {
-			t.Fatalf("%s must run sqlite-permissions before migrations without requiring a TTY", relative)
+		permissionCommand := "docker compose run -T --rm sqlite-permissions </dev/null"
+		migrateCommand := "docker compose run -T --rm migrate up </dev/null"
+		if !strings.Contains(source, permissionCommand) || !strings.Contains(source, migrateCommand) {
+			t.Fatalf("%s must run sqlite-permissions before migrations without requiring a TTY or consuming curl-pipe stdin", relative)
 		}
 		if strings.Index(source, permissionCommand) > strings.Index(source, migrateCommand) {
 			t.Fatalf("%s must run sqlite-permissions before migrate", relative)

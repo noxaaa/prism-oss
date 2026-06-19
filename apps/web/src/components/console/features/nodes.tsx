@@ -27,8 +27,10 @@ import {
 } from "@/components/ui/dialog";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldSet, FieldLegend } from "@/components/ui/field";
@@ -41,7 +43,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { bytes, controlDelete, controlPatch, controlPost, shortDate } from "@/components/console/control-api";
@@ -277,12 +278,6 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                     {canManage ? (
                       <TableCell>
                         <div className="flex flex-wrap gap-2">
-                          <NodeAgentUpdateControls
-                            actionNodeID={agentActionNodeID}
-                            node={node}
-                            onToggleAutoUpdate={updateAgentAutoUpdate}
-                            onUpgrade={requestAgentUpgrade}
-                          />
                           <Button onClick={() => copyInstallCommand(node)} size="sm" type="button" variant="outline">
                             <CopyIcon data-icon="inline-start" />
                             {t("nodes.copyInstallCommand")}
@@ -297,8 +292,20 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                                 <MoreHorizontalIcon />
                               </Button>
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => setDeletingNode(node)}>
+                            <DropdownMenuContent align="end" className="w-52">
+                              <DropdownMenuCheckboxItem
+                                checked={node.agent_auto_update_enabled}
+                                disabled={agentActionNodeID === node.id}
+                                onCheckedChange={(checked) => updateAgentAutoUpdate(node, checked === true)}
+                              >
+                                {t("nodes.agentAutoUpdate")}
+                              </DropdownMenuCheckboxItem>
+                              <DropdownMenuItem disabled={agentActionNodeID === node.id} onSelect={() => void requestAgentUpgrade(node)}>
+                                <DownloadIcon data-icon="inline-start" />
+                                {t("nodes.upgradeAgent")}
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onSelect={() => setDeletingNode(node)} variant="destructive">
                                 <Trash2Icon data-icon="inline-start" />
                                 {t("common.delete")}
                               </DropdownMenuItem>
@@ -356,33 +363,6 @@ function NodeAgentDetails({ node }: { node: NodeResource }) {
         <div className="text-xs text-muted-foreground">{t("nodes.agentUpdateStatus")}</div>
         <StatusBadge value={node.agent_update_status || "IDLE"} />
       </div>
-    </div>
-  );
-}
-
-function NodeAgentUpdateControls({
-  actionNodeID,
-  node,
-  onToggleAutoUpdate,
-  onUpgrade,
-}: {
-  actionNodeID: string | null;
-  node: NodeResource;
-  onToggleAutoUpdate: (node: NodeResource, enabled: boolean) => Promise<void>;
-  onUpgrade: (node: NodeResource) => Promise<void>;
-}) {
-  const { t } = useI18n();
-  const busy = actionNodeID === node.id;
-  return (
-    <div className="flex min-w-40 flex-col gap-2">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <Switch aria-label={t("nodes.agentAutoUpdate")} checked={node.agent_auto_update_enabled} disabled={busy} onCheckedChange={(checked) => onToggleAutoUpdate(node, checked === true)} />
-        <span>{t("nodes.agentAutoUpdate")}</span>
-      </div>
-      <Button disabled={busy} onClick={() => onUpgrade(node)} size="sm" type="button" variant="outline">
-        <DownloadIcon data-icon="inline-start" />
-        {t("nodes.upgradeAgent")}
-      </Button>
     </div>
   );
 }
@@ -742,7 +722,6 @@ function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
               <TableRow>
                 <TableHead>{t("overview.node")}</TableHead>
                 <TableHead>{t("overview.status")}</TableHead>
-                <TableHead>{t("nodes.agent")}</TableHead>
                 <TableHead>TCP</TableHead>
                 <TableHead>UDP/s</TableHead>
                 <TableHead>{t("nodes.bandwidth")}</TableHead>
@@ -768,7 +747,6 @@ function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
                       </div>
                     </TableCell>
                     <TableCell><StatusBadge value={metrics.status ?? node.status} /></TableCell>
-                    <TableCell><NodeAgentSummary node={node} /></TableCell>
                     <TableCell>{metrics.tcp_connections ?? 0}</TableCell>
                     <TableCell>{metrics.udp_packets_per_second ?? 0}</TableCell>
                     <TableCell>{metrics.bandwidth_bps ?? 0} bps</TableCell>

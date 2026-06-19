@@ -519,8 +519,8 @@ else
 fi
 
 docker compose pull
-docker compose run -T --rm sqlite-permissions
-docker compose run -T --rm migrate up
+docker compose run -T --rm sqlite-permissions </dev/null
+docker compose run -T --rm migrate up </dev/null
 docker compose up -d --remove-orphans
 
 console_url="$(env_value PUBLIC_WEB_URL)"
