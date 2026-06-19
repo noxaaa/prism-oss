@@ -51,6 +51,28 @@ func TestOSSReleaseWorkflowPublishesPrebuiltArtifacts(t *testing.T) {
 	}
 }
 
+func TestOSSReleaseWorkflowUsesBuildxGhaCache(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, ".github", "workflows", "release.yml"))
+	if !strings.Contains(source, "crazy-max/ghaction-github-runtime@") {
+		t.Fatalf("release workflow must expose GitHub Actions runtime variables before inline docker buildx cache commands")
+	}
+	for _, scope := range []string{
+		"prism-oss-web",
+		"prism-oss-control-plane",
+		"prism-oss-migrate",
+	} {
+		for _, required := range []string{
+			"--cache-from type=gha,scope=" + scope,
+			"--cache-to type=gha,mode=max,scope=" + scope,
+		} {
+			if !strings.Contains(source, required) {
+				t.Fatalf("release workflow must use buildx GitHub Actions cache for %s; missing %q", scope, required)
+			}
+		}
+	}
+}
+
 func TestOSSStandaloneMigrateReleaseAssetPackagesMigrations(t *testing.T) {
 	root := repoRoot(t)
 	source := readText(t, filepath.Join(root, ".github", "workflows", "release.yml"))
@@ -562,6 +584,24 @@ func TestOSSComposeUsesReleaseImages(t *testing.T) {
 	}
 }
 
+func TestOSSReleaseComposeUsesPackagedMigrationDirectory(t *testing.T) {
+	root := repoRoot(t)
+	for relative, source := range map[string]string{
+		"docker-compose.yml": readText(t, filepath.Join(root, "docker-compose.yml")),
+		"scripts/install.sh": readText(t, filepath.Join(root, "scripts", "install.sh")),
+	} {
+		for _, required := range []string{
+			"MIGRATIONS_DIRS: /migrations/core",
+			"DATABASE_URL: ${PRISM_OSS_DATABASE_URL:-/data/oss.db}",
+			"PRISM_EDITION: oss",
+		} {
+			if !strings.Contains(source, required) {
+				t.Fatalf("%s must configure the release migrate image with packaged migrations; missing %q", relative, required)
+			}
+		}
+	}
+}
+
 func TestOSSComposeRepairsSQLiteVolumeOwnershipBeforeMigration(t *testing.T) {
 	root := repoRoot(t)
 	for relative, source := range map[string]string{
@@ -582,14 +622,45 @@ func TestOSSComposeRepairsSQLiteVolumeOwnershipBeforeMigration(t *testing.T) {
 
 	for _, relative := range []string{"scripts/install.sh"} {
 		source := readText(t, filepath.Join(root, filepath.FromSlash(relative)))
-		permissionCommand := "docker compose run --rm sqlite-permissions"
-		migrateCommand := "docker compose run --rm migrate up"
+		permissionCommand := "docker compose run -T --rm sqlite-permissions"
+		migrateCommand := "docker compose run -T --rm migrate up"
 		if !strings.Contains(source, permissionCommand) {
-			t.Fatalf("%s must run sqlite-permissions before migrations", relative)
+			t.Fatalf("%s must run sqlite-permissions before migrations without requiring a TTY", relative)
 		}
 		if strings.Index(source, permissionCommand) > strings.Index(source, migrateCommand) {
 			t.Fatalf("%s must run sqlite-permissions before migrate", relative)
 		}
+	}
+}
+
+func TestOSSWebDockerfileBuildsNextOnBuildPlatformOnly(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "apps", "web", "Dockerfile"))
+	for _, required := range []string{
+		"FROM --platform=$BUILDPLATFORM node:22-bookworm AS build",
+		"FROM --platform=$TARGETPLATFORM node:22-bookworm AS runtime-deps",
+		"FROM --platform=$TARGETPLATFORM node:22-bookworm-slim",
+		"ENV NEXT_TELEMETRY_DISABLED=1",
+		"RUN npm --workspace apps/web run build",
+		"npm ci --omit=dev",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("apps/web/Dockerfile must build Next on BUILDPLATFORM and install runtime deps on TARGETPLATFORM; missing %q", required)
+		}
+	}
+	buildIndex := strings.Index(source, "FROM --platform=$BUILDPLATFORM node:22-bookworm AS build")
+	runtimeDepsIndex := strings.Index(source, "FROM --platform=$TARGETPLATFORM node:22-bookworm AS runtime-deps")
+	runtimeIndex := strings.Index(source, "FROM --platform=$TARGETPLATFORM node:22-bookworm-slim")
+	nextBuildIndex := strings.Index(source, "RUN npm --workspace apps/web run build")
+	runtimeInstallIndex := strings.Index(source, "npm ci --omit=dev")
+	if buildIndex < 0 || runtimeDepsIndex < 0 || runtimeIndex < 0 || nextBuildIndex < 0 || runtimeInstallIndex < 0 {
+		t.Fatalf("apps/web/Dockerfile changed expected build/runtime stage shape")
+	}
+	if nextBuildIndex > runtimeIndex {
+		t.Fatalf("apps/web/Dockerfile must not run next build in the target-platform runtime stage")
+	}
+	if runtimeInstallIndex < runtimeDepsIndex || runtimeInstallIndex > runtimeIndex {
+		t.Fatalf("apps/web/Dockerfile must install production runtime dependencies in a target-platform stage before the final image")
 	}
 }
 

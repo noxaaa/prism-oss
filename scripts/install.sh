@@ -250,6 +250,7 @@ services:
     environment:
       DATABASE_URL: ${PRISM_OSS_DATABASE_URL:-/data/oss.db}
       PRISM_EDITION: oss
+      MIGRATIONS_DIRS: /migrations/core
     volumes:
       - sqlite-data:/data
 
@@ -518,8 +519,8 @@ else
 fi
 
 docker compose pull
-docker compose run --rm sqlite-permissions
-docker compose run --rm migrate up
+docker compose run -T --rm sqlite-permissions
+docker compose run -T --rm migrate up
 docker compose up -d --remove-orphans
 
 console_url="$(env_value PUBLIC_WEB_URL)"

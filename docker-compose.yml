@@ -20,6 +20,7 @@ services:
     environment:
       DATABASE_URL: ${PRISM_OSS_DATABASE_URL:-/data/oss.db}
       PRISM_EDITION: oss
+      MIGRATIONS_DIRS: /migrations/core
     volumes:
       - sqlite-data:/data
 
