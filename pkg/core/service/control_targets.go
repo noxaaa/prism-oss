@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
@@ -73,7 +74,7 @@ func (service *ControlService) CreateTarget(ctx context.Context, identity Intern
 			return err
 		}
 		if input.TargetGroupIDsProvided {
-			if err := syncTargetGroupMemberships(ctx, repositories, identity.OrganizationID, target, input.TargetGroupIDs, now, service.newID); err != nil {
+			if err := service.syncTargetGroupMemberships(ctx, repositories, identity.OrganizationID, target, input.TargetGroupIDs, now, service.newID); err != nil {
 				return err
 			}
 		}
@@ -113,7 +114,7 @@ func (service *ControlService) UpdateTarget(ctx context.Context, identity Intern
 			}
 		}
 		if input.TargetGroupIDsProvided {
-			if err := syncTargetGroupMemberships(ctx, repositories, identity.OrganizationID, target, input.TargetGroupIDs, target.UpdatedAt, service.newID); err != nil {
+			if err := service.syncTargetGroupMemberships(ctx, repositories, identity.OrganizationID, target, input.TargetGroupIDs, target.UpdatedAt, service.newID); err != nil {
 				return err
 			}
 		}
@@ -179,7 +180,7 @@ func (service *ControlService) TargetGroupOptions(ctx context.Context, identity 
 		result = make([]ResourceOption, 0, len(groups))
 		for _, group := range groups {
 			option := ResourceOption{Value: group.ID, Label: fmt.Sprintf("%s (%d targets)", group.Name, len(group.Members))}
-			if reason := targetGroupDisabledReason(group, targetsByID); reason != "" {
+			if reason := service.targetGroupDisabledReason(group, targetsByID); reason != "" {
 				option.Disabled = true
 				option.DisabledReason = reason
 			}
@@ -196,6 +197,10 @@ func (service *ControlService) CreateTargetGroup(ctx context.Context, identity I
 	}
 	var result TargetGroupPayload
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		scheduler := normalizeTargetGroupScheduler(input.Scheduler)
+		if !service.targetGroupSchedulerSupported(scheduler) {
+			return ErrInvalidInput
+		}
 		if err := ensureTargetGroupMembersValid(ctx, repositories, identity.OrganizationID, input.Members); err != nil {
 			return err
 		}
@@ -205,7 +210,7 @@ func (service *ControlService) CreateTargetGroup(ctx context.Context, identity I
 			OrganizationID: identity.OrganizationID,
 			Name:           input.Name,
 			Description:    input.Description,
-			Scheduler:      targetGroupSchedulerPriorityIPHash,
+			Scheduler:      scheduler,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		}
@@ -232,7 +237,11 @@ func (service *ControlService) UpdateTargetGroup(ctx context.Context, identity I
 		if err != nil {
 			return err
 		}
-		if !targetGroupSchedulerSupportedByCore(group) {
+		if !service.targetGroupSchedulerSupported(group.Scheduler) {
+			return ErrInvalidInput
+		}
+		scheduler := normalizeTargetGroupScheduler(input.Scheduler)
+		if !service.targetGroupSchedulerSupported(scheduler) {
 			return ErrInvalidInput
 		}
 		usedByRules, err := targetGroupUsedByRules(ctx, repositories, identity.OrganizationID, group.ID)
@@ -250,7 +259,7 @@ func (service *ControlService) UpdateTargetGroup(ctx context.Context, identity I
 		runtimeChanged := targetGroupRuntimeChanged(group, input)
 		group.Name = input.Name
 		group.Description = input.Description
-		group.Scheduler = targetGroupSchedulerPriorityIPHash
+		group.Scheduler = scheduler
 		group.UpdatedAt = service.timestamp()
 		if err := repositories.TargetGroups().UpdateTargetGroup(ctx, group, toTargetGroupMemberRecords(identity.OrganizationID, group.ID, input.Members), group.UpdatedAt, service.newID); err != nil {
 			return err
@@ -332,7 +341,7 @@ func ensureTargetGroupNotUsedByRules(ctx context.Context, repositories repo.Repo
 	return nil
 }
 
-func ensureUpstreamAvailable(ctx context.Context, repositories repo.Repositories, organizationID string, upstream RuleUpstreamInput) error {
+func (service *ControlService) ensureUpstreamAvailable(ctx context.Context, repositories repo.Repositories, organizationID string, upstream RuleUpstreamInput) error {
 	switch upstream.Type {
 	case "TARGET":
 		target, err := repositories.Targets().FindTargetByID(ctx, organizationID, upstream.TargetID)
@@ -347,7 +356,7 @@ func ensureUpstreamAvailable(ctx context.Context, repositories repo.Repositories
 		if err != nil {
 			return err
 		}
-		if !targetGroupSchedulerSupportedByCore(group) {
+		if !service.targetGroupSchedulerSupportedByCore(group) {
 			return ErrInvalidInput
 		}
 		if len(group.Members) == 0 {
@@ -371,7 +380,7 @@ func ensureUpstreamAvailable(ctx context.Context, repositories repo.Repositories
 	return nil
 }
 
-func ensureUpstreamExists(ctx context.Context, repositories repo.Repositories, organizationID string, upstream RuleUpstreamInput) error {
+func (service *ControlService) ensureUpstreamExists(ctx context.Context, repositories repo.Repositories, organizationID string, upstream RuleUpstreamInput) error {
 	switch upstream.Type {
 	case "TARGET":
 		_, err := repositories.Targets().FindTargetByID(ctx, organizationID, upstream.TargetID)
@@ -381,7 +390,7 @@ func ensureUpstreamExists(ctx context.Context, repositories repo.Repositories, o
 		if err != nil {
 			return err
 		}
-		if !targetGroupSchedulerSupportedByCore(group) {
+		if !service.targetGroupSchedulerSupportedByCore(group) {
 			return ErrInvalidInput
 		}
 	default:
@@ -404,7 +413,7 @@ func ensureTargetGroupMembersValid(ctx context.Context, repositories repo.Reposi
 	return nil
 }
 
-func syncTargetGroupMemberships(ctx context.Context, repositories repo.Repositories, organizationID string, target repo.TargetRecord, targetGroupIDs []string, now string, nextID func() string) error {
+func (service *ControlService) syncTargetGroupMemberships(ctx context.Context, repositories repo.Repositories, organizationID string, target repo.TargetRecord, targetGroupIDs []string, now string, nextID func() string) error {
 	targetGroups, err := repositories.TargetGroups().ListTargetGroupsByOrganization(ctx, organizationID)
 	if err != nil {
 		return err
@@ -426,10 +435,10 @@ func syncTargetGroupMemberships(ctx context.Context, repositories repo.Repositor
 		if !changed {
 			continue
 		}
-		if !targetGroupSchedulerSupportedByCore(group) {
+		if !service.targetGroupSchedulerSupported(group.Scheduler) {
 			return ErrInvalidInput
 		}
-		input := TargetGroupMutationInput{Name: group.Name, Description: group.Description, Members: members}
+		input := TargetGroupMutationInput{Name: group.Name, Description: group.Description, Scheduler: group.Scheduler, Members: members}
 		if err := ensureTargetGroupMembersValid(ctx, repositories, organizationID, input.Members); err != nil {
 			return err
 		}
@@ -508,8 +517,8 @@ func targetGroupUsedByRules(ctx context.Context, repositories repo.Repositories,
 	return false, nil
 }
 
-func targetGroupDisabledReason(group repo.TargetGroupRecord, targetsByID map[string]repo.TargetRecord) string {
-	if !targetGroupSchedulerSupportedByCore(group) {
+func (service *ControlService) targetGroupDisabledReason(group repo.TargetGroupRecord, targetsByID map[string]repo.TargetRecord) string {
+	if !service.targetGroupSchedulerSupportedByCore(group) {
 		return "Target group scheduler is not supported by this build"
 	}
 	if len(group.Members) == 0 {
@@ -551,7 +560,7 @@ func toTargetGroupMemberRecords(organizationID string, targetGroupID string, inp
 }
 
 func targetGroupRuntimeChanged(group repo.TargetGroupRecord, input TargetGroupMutationInput) bool {
-	if !targetGroupSchedulerSupportedByCore(group) {
+	if normalizeTargetGroupScheduler(input.Scheduler) != group.Scheduler {
 		return true
 	}
 	if len(group.Members) != len(input.Members) {
@@ -591,8 +600,24 @@ func targetGroupRuntimeChanged(group repo.TargetGroupRecord, input TargetGroupMu
 	return false
 }
 
-func targetGroupSchedulerSupportedByCore(group repo.TargetGroupRecord) bool {
-	return group.Scheduler == targetGroupSchedulerPriorityIPHash
+func normalizeTargetGroupScheduler(scheduler string) string {
+	scheduler = strings.ToUpper(strings.TrimSpace(scheduler))
+	if scheduler == "" {
+		return targetGroupSchedulerPriorityIPHash
+	}
+	return scheduler
+}
+
+func (service *ControlService) targetGroupSchedulerSupported(scheduler string) bool {
+	scheduler = normalizeTargetGroupScheduler(scheduler)
+	if service.targetGroupSchedulers != nil {
+		return service.targetGroupSchedulers(scheduler)
+	}
+	return scheduler == targetGroupSchedulerPriorityIPHash
+}
+
+func (service *ControlService) targetGroupSchedulerSupportedByCore(group repo.TargetGroupRecord) bool {
+	return normalizeTargetGroupScheduler(group.Scheduler) == targetGroupSchedulerPriorityIPHash
 }
 
 func toTargetGroupPayload(group repo.TargetGroupRecord) TargetGroupPayload {

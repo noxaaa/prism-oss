@@ -36,6 +36,7 @@ type ControlService struct {
 	authorizer              Authorizer
 	sessionBackend          SessionBackend
 	rbacBackend             RBACBackend
+	targetGroupSchedulers   TargetGroupSchedulerSupportFunc
 }
 
 func NewControlService(store repo.UnitOfWork) *ControlService {
@@ -51,7 +52,10 @@ type ControlServiceOptions struct {
 	Authorizer              Authorizer
 	SessionBackend          SessionBackend
 	RBACBackend             RBACBackend
+	TargetGroupSchedulers   TargetGroupSchedulerSupportFunc
 }
+
+type TargetGroupSchedulerSupportFunc func(scheduler string) bool
 
 func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceOptions) *ControlService {
 	provider := options.Edition
@@ -70,6 +74,7 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 		authorizer:              options.Authorizer,
 		sessionBackend:          options.SessionBackend,
 		rbacBackend:             options.RBACBackend,
+		targetGroupSchedulers:   options.TargetGroupSchedulers,
 	}
 	if service.authorizer == nil {
 		service.authorizer = defaultControlAuthorizer()

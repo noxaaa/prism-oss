@@ -138,6 +138,48 @@ func TestValidateTargetGroupRequestAllowsEmptyMembers(t *testing.T) {
 	}
 }
 
+func TestValidateTargetGroupRequestNormalizesScheduler(t *testing.T) {
+	group, err := ValidateTargetGroupRequest(TargetGroupRequest{
+		Name:        "Pool",
+		Description: "Targets can be attached later.",
+		Scheduler:   " priority_iphash ",
+		Members:     []TargetGroupMemberRequest{},
+	})
+	if err != nil {
+		t.Fatalf("target group scheduler should be normalized: %v", err)
+	}
+	if group.Scheduler != "PRIORITY_IPHASH" {
+		t.Fatalf("expected normalized scheduler PRIORITY_IPHASH, got %q", group.Scheduler)
+	}
+}
+
+func TestValidateTargetGroupRequestDefaultsSchedulerWithoutBlockingExtensions(t *testing.T) {
+	defaulted, err := ValidateTargetGroupRequest(TargetGroupRequest{
+		Name:        "Default pool",
+		Description: "Targets can be attached later.",
+		Members:     []TargetGroupMemberRequest{},
+	})
+	if err != nil {
+		t.Fatalf("target group scheduler should default: %v", err)
+	}
+	if defaulted.Scheduler != "PRIORITY_IPHASH" {
+		t.Fatalf("expected default scheduler PRIORITY_IPHASH, got %q", defaulted.Scheduler)
+	}
+
+	commercial, err := ValidateTargetGroupRequest(TargetGroupRequest{
+		Name:        "Commercial pool",
+		Description: "Targets can be attached later.",
+		Scheduler:   " geo_ip ",
+		Members:     []TargetGroupMemberRequest{},
+	})
+	if err != nil {
+		t.Fatalf("validator should leave scheduler support policy to service layer: %v", err)
+	}
+	if commercial.Scheduler != "GEO_IP" {
+		t.Fatalf("expected commercial scheduler to be normalized, got %q", commercial.Scheduler)
+	}
+}
+
 func TestValidateNodeRequestDefaultsListenIPsAndPortRange(t *testing.T) {
 	node, err := ValidateNodeRequest(NodeRequest{
 		Name:     "edge-a",

@@ -689,7 +689,7 @@ func decodeTargetGroupInput(response http.ResponseWriter, request *http.Request)
 	for _, member := range normalized.Members {
 		members = append(members, service.TargetGroupMemberInput{TargetID: member.TargetID, Priority: member.Priority, Enabled: member.Enabled})
 	}
-	return service.TargetGroupMutationInput{Name: normalized.Name, Description: normalized.Description, Members: members}, true
+	return service.TargetGroupMutationInput{Name: normalized.Name, Description: normalized.Description, Scheduler: normalized.Scheduler, Members: members}, true
 }
 
 func toServiceListenIPs(values []validator.NodeListenIP) []service.NodeListenIPInput {

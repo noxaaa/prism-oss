@@ -136,6 +136,7 @@ type TargetRequest struct {
 type TargetGroupRequest struct {
 	Name        string                     `json:"name"`
 	Description string                     `json:"description"`
+	Scheduler   string                     `json:"scheduler"`
 	Members     []TargetGroupMemberRequest `json:"members"`
 }
 
@@ -378,6 +379,10 @@ func ValidateTargetRequest(request TargetRequest) (TargetRequest, error) {
 func ValidateTargetGroupRequest(request TargetGroupRequest) (TargetGroupRequest, error) {
 	request.Name = strings.TrimSpace(request.Name)
 	request.Description = strings.TrimSpace(request.Description)
+	request.Scheduler = strings.ToUpper(strings.TrimSpace(request.Scheduler))
+	if request.Scheduler == "" {
+		request.Scheduler = "PRIORITY_IPHASH"
+	}
 	if request.Name == "" || len(request.Name) > 120 || len(request.Description) > 1000 {
 		return TargetGroupRequest{}, ErrInvalidRequest
 	}

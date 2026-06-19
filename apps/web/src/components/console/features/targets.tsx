@@ -71,6 +71,13 @@ import { hasPermission } from "@/components/console/permissions";
 import { ResourceMultiSelect, ResourceSelect } from "@/components/console/resource-select";
 import { useConsoleSession } from "@/components/console/shell";
 import {
+  TARGET_GROUP_SCHEDULER_PRIORITY_IPHASH,
+  buildTargetGroupMutationPayload,
+  membersForSelectedTargets,
+  normalizePriority,
+  type TargetGroupMemberDraft,
+} from "@/components/console/target-group-members";
+import {
   ControlledTextField,
   DataState,
   EnumSelect,
@@ -658,21 +665,21 @@ function TargetEditForm({
 
 function TargetGroupCreateForm({ onCreated, targetOptions }: { onCreated: () => Promise<void>; targetOptions: ResourceOption[] }) {
   const { locale, t } = useI18n();
-  const [targetIDs, setTargetIDs] = useState<string[]>([]);
+  const [members, setMembers] = useState<TargetGroupMemberDraft[]>([]);
 
   async function createTargetGroup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    const priority = Number(form.get("priority") || 10);
     try {
-      await controlPost<TargetGroup>("/api/control/target-groups", {
+      await controlPost<TargetGroup>("/api/control/target-groups", buildTargetGroupMutationPayload({
         name: form.get("name"),
         description: form.get("description"),
-        members: targetIDs.map((targetID) => ({ target_id: targetID, priority, enabled: true })),
-      });
+        scheduler: TARGET_GROUP_SCHEDULER_PRIORITY_IPHASH,
+        members,
+      }));
       formElement.reset();
-      setTargetIDs([]);
+      setMembers([]);
       toast.success(t("targets.targetGroupCreated"));
       await onCreated();
     } catch (error) {
@@ -685,8 +692,8 @@ function TargetGroupCreateForm({ onCreated, targetOptions }: { onCreated: () => 
       <FieldGroup>
         <TextField label={t("field.name")} name="name" placeholder={t("targets.groupNamePlaceholder")} />
         <TextAreaField label={t("field.description")} name="description" placeholder={t("targets.groupDescriptionPlaceholder")} />
-        <ResourceMultiSelect label={t("targets.targets")} onValueChange={setTargetIDs} options={targetOptions} values={targetIDs} />
-        <TextField defaultValue="10" label={t("targets.defaultMemberPriority")} name="priority" placeholder="10" type="number" />
+        <TargetGroupSchedulerSelect id="target-group-scheduler" />
+        <TargetGroupMembersEditor members={members} onMembersChange={setMembers} targetOptions={targetOptions} />
       </FieldGroup>
       <Button type="submit"><PlusIcon data-icon="inline-start" />{t("targets.createGroup")}</Button>
     </form>
@@ -695,24 +702,18 @@ function TargetGroupCreateForm({ onCreated, targetOptions }: { onCreated: () => 
 
 function TargetGroupEditForm({ onChanged, targetGroup, targetOptions }: { onChanged: () => Promise<void>; targetGroup: TargetGroup; targetOptions: ResourceOption[] }) {
   const { locale, t } = useI18n();
-  const members = targetGroupMembers(targetGroup);
-  const membersByTargetID = useMemo(() => new Map(members.map((member) => [member.target_id, member])), [members]);
-  const [targetIDs, setTargetIDs] = useState<string[]>(members.map((member) => member.target_id));
-  const defaultPriority = members[0]?.priority ?? 10;
+  const [members, setMembers] = useState<TargetGroupMemberDraft[]>(() => targetGroupMembers(targetGroup).map((member) => ({ ...member })));
 
   async function updateTargetGroup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const priority = Number(form.get("priority") || defaultPriority);
     try {
-      await controlPatch<TargetGroup>(`/api/control/target-groups/${targetGroup.id}`, {
+      await controlPatch<TargetGroup>(`/api/control/target-groups/${targetGroup.id}`, buildTargetGroupMutationPayload({
         name: form.get("name"),
         description: form.get("description"),
-        members: targetIDs.map((targetID) => {
-          const existing = membersByTargetID.get(targetID);
-          return { target_id: targetID, priority: existing?.priority ?? priority, enabled: existing?.enabled ?? true };
-        }),
-      });
+        scheduler: targetGroup.scheduler,
+        members,
+      }));
       toast.success(t("targets.targetGroupUpdated"));
       await onChanged();
     } catch (error) {
@@ -728,10 +729,94 @@ function TargetGroupEditForm({ onChanged, targetGroup, targetOptions }: { onChan
           <FieldLabel htmlFor="edit-target-group-description">{t("field.description")}</FieldLabel>
           <Textarea defaultValue={targetGroup.description} id="edit-target-group-description" name="description" placeholder={t("targets.groupDescriptionPlaceholder")} />
         </Field>
-        <ResourceMultiSelect label={t("targets.targets")} onValueChange={setTargetIDs} options={targetOptions} values={targetIDs} />
-        <TextField defaultValue={String(defaultPriority)} label={t("targets.defaultMemberPriority")} name="priority" placeholder="10" type="number" />
+        <TargetGroupSchedulerSelect id="edit-target-group-scheduler" value={targetGroup.scheduler} />
+        <TargetGroupMembersEditor members={members} onMembersChange={setMembers} targetOptions={targetOptions} />
       </FieldGroup>
       <Button type="submit"><EditIcon data-icon="inline-start" />{t("common.save")}</Button>
     </form>
+  );
+}
+
+function TargetGroupSchedulerSelect({ id, value = TARGET_GROUP_SCHEDULER_PRIORITY_IPHASH }: { id: string; value?: string }) {
+  const { t } = useI18n();
+  const normalizedValue = value?.trim().toUpperCase() || TARGET_GROUP_SCHEDULER_PRIORITY_IPHASH;
+  return (
+    <Field>
+      <FieldLabel htmlFor={id}>{t("targets.scheduler")}</FieldLabel>
+      <Select disabled value={normalizedValue}>
+        <SelectTrigger id={id} className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            {normalizedValue !== TARGET_GROUP_SCHEDULER_PRIORITY_IPHASH ? <SelectItem value={normalizedValue}>{normalizedValue}</SelectItem> : null}
+            <SelectItem value={TARGET_GROUP_SCHEDULER_PRIORITY_IPHASH}>{t("targets.schedulerPriorityIphash")}</SelectItem>
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+function TargetGroupMembersEditor({
+  members,
+  onMembersChange,
+  targetOptions,
+}: {
+  members: TargetGroupMemberDraft[];
+  onMembersChange: (members: TargetGroupMemberDraft[]) => void;
+  targetOptions: ResourceOption[];
+}) {
+  const { t } = useI18n();
+  const targetIDs = members.map((member) => member.target_id);
+
+  function updateTargetIDs(nextTargetIDs: string[]) {
+    onMembersChange(membersForSelectedTargets(nextTargetIDs, members));
+  }
+
+  function updateMember(targetID: string, patch: Partial<Pick<TargetGroupMemberDraft, "priority" | "enabled">>) {
+    onMembersChange(members.map((member) => (member.target_id === targetID ? { ...member, ...patch } : member)));
+  }
+
+  function removeMember(targetID: string) {
+    onMembersChange(members.filter((member) => member.target_id !== targetID));
+  }
+
+  return (
+    <>
+      <ResourceMultiSelect label={t("targets.targets")} onValueChange={updateTargetIDs} options={targetOptions} values={targetIDs} />
+      {members.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          {members.map((member) => (
+            <div className="grid gap-3 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_7rem_auto_2rem] sm:items-center" key={member.target_id}>
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium">{optionLabel(targetOptions, member.target_id)}</div>
+              </div>
+              <Field className="gap-1">
+                <FieldLabel className="text-xs" htmlFor={`target-group-priority-${member.target_id}`}>{t("targets.memberPriority")}</FieldLabel>
+                <Input
+                  id={`target-group-priority-${member.target_id}`}
+                  min={0}
+                  onChange={(event) => updateMember(member.target_id, { priority: normalizePriority(Number(event.currentTarget.value)) })}
+                  type="number"
+                  value={member.priority}
+                />
+              </Field>
+              <Field className="gap-1" orientation="horizontal">
+                <Switch
+                  checked={member.enabled}
+                  id={`target-group-enabled-${member.target_id}`}
+                  onCheckedChange={(enabled) => updateMember(member.target_id, { enabled })}
+                />
+                <FieldLabel className="text-xs" htmlFor={`target-group-enabled-${member.target_id}`}>{t("common.enabled")}</FieldLabel>
+              </Field>
+              <Button aria-label={t("targets.removeMember")} onClick={() => removeMember(member.target_id)} size="icon" type="button" variant="ghost">
+                <Trash2Icon />
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </>
   );
 }

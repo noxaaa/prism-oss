@@ -759,7 +759,7 @@ func (service *ControlService) prepareRuleImportDisabled(ctx context.Context, re
 			"listen_ip":     input.ListenIP,
 		})
 	}
-	return ensureUpstreamExists(ctx, repositories, identity.OrganizationID, input.Upstream)
+	return service.ensureUpstreamExists(ctx, repositories, identity.OrganizationID, input.Upstream)
 }
 
 func importTargetHostPortKey(host string, port int) string {
@@ -851,7 +851,7 @@ func (service *ControlService) prepareRuleMutation(ctx context.Context, reposito
 	if _, err := repositories.NodeGroups().FindNodeGroupByID(ctx, identity.OrganizationID, input.NodeGroupID); err != nil {
 		return err
 	}
-	if err := ensureUpstreamAvailable(ctx, repositories, identity.OrganizationID, input.Upstream); err != nil {
+	if err := service.ensureUpstreamAvailable(ctx, repositories, identity.OrganizationID, input.Upstream); err != nil {
 		return err
 	}
 	nodes, err := nodesInGroup(ctx, repositories, identity.OrganizationID, input.NodeGroupID)

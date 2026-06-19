@@ -149,6 +149,7 @@ type TargetMutationInput struct {
 type TargetGroupMutationInput struct {
 	Name        string
 	Description string
+	Scheduler   string
 	Members     []TargetGroupMemberInput
 }
 
