@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare release assets
+        run: |
+          set -euo pipefail
+          assets_dir="$(mktemp -d)"
+          cp scripts/install.sh "$assets_dir/install.sh"
+          tar -czf "$assets_dir/prism-oss-source.tar.gz" \
+            --exclude-vcs \
+            --exclude='./node_modules' \
+            --exclude='./apps/web/node_modules' \
+            --exclude='./apps/web/.next' \
+            -C "$GITHUB_WORKSPACE" .
+          echo "ASSETS_DIR=$assets_dir" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSETS_DIR }}/install.sh
+            ${{ env.ASSETS_DIR }}/prism-oss-source.tar.gz
