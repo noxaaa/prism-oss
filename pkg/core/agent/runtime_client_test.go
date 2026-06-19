@@ -550,6 +550,91 @@ func TestNodeRuntimeFallsBackToCredentialWhenStoredRegistrationTokenWasFinalized
 	}
 }
 
+func TestNodeRuntimeFallsBackToRegistrationTokenWhenFinalizedCredentialIsRejected(t *testing.T) {
+	credentialPath := filepath.Join(t.TempDir(), "credential.json")
+	if err := os.WriteFile(credentialPath, []byte(`{"agent_credential":"stale-credential","registration_finalized":true}`), 0o600); err != nil {
+		t.Fatalf("write stale credential file: %v", err)
+	}
+	t.Setenv("APP_NAME", "Runtime App")
+	cfg, err := LoadRuntimeConfigFromArgs([]string{
+		"install",
+		"--control-url", "http://127.0.0.1:1",
+		"--registration-token", "fresh-registration-token",
+		"--credential-file", credentialPath,
+	})
+	if err != nil {
+		t.Fatalf("load install config: %v", err)
+	}
+
+	seenAuthorization := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		authorization := request.Header.Get("Authorization")
+		seenAuthorization <- authorization
+		if authorization == "Bearer stale-credential" {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if authorization != "Bearer fresh-registration-token" {
+			t.Errorf("unexpected authorization header %q", authorization)
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		conn, err := websocket.Accept(response, request, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+		writeRuntimeTestEnvelope(t, request.Context(), conn, "registration_success", map[string]any{
+			"agent_id":         "node_from_registration",
+			"agent_credential": "replacement-credential",
+		})
+		ack := readRuntimeTestEnvelope(t, request.Context(), conn)
+		if ack.Type != "registration_ack" {
+			t.Errorf("expected registration_ack, got %#v", ack)
+			return
+		}
+		writeRuntimeTestEnvelope(t, request.Context(), conn, "registration_finalized", map[string]any{
+			"agent_id": "node_from_registration",
+		})
+		hello := readRuntimeTestEnvelope(t, request.Context(), conn)
+		if hello.Type != "hello" {
+			t.Errorf("expected hello, got %#v", hello)
+			return
+		}
+	}))
+	defer server.Close()
+	cfg.ControlPlaneURL = server.URL
+	runtime := NewNodeRuntime(cfg, nil)
+	runtime.metricsInterval = time.Hour
+	runtime.heartbeatInterval = time.Hour
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = runtime.runOnce(ctx)
+	if err == nil {
+		t.Fatalf("expected connection close after test server exits")
+	}
+	first := readAuthorizationForRuntimeTest(t, seenAuthorization)
+	second := readAuthorizationForRuntimeTest(t, seenAuthorization)
+	if first != "Bearer stale-credential" || second != "Bearer fresh-registration-token" {
+		t.Fatalf("expected stale credential then registration fallback, got %q then %q", first, second)
+	}
+	data, err := os.ReadFile(credentialPath)
+	if err != nil {
+		t.Fatalf("read replacement credential file: %v", err)
+	}
+	if !strings.Contains(string(data), "replacement-credential") {
+		t.Fatalf("expected replacement credential file, got %s", string(data))
+	}
+	if !strings.Contains(string(data), `"registration_finalized":true`) {
+		t.Fatalf("expected replacement credential to be finalized, got %s", string(data))
+	}
+	if registrationToken := runtime.getRegistrationToken(); registrationToken != "" {
+		t.Fatalf("expected finalized fallback registration to clear token, got %q", registrationToken)
+	}
+}
+
 func TestNodeRuntimeFailsRegistrationWhenCredentialCannotBePersisted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		conn, err := websocket.Accept(response, request, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -581,6 +666,17 @@ func TestNodeRuntimeFailsRegistrationWhenCredentialCannotBePersisted(t *testing.
 	}
 	if registrationToken := runtime.getRegistrationToken(); registrationToken != "registration-token" {
 		t.Fatalf("expected registration token to remain usable, got %q", registrationToken)
+	}
+}
+
+func readAuthorizationForRuntimeTest(t *testing.T, seen <-chan string) string {
+	t.Helper()
+	select {
+	case authorization := <-seen:
+		return authorization
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for authorization header")
+		return ""
 	}
 }
 

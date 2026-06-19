@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -37,6 +39,9 @@ type NodeRuntime struct {
 	versionMu            sync.RWMutex
 	appliedConfigVersion int
 	writeMu              sync.Mutex
+	logMu                sync.Mutex
+	lastErrorLogAt       time.Time
+	lastErrorSignature   string
 }
 
 type runtimeEnvelope struct {
@@ -80,6 +85,7 @@ func (runtime *NodeRuntime) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			runtime.logRuntimeError(err)
 		}
 		select {
 		case <-ctx.Done():
@@ -95,17 +101,15 @@ func (runtime *NodeRuntime) runOnce(ctx context.Context) error {
 	}
 	token, tokenSource := runtime.authTokenWithSource()
 	connectURL := agentWebSocketURL(runtime.getControlPlaneURL())
-	headers := http.Header{}
-	headers.Set("Authorization", "Bearer "+token)
-	headers.Set("X-Agent-Type", runtime.getAgentType())
-	headers.Set("X-Agent-Version", buildinfo.Version)
-	conn, response, err := websocket.Dial(ctx, connectURL, &websocket.DialOptions{HTTPHeader: headers})
-	if err != nil && tokenSource == "registration" && runtime.getAgentCredential() != "" && response != nil && response.StatusCode == http.StatusUnauthorized {
-		headers.Set("Authorization", "Bearer "+runtime.getAgentCredential())
-		conn, _, err = websocket.Dial(ctx, connectURL, &websocket.DialOptions{HTTPHeader: headers})
+	conn, response, err := runtime.dialControlPlane(ctx, connectURL, token, tokenSource)
+	if err != nil && response != nil && response.StatusCode == http.StatusUnauthorized {
+		if fallbackToken, fallbackSource, ok := runtime.authFallbackToken(tokenSource); ok {
+			tokenSource = fallbackSource
+			conn, response, err = runtime.dialControlPlane(ctx, connectURL, fallbackToken, fallbackSource)
+		}
 	}
 	if err != nil {
-		return err
+		return controlPlaneDialError(connectURL, tokenSource, response, err)
 	}
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
@@ -190,6 +194,51 @@ func (runtime *NodeRuntime) runOnce(ctx context.Context) error {
 			// and reports the desired version in hello.
 		}
 	}
+}
+
+func (runtime *NodeRuntime) dialControlPlane(ctx context.Context, connectURL string, token string, tokenSource string) (*websocket.Conn, *http.Response, error) {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+token)
+	headers.Set("X-Agent-Type", runtime.getAgentType())
+	headers.Set("X-Agent-Version", buildinfo.Version)
+	return websocket.Dial(ctx, connectURL, &websocket.DialOptions{HTTPHeader: headers})
+}
+
+func (runtime *NodeRuntime) authFallbackToken(tokenSource string) (string, string, bool) {
+	switch tokenSource {
+	case "registration":
+		if credential := runtime.getAgentCredential(); credential != "" {
+			return credential, "credential", true
+		}
+	case "credential":
+		if registrationToken := runtime.getRegistrationToken(); registrationToken != "" {
+			return registrationToken, "registration", true
+		}
+	}
+	return "", "", false
+}
+
+func controlPlaneDialError(connectURL string, tokenSource string, response *http.Response, err error) error {
+	if response != nil {
+		return fmt.Errorf("connect %s with %s token failed: http %d: %w", connectURL, tokenSource, response.StatusCode, err)
+	}
+	return fmt.Errorf("connect %s with %s token failed: %w", connectURL, tokenSource, err)
+}
+
+func (runtime *NodeRuntime) logRuntimeError(err error) {
+	if err == nil {
+		return
+	}
+	signature := err.Error()
+	now := time.Now()
+	runtime.logMu.Lock()
+	defer runtime.logMu.Unlock()
+	if signature == runtime.lastErrorSignature && now.Sub(runtime.lastErrorLogAt) < 30*time.Second {
+		return
+	}
+	runtime.lastErrorSignature = signature
+	runtime.lastErrorLogAt = now
+	log.Printf("%s node-agent connection failed: %v", runtime.getAppName(), err)
 }
 
 func (runtime *NodeRuntime) authenticateConnection(ctx context.Context, conn *websocket.Conn) error {
@@ -426,6 +475,12 @@ func (runtime *NodeRuntime) getControlPlaneURL() string {
 	runtime.configMu.RLock()
 	defer runtime.configMu.RUnlock()
 	return runtime.config.ControlPlaneURL
+}
+
+func (runtime *NodeRuntime) getAppName() string {
+	runtime.configMu.RLock()
+	defer runtime.configMu.RUnlock()
+	return runtime.config.AppName
 }
 
 func (runtime *NodeRuntime) getAgentType() string {

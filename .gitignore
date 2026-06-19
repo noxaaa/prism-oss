@@ -1,6 +1,7 @@
 .cache/
 .codegraph/
 .gocache/
+.release/
 node_modules/
 .next/
 dist/

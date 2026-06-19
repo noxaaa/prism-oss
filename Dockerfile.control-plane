@@ -1,19 +1,8 @@
-FROM golang:1.24-bookworm AS build
-
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-ARG VERSION=dev
-ARG COMMIT=unknown
-ARG BUILD_TIME=unknown
-RUN mkdir -p /out/data && touch /out/data/.keep
-RUN CGO_ENABLED=0 go build \
-  -ldflags "-X github.com/noxaaa/prism-oss/pkg/core/buildinfo.Version=${VERSION} -X github.com/noxaaa/prism-oss/pkg/core/buildinfo.Commit=${COMMIT} -X github.com/noxaaa/prism-oss/pkg/core/buildinfo.BuildTime=${BUILD_TIME}" \
-  -o /out/control-plane-oss ./cmd/control-plane-oss
+# syntax=docker/dockerfile:1.7
 
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY --from=build --chown=65532:65532 /out/data /data
-COPY --from=build /out/control-plane-oss /control-plane-oss
+ARG TARGETARCH
+COPY --chown=65532:65532 .release/docker/data /data
+COPY --chmod=0755 .release/docker/linux-${TARGETARCH}/control-plane-oss /control-plane-oss
 EXPOSE 8080
 ENTRYPOINT ["/control-plane-oss"]

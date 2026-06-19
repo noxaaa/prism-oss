@@ -12,7 +12,50 @@ env:
   REGISTRY: ghcr.io/noxaaa
 
 jobs:
-  release:
+  build-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile Go binaries
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          commit="${GITHUB_SHA}"
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ldflags="-X github.com/noxaaa/prism-oss/pkg/core/buildinfo.Version=${version} -X github.com/noxaaa/prism-oss/pkg/core/buildinfo.Commit=${commit} -X github.com/noxaaa/prism-oss/pkg/core/buildinfo.BuildTime=${build_time}"
+          assets_dir=".release/assets"
+          mkdir -p "$assets_dir" .release/docker/data
+          touch .release/docker/data/.keep
+          cp scripts/install.sh "$assets_dir/install.sh"
+          cp scripts/uninstall.sh "$assets_dir/uninstall.sh"
+          cp scripts/install-node-agent.sh "$assets_dir/install-node-agent.sh"
+          cp scripts/uninstall-node-agent.sh "$assets_dir/uninstall-node-agent.sh"
+          cp scripts/upgrade.sh "$assets_dir/upgrade.sh"
+          for arch in amd64 arm64; do
+            out_dir=".release/docker/linux-${arch}"
+            mkdir -p "$out_dir"
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/control-plane-oss" ./cmd/control-plane-oss
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/migrate" ./cmd/migrate
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/node-agent" ./cmd/node-agent
+            cp "$out_dir/control-plane-oss" "$assets_dir/control-plane-oss-linux-${arch}"
+            tar -C "$out_dir" -czf "$assets_dir/node-agent-linux-${arch}.tar.gz" node-agent
+            tar -czf "$assets_dir/migrate-linux-${arch}.tar.gz" -C "$out_dir" migrate -C "$GITHUB_WORKSPACE" migrations/core
+          done
+          (cd "$assets_dir" && sha256sum * > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-release
+          path: .release
+          include-hidden-files: true
+
+  build-web-image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,12 +70,10 @@ jobs:
 
       - uses: crazy-max/ghaction-github-runtime@v3
 
-      - name: Build and push runtime images
+      - name: Build and push web image
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME}"
-          commit="${GITHUB_SHA}"
-          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           docker buildx build --push --platform linux/amd64,linux/arm64 \
             -f apps/web/Dockerfile \
             --cache-from type=gha,scope=prism-oss-web \
@@ -40,62 +81,98 @@ jobs:
             -t "${REGISTRY}/prism-oss-web:${version}" \
             -t "${REGISTRY}/prism-oss-web:latest" \
             .
+
+  build-control-plane-image:
+    runs-on: ubuntu-latest
+    needs: build-go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-release
+          path: .release
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: crazy-max/ghaction-github-runtime@v3
+
+      - name: Build and push control-plane image
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
           docker buildx build --push --platform linux/amd64,linux/arm64 \
             -f Dockerfile.control-plane \
             --cache-from type=gha,scope=prism-oss-control-plane \
             --cache-to type=gha,mode=max,scope=prism-oss-control-plane \
-            --build-arg VERSION="${version}" \
-            --build-arg COMMIT="${commit}" \
-            --build-arg BUILD_TIME="${build_time}" \
             -t "${REGISTRY}/prism-oss-control-plane:${version}" \
             -t "${REGISTRY}/prism-oss-control-plane:latest" \
             .
+
+  build-migrate-image:
+    runs-on: ubuntu-latest
+    needs: build-go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-release
+          path: .release
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: crazy-max/ghaction-github-runtime@v3
+
+      - name: Build and push migrate image
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
           docker buildx build --push --platform linux/amd64,linux/arm64 \
             -f Dockerfile.migrate \
             --cache-from type=gha,scope=prism-oss-migrate \
             --cache-to type=gha,mode=max,scope=prism-oss-migrate \
-            --build-arg VERSION="${version}" \
-            --build-arg COMMIT="${commit}" \
-            --build-arg BUILD_TIME="${build_time}" \
             -t "${REGISTRY}/prism-oss-migrate:${version}" \
             -t "${REGISTRY}/prism-oss-migrate:latest" \
             .
 
-      - name: Prepare release assets
-        run: |
-          set -euo pipefail
-          assets_dir="$(mktemp -d)"
-          version="${GITHUB_REF_NAME}"
-          commit="${GITHUB_SHA}"
-          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          ldflags="-X github.com/noxaaa/prism-oss/pkg/core/buildinfo.Version=${version} -X github.com/noxaaa/prism-oss/pkg/core/buildinfo.Commit=${commit} -X github.com/noxaaa/prism-oss/pkg/core/buildinfo.BuildTime=${build_time}"
-          cp scripts/install.sh "$assets_dir/install.sh"
-          cp scripts/install-node-agent.sh "$assets_dir/install-node-agent.sh"
-          cp scripts/uninstall-node-agent.sh "$assets_dir/uninstall-node-agent.sh"
-          cp scripts/upgrade.sh "$assets_dir/upgrade.sh"
-          for arch in amd64 arm64; do
-            GOOS=linux GOARCH="$arch" go build -ldflags "$ldflags" -o "$assets_dir/node-agent" ./cmd/node-agent
-            tar -C "$assets_dir" -czf "$assets_dir/node-agent-linux-${arch}.tar.gz" node-agent
-            rm "$assets_dir/node-agent"
-            GOOS=linux GOARCH="$arch" go build -ldflags "$ldflags" -o "$assets_dir/control-plane-oss-linux-${arch}" ./cmd/control-plane-oss
-            GOOS=linux GOARCH="$arch" go build -ldflags "$ldflags" -o "$assets_dir/migrate" ./cmd/migrate
-            tar -czf "$assets_dir/migrate-linux-${arch}.tar.gz" -C "$assets_dir" migrate -C "$GITHUB_WORKSPACE" migrations/core
-            rm "$assets_dir/migrate"
-          done
-          (cd "$assets_dir" && sha256sum * > SHA256SUMS)
-          echo "ASSETS_DIR=$assets_dir" >> "$GITHUB_ENV"
+  github-release:
+    runs-on: ubuntu-latest
+    needs:
+      - build-go
+      - build-web-image
+      - build-control-plane-image
+      - build-migrate-image
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-release
+          path: .release
 
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            ${{ env.ASSETS_DIR }}/install.sh
-            ${{ env.ASSETS_DIR }}/upgrade.sh
-            ${{ env.ASSETS_DIR }}/install-node-agent.sh
-            ${{ env.ASSETS_DIR }}/uninstall-node-agent.sh
-            ${{ env.ASSETS_DIR }}/node-agent-linux-amd64.tar.gz
-            ${{ env.ASSETS_DIR }}/node-agent-linux-arm64.tar.gz
-            ${{ env.ASSETS_DIR }}/control-plane-oss-linux-amd64
-            ${{ env.ASSETS_DIR }}/control-plane-oss-linux-arm64
-            ${{ env.ASSETS_DIR }}/migrate-linux-amd64.tar.gz
-            ${{ env.ASSETS_DIR }}/migrate-linux-arm64.tar.gz
-            ${{ env.ASSETS_DIR }}/SHA256SUMS
+            .release/assets/install.sh
+            .release/assets/uninstall.sh
+            .release/assets/upgrade.sh
+            .release/assets/install-node-agent.sh
+            .release/assets/uninstall-node-agent.sh
+            .release/assets/node-agent-linux-amd64.tar.gz
+            .release/assets/node-agent-linux-arm64.tar.gz
+            .release/assets/control-plane-oss-linux-amd64
+            .release/assets/control-plane-oss-linux-arm64
+            .release/assets/migrate-linux-amd64.tar.gz
+            .release/assets/migrate-linux-arm64.tar.gz
+            .release/assets/SHA256SUMS

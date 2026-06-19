@@ -44,10 +44,20 @@ cd "$HOME/prism-oss"
 ./upgrade.sh --version v0.1.9
 ```
 
+Uninstall the control plane from the install directory:
+
+```sh
+cd "$HOME/prism-oss"
+./uninstall.sh
+./uninstall.sh --purge
+```
+
+The default control-plane uninstall stops and removes Compose containers while preserving `.env`, `docker-compose.yml`, and Docker volumes. Add `--purge` only when you also want to remove generated local install files and data volumes.
+
 Install a node Agent as a Linux systemd service. Use the copied registration token command from the console, or run the release helper directly as root:
 
 ```sh
-tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install-node-agent.sh -o "$tmp" && sudo env APP_NAME='OSS Control Console' sh "$tmp" --version latest --control-url http://YOUR_CONTROL_PLANE:8080 --registration-token YOUR_NODE_REGISTRATION_TOKEN; status=$?; rm -f "${tmp:-}"; exit "$status"
+(tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install-node-agent.sh -o "$tmp" && sudo env APP_NAME='OSS Control Console' sh "$tmp" --version latest --control-url http://YOUR_CONTROL_PLANE:8080 --registration-token YOUR_NODE_REGISTRATION_TOKEN; status=$?; rm -f "${tmp:-}"; exit "$status")
 ```
 
 The helper downloads `node-agent-linux-<arch>.tar.gz`, verifies `SHA256SUMS`, calls `node-agent install`, registers `prism-node-agent.service`, and exits. The Agent then runs in the background under systemd.
@@ -61,13 +71,13 @@ sudo /opt/prism-node-agent/current/node-agent upgrade --version v0.1.9
 You can also rerun the install helper with a target release tag and the current node registration token:
 
 ```sh
-tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/download/v0.1.9/install-node-agent.sh -o "$tmp" && sudo env APP_NAME='OSS Control Console' sh "$tmp" --version v0.1.9 --control-url http://YOUR_CONTROL_PLANE:8080 --registration-token YOUR_NODE_REGISTRATION_TOKEN; status=$?; rm -f "${tmp:-}"; exit "$status"
+(tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/download/v0.1.9/install-node-agent.sh -o "$tmp" && sudo env APP_NAME='OSS Control Console' sh "$tmp" --version v0.1.9 --control-url http://YOUR_CONTROL_PLANE:8080 --registration-token YOUR_NODE_REGISTRATION_TOKEN; status=$?; rm -f "${tmp:-}"; exit "$status")
 ```
 
 Uninstall the node Agent service:
 
 ```sh
-tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/uninstall-node-agent.sh -o "$tmp" && sudo sh "$tmp"; status=$?; rm -f "${tmp:-}"; exit "$status"
+(tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/uninstall-node-agent.sh -o "$tmp" && sudo sh "$tmp"; status=$?; rm -f "${tmp:-}"; exit "$status")
 ```
 
 Add `--purge` to remove the Agent config and credential state as well.

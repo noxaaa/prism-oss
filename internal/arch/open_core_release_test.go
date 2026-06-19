@@ -40,6 +40,7 @@ func TestOSSReleaseWorkflowPublishesPrebuiltArtifacts(t *testing.T) {
 		"migrate-linux-amd64.tar.gz",
 		"migrate-linux-arm64.tar.gz",
 		"install.sh",
+		"uninstall.sh",
 		"upgrade.sh",
 		"install-node-agent.sh",
 		"uninstall-node-agent.sh",
@@ -73,13 +74,75 @@ func TestOSSReleaseWorkflowUsesBuildxGhaCache(t *testing.T) {
 	}
 }
 
+func TestOSSGORuntimeImagesCopyPrebuiltBinaries(t *testing.T) {
+	root := repoRoot(t)
+	for relative, binary := range map[string]string{
+		"Dockerfile.control-plane": "control-plane-oss",
+		"Dockerfile.migrate":       "migrate",
+	} {
+		source := readText(t, filepath.Join(root, filepath.FromSlash(relative)))
+		for _, forbidden := range []string{
+			"FROM golang:",
+			"go mod download",
+			"go build",
+			"ARG VERSION",
+			"ARG COMMIT",
+			"ARG BUILD_TIME",
+		} {
+			if strings.Contains(source, forbidden) {
+				t.Fatalf("%s must package prebuilt binaries instead of compiling Go in Docker; found %q", relative, forbidden)
+			}
+		}
+		for _, required := range []string{
+			"ARG TARGETARCH",
+			".release/docker/linux-${TARGETARCH}/" + binary,
+			"COPY --chmod=0755",
+		} {
+			if !strings.Contains(source, required) {
+				t.Fatalf("%s must copy the prebuilt %s binary selected by TARGETARCH; missing %q", relative, binary, required)
+			}
+		}
+	}
+	migrateSource := readText(t, filepath.Join(root, "Dockerfile.migrate"))
+	if !strings.Contains(migrateSource, "COPY migrations /migrations") {
+		t.Fatalf("Dockerfile.migrate must still package migrations")
+	}
+}
+
+func TestOSSReleaseWorkflowCrossCompilesGoBeforeDockerBuild(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, ".github", "workflows", "release.yml"))
+	for _, required := range []string{
+		"GOOS=linux GOARCH=\"$arch\" CGO_ENABLED=0 go build",
+		`out_dir=".release/docker/linux-${arch}"`,
+		`-o "$out_dir/control-plane-oss"`,
+		`-o "$out_dir/migrate"`,
+		`-o "$out_dir/node-agent"`,
+		"actions/upload-artifact@",
+		"actions/download-artifact@",
+		"needs: build-go",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("release workflow must cross-compile Go before Docker packaging; missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"--build-arg VERSION=",
+		"--build-arg COMMIT=",
+		"--build-arg BUILD_TIME=",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("release workflow must not invalidate Docker cache with Go build metadata args; found %q", forbidden)
+		}
+	}
+}
+
 func TestOSSStandaloneMigrateReleaseAssetPackagesMigrations(t *testing.T) {
 	root := repoRoot(t)
 	source := readText(t, filepath.Join(root, ".github", "workflows", "release.yml"))
 	for _, required := range []string{
-		"GOOS=linux GOARCH=\"$arch\" go build -ldflags \"$ldflags\" -o \"$assets_dir/migrate\" ./cmd/migrate",
-		"tar -czf \"$assets_dir/migrate-linux-${arch}.tar.gz\" -C \"$assets_dir\" migrate -C \"$GITHUB_WORKSPACE\" migrations/core",
-		"rm \"$assets_dir/migrate\"",
+		"GOOS=linux GOARCH=\"$arch\" CGO_ENABLED=0 go build -ldflags \"$ldflags\" -o \"$out_dir/migrate\" ./cmd/migrate",
+		"tar -czf \"$assets_dir/migrate-linux-${arch}.tar.gz\" -C \"$out_dir\" migrate -C \"$GITHUB_WORKSPACE\" migrations/core",
 		"migrate-linux-amd64.tar.gz",
 		"migrate-linux-arm64.tar.gz",
 	} {
@@ -145,6 +208,8 @@ func TestOSSReadmeExposesUpgradeAndAgentLifecycleCommands(t *testing.T) {
 	for _, required := range []string{
 		"prebuilt",
 		"./upgrade.sh --version latest",
+		"./uninstall.sh",
+		"./uninstall.sh --purge",
 		"install-node-agent.sh",
 		"uninstall-node-agent.sh",
 		"node-agent upgrade --version",
@@ -152,6 +217,20 @@ func TestOSSReadmeExposesUpgradeAndAgentLifecycleCommands(t *testing.T) {
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("README.md must include %q", required)
+		}
+	}
+}
+
+func TestOSSReadmeAgentLifecycleCommandsDoNotExitInteractiveShell(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "README.md"))
+	for _, line := range strings.Split(source, "\n") {
+		if !strings.Contains(line, `exit "$status"`) {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "(tmp=$(mktemp)") {
+			t.Fatalf("README lifecycle command must wrap exit in a subshell so SSH sessions are not closed: %s", line)
 		}
 	}
 }
@@ -673,15 +752,15 @@ func TestOSSDockerImagesPackageRuntimeStateAndMigrations(t *testing.T) {
 		"Dockerfile.migrate":       migrate,
 	} {
 		for _, required := range []string{
-			"mkdir -p /out/data",
-			"COPY --from=build --chown=65532:65532 /out/data /data",
+			"COPY --chown=65532:65532 .release/docker/data /data",
+			"COPY --chmod=0755 .release/docker/linux-${TARGETARCH}/",
 		} {
 			if !strings.Contains(source, required) {
 				t.Fatalf("%s must prepare writable /data for the nonroot runtime image; missing %q", path, required)
 			}
 		}
 	}
-	if !strings.Contains(migrate, "COPY --from=build /src/migrations /migrations") {
+	if !strings.Contains(migrate, "COPY migrations /migrations") {
 		t.Fatalf("Dockerfile.migrate must package migrations for release installs")
 	}
 }
