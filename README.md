@@ -1,5 +1,7 @@
 # Open-source forwarding platform
 
+[简体中文](./README.zh-CN.md)
+
 This repository contains a single-user forwarding control plane and agent stack for managing network forwarding rules.
 
 ## Features
