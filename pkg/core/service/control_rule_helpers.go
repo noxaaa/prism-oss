@@ -3,11 +3,12 @@ package service
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
@@ -203,9 +204,8 @@ func nodeCoversPort(node repo.NodeRecord, protocol string, port int) bool {
 
 func inboundBindingForRule(organizationID string, input RuleMutationInput, now string) repo.InboundBindingRecord {
 	idSource := organizationID + "|" + input.NodeGroupID + "|" + input.ListenIP + "|" + input.Protocol + "|" + strconv.Itoa(input.Port) + "|" + input.Match.Type
-	sum := sha256.Sum256([]byte(idSource))
 	return repo.InboundBindingRecord{
-		ID:             "inbound_" + hex.EncodeToString(sum[:8]),
+		ID:             uuid.NewHash(sha256.New(), uuid.Nil, []byte(idSource), 5).String(),
 		OrganizationID: organizationID,
 		NodeGroupID:    input.NodeGroupID,
 		ListenIP:       input.ListenIP,

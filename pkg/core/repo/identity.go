@@ -189,12 +189,20 @@ func (store *PostgresStore) ListRolesByOrganization(ctx context.Context, organiz
 		if err != nil {
 			return nil, err
 		}
-		if err := store.loadRoleDetails(ctx, &role); err != nil {
-			return nil, err
-		}
 		roles = append(roles, role)
 	}
-	return roles, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range roles {
+		if err := store.loadRoleDetails(ctx, &roles[index]); err != nil {
+			return nil, err
+		}
+	}
+	return roles, nil
 }
 
 func (store *PostgresStore) FindRoleByID(ctx context.Context, organizationID string, roleID string) (RoleRecord, error) {
@@ -310,12 +318,20 @@ func (store *PostgresStore) ListForMember(ctx context.Context, organizationID st
 		if err != nil {
 			return nil, err
 		}
-		if err := store.loadRoleDetails(ctx, &role); err != nil {
-			return nil, err
-		}
 		roles = append(roles, role)
 	}
-	return roles, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range roles {
+		if err := store.loadRoleDetails(ctx, &roles[index]); err != nil {
+			return nil, err
+		}
+	}
+	return roles, nil
 }
 
 func (store *PostgresStore) loadRoleDetails(ctx context.Context, role *RoleRecord) error {

@@ -99,7 +99,7 @@ func TestOSSPostgresQueriesCastNullableUUIDsBeforeCoalesce(t *testing.T) {
 
 func TestOSSOpenPostgresValidatesConnectionBeforeReturning(t *testing.T) {
 	root := repoRoot(t)
-	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "postgres_open.go"))
+	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "open.go"))
 	for _, required := range []string{
 		"context.WithTimeout",
 		"db.PingContext(ctx)",
@@ -107,6 +107,17 @@ func TestOSSOpenPostgresValidatesConnectionBeforeReturning(t *testing.T) {
 		if !strings.Contains(source, required) {
 			t.Fatalf("OpenPostgres must validate PostgreSQL connectivity before returning; missing %q", required)
 		}
+	}
+}
+
+func TestOSSRepoFilesDoNotUseDatabaseAdapterPrefixes(t *testing.T) {
+	root := repoRoot(t)
+	matches, err := filepath.Glob(filepath.Join(root, "pkg", "core", "repo", "postgres_*.go"))
+	if err != nil {
+		t.Fatalf("glob repo files: %v", err)
+	}
+	if len(matches) > 0 {
+		t.Fatalf("PostgreSQL is the only supported database; repo files must not look like database adapters: %v", matches)
 	}
 }
 

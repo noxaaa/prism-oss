@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -201,6 +202,129 @@ func TestOSSControlServerBootstrapsWithCoreOnlySchema(t *testing.T) {
 	assertOSSErrorCode(t, otherBootstrap, "OSS_OWNER_REQUIRED")
 }
 
+func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
+	db, store := openMigratedOSSControlTestStore(t)
+	defer closeTestDB(db)
+
+	seedBetterAuthUser(t, db, "user_owner", "owner@example.com", "Owner")
+	webSigner := auth.HMACWebUserTokenSigner{Secret: []byte("test-secret")}
+	internalSigner := auth.HMACInternalTokenSigner{Secret: []byte("test-secret")}
+	server := NewControlServer(ControlServerOptions{
+		TokenVerifier:           internalSigner,
+		WebUserVerifier:         webSigner,
+		RepositoryStore:         store,
+		Edition:                 edition.OSSProvider(),
+		InternalTokenTTL:        time.Minute,
+		AppName:                 "OSS Control Console",
+		ControlPlaneURL:         "http://127.0.0.1:8080",
+		AgentReleaseVersion:     "v0.0.0-test",
+		AgentTokenSigningSecret: []byte("agent-token-secret-32-byte-test-key"),
+	})
+
+	bootstrap := postBootstrap(t, server, webSigner, "user_owner", "owner@example.com")
+	if bootstrap.Code != http.StatusCreated {
+		t.Fatalf("expected bootstrap 201, got %d body=%s", bootstrap.Code, bootstrap.Body.String())
+	}
+	var bootstrapResponse controlResponse
+	decodeJSON(t, bootstrap, &bootstrapResponse)
+
+	token := signInternalToken(t, internalSigner, auth.InternalClaims{
+		UserID:         "user_owner",
+		OrganizationID: bootstrapResponse.Data.Organization.ID,
+		MemberID:       "synthetic-member",
+		SourceService:  auth.InternalSourceServiceWeb,
+		Roles:          []string{"synthetic-owner"},
+		Permissions: []string{
+			string(domain.PermissionOrganizationRead),
+			string(domain.PermissionNodesRead),
+			string(domain.PermissionNodesManage),
+			string(domain.PermissionTargetsRead),
+			string(domain.PermissionTargetsManage),
+			string(domain.PermissionRulesReadAll),
+			string(domain.PermissionRulesManageAll),
+			string(domain.PermissionTrafficReadAll),
+		},
+		ResourceScopes: []auth.ResourceScopeClaim{{ResourceType: string(domain.ResourceTypeNodeGroup), ResourceID: "*", AccessLevel: string(domain.AccessLevelManage)}},
+		ExpiresAt:      time.Now().Add(time.Minute),
+	})
+	group := createOSSNodeGroupViaAPI(t, server, token, "OSS API Group")
+	node := createOSSNodeViaAPI(t, server, token, group.ID, "OSS API Node")
+	target := createOSSTargetViaAPI(t, server, token, "OSS API Target")
+	targetGroup := createOSSTargetGroupViaAPI(t, server, token, target.ID, "OSS API Target Group")
+	controlService := service.NewControlServiceWithOptions(store, service.ControlServiceOptions{
+		Edition:                 edition.OSSProvider(),
+		AppName:                 "OSS Control Console",
+		ControlPlaneURL:         "http://127.0.0.1:8080",
+		AgentReleaseVersion:     "v0.0.0-test",
+		AgentTokenSigningSecret: []byte("agent-token-secret-32-byte-test-key"),
+	})
+	if _, err := controlService.CreateRule(context.Background(), service.InternalIdentity{
+		UserID:         "user_owner",
+		OrganizationID: bootstrapResponse.Data.Organization.ID,
+		MemberID:       "synthetic-member",
+		Roles:          []string{"synthetic-owner"},
+		Permissions:    []string{string(domain.PermissionRulesManageAll)},
+		ResourceScopes: []service.ResourceScopePayload{{ResourceType: string(domain.ResourceTypeNodeGroup), ResourceID: "*", AccessLevel: string(domain.AccessLevelManage)}},
+	}, service.RuleMutationInput{
+		Name:           "Service smoke rule",
+		Tags:           []string{"smoke"},
+		NodeGroupID:    group.ID,
+		ListenIP:       "0.0.0.0",
+		ForwardingType: "DIRECT",
+		Protocol:       "TCP",
+		Port:           10001,
+		Match:          service.RuleMatchInput{Type: "ANY_INBOUND"},
+		ProxyProtocol:  service.RuleProxyProtocolInput{},
+		Upstream:       service.RuleUpstreamInput{Type: "TARGET_GROUP", TargetGroupID: targetGroup.ID},
+		Enabled:        false,
+		EnabledSet:     true,
+	}); err != nil {
+		t.Fatalf("expected direct Postgres rule create to succeed: %v", err)
+	}
+	rule := createOSSRuleViaAPI(t, server, token, group.ID, targetGroup.ID, "OSS API Rule")
+	registrationToken := createOSSNodeRegistrationTokenViaAPI(t, server, token, node.ID)
+	if _, err := store.Nodes().ListNodesByOrganization(context.Background(), bootstrapResponse.Data.Organization.ID); err != nil {
+		t.Fatalf("expected direct Postgres node listing to succeed: %v", err)
+	}
+	if _, err := controlService.ListNodes(context.Background(), service.InternalIdentity{
+		UserID:         "user_owner",
+		OrganizationID: bootstrapResponse.Data.Organization.ID,
+		MemberID:       "synthetic-member",
+		Roles:          []string{"synthetic-owner"},
+		Permissions:    []string{string(domain.PermissionNodesRead)},
+		ResourceScopes: []service.ResourceScopePayload{{ResourceType: string(domain.ResourceTypeNodeGroup), ResourceID: "*", AccessLevel: string(domain.AccessLevelManage)}},
+	}); err != nil {
+		t.Fatalf("expected service Postgres node listing to succeed: %v", err)
+	}
+
+	for _, path := range []string{
+		"/internal/v1/node-groups",
+		"/internal/v1/nodes",
+		"/internal/v1/nodes/" + node.ID,
+		"/internal/v1/nodes/" + node.ID + "/registration-tokens",
+		"/internal/v1/resource-options/node-groups",
+		"/internal/v1/resource-options/node-group-listen-ips?node_group_id=" + group.ID,
+		"/internal/v1/resource-options/node-group-listen-ips?node_group_id=" + group.ID + "&protocol=TCP&port=10000",
+		"/internal/v1/resource-options/targets",
+		"/internal/v1/resource-options/target-groups",
+		"/internal/v1/targets",
+		"/internal/v1/target-groups",
+		"/internal/v1/rules",
+		"/internal/v1/rules/" + rule.ID,
+		"/internal/v1/rules/" + rule.ID + "/traffic",
+		"/internal/v1/rules/" + rule.ID + "/diagnostics",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("expected %s to return 200, got %d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+	revokeNodeRegistrationTokenViaAPI(t, server, token, node.ID, registrationToken.TokenID)
+}
+
 type testControlRouteExtension struct {
 	register func(ControlRouteRegistry)
 }
@@ -283,6 +407,26 @@ type ossNodeGroupPayload struct {
 	ID string `json:"id"`
 }
 
+type ossNodePayload struct {
+	ID string `json:"id"`
+}
+
+type ossTargetPayload struct {
+	ID string `json:"id"`
+}
+
+type ossTargetGroupPayload struct {
+	ID string `json:"id"`
+}
+
+type ossRulePayload struct {
+	ID string `json:"id"`
+}
+
+type ossRegistrationTokenPayload struct {
+	TokenID string `json:"token_id"`
+}
+
 func createOSSNodeGroupViaAPI(t *testing.T, server http.Handler, token string, name string) ossNodeGroupPayload {
 	t.Helper()
 
@@ -299,6 +443,135 @@ func createOSSNodeGroupViaAPI(t *testing.T, server http.Handler, token string, n
 	}
 	decodeJSON(t, recorder, &response)
 	return response.Data
+}
+
+func createOSSNodeViaAPI(t *testing.T, server http.Handler, token string, groupID string, name string) ossNodePayload {
+	t.Helper()
+
+	body := `{
+		"name":"` + name + `",
+		"group_ids":["` + groupID + `"],
+		"listen_ips":[{"listen_ip":"0.0.0.0","display_name":"default"}],
+		"port_ranges":[{"protocol":"TCP","start_port":10000,"end_port":20000}],
+		"public_description":""
+	}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/nodes", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS node create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossNodePayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func createOSSTargetViaAPI(t *testing.T, server http.Handler, token string, name string) ossTargetPayload {
+	t.Helper()
+
+	body := `{"name":"` + name + `","host":"1.1.1.1","port":443,"enabled":true}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/targets", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS target create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossTargetPayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func createOSSTargetGroupViaAPI(t *testing.T, server http.Handler, token string, targetID string, name string) ossTargetGroupPayload {
+	t.Helper()
+
+	body := `{
+		"name":"` + name + `",
+		"description":"OSS API target group",
+		"scheduler":"PRIORITY_IPHASH",
+		"members":[{"target_id":"` + targetID + `","priority":10,"enabled":true}]
+	}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/target-groups", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS target group create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossTargetGroupPayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func createOSSRuleViaAPI(t *testing.T, server http.Handler, token string, nodeGroupID string, targetGroupID string, name string) ossRulePayload {
+	t.Helper()
+
+	body := `{
+		"name":"` + name + `",
+		"tags":["smoke"],
+		"node_group_id":"` + nodeGroupID + `",
+		"listen_ip":"0.0.0.0",
+		"forwarding_type":"DIRECT",
+		"protocol":"TCP",
+		"port":10000,
+		"match":{"type":"ANY_INBOUND"},
+		"proxy_protocol":{"in":"NONE","out":"NONE"},
+		"upstream":{"type":"TARGET_GROUP","target_group_id":"` + targetGroupID + `"},
+		"enabled":false
+	}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/rules", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS rule create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossRulePayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func createOSSNodeRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, nodeID string) ossRegistrationTokenPayload {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/nodes/"+nodeID+"/registration-token", bytes.NewBufferString(`{"ttl_hours":1}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS node registration token create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossRegistrationTokenPayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func revokeNodeRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, nodeID string, tokenID string) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/nodes/"+nodeID+"/registration-tokens/"+tokenID, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected OSS node registration token revoke 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func assertOSSErrorCode(t *testing.T, recorder *httptest.ResponseRecorder, expected string) {

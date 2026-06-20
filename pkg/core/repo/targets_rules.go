@@ -84,12 +84,20 @@ func (store *PostgresStore) ListTargetGroupsByOrganization(ctx context.Context, 
 		if err != nil {
 			return nil, err
 		}
-		if err := store.loadTargetGroupMembers(ctx, &group); err != nil {
-			return nil, err
-		}
 		groups = append(groups, group)
 	}
-	return groups, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range groups {
+		if err := store.loadTargetGroupMembers(ctx, &groups[index]); err != nil {
+			return nil, err
+		}
+	}
+	return groups, nil
 }
 
 func (store *PostgresStore) FindTargetGroupByID(ctx context.Context, organizationID string, targetGroupID string) (TargetGroupRecord, error) {
@@ -172,12 +180,20 @@ func (store *PostgresStore) ListRulesByOrganization(ctx context.Context, organiz
 		if err != nil {
 			return nil, err
 		}
-		if err := store.loadRuleTags(ctx, &rule); err != nil {
-			return nil, err
-		}
 		rules = append(rules, rule)
 	}
-	return rules, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range rules {
+		if err := store.loadRuleTags(ctx, &rules[index]); err != nil {
+			return nil, err
+		}
+	}
+	return rules, nil
 }
 
 func (store *PostgresStore) FindRuleByID(ctx context.Context, organizationID string, ruleID string) (RuleRecord, error) {

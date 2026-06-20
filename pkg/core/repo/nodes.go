@@ -89,12 +89,20 @@ func (store *PostgresStore) ListNodesByOrganization(ctx context.Context, organiz
 		if err != nil {
 			return nil, err
 		}
-		if err := store.loadNodeDetails(ctx, &node); err != nil {
-			return nil, err
-		}
 		nodes = append(nodes, node)
 	}
-	return nodes, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range nodes {
+		if err := store.loadNodeDetails(ctx, &nodes[index]); err != nil {
+			return nil, err
+		}
+	}
+	return nodes, nil
 }
 
 func (store *PostgresStore) FindNodeByID(ctx context.Context, organizationID string, nodeID string) (NodeRecord, error) {
@@ -472,14 +480,22 @@ func (store *PostgresStore) ListMonitorsByOrganization(ctx context.Context, orga
 		if err != nil {
 			return nil, err
 		}
-		groupIDs, err := store.listMonitorGroupIDs(ctx, monitor.OrganizationID, monitor.ID)
+		monitors = append(monitors, monitor)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range monitors {
+		groupIDs, err := store.listMonitorGroupIDs(ctx, monitors[index].OrganizationID, monitors[index].ID)
 		if err != nil {
 			return nil, err
 		}
-		monitor.GroupIDs = groupIDs
-		monitors = append(monitors, monitor)
+		monitors[index].GroupIDs = groupIDs
 	}
-	return monitors, rows.Err()
+	return monitors, nil
 }
 
 func (store *PostgresStore) FindMonitorByID(ctx context.Context, organizationID string, monitorID string) (MonitorRecord, error) {
