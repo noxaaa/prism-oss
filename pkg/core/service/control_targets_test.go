@@ -328,6 +328,14 @@ func (rules targetGroupServiceTestRuleRepository) SumRuleTraffic(context.Context
 	return repo.RuleTrafficRecord{}, nil
 }
 
+func (rules targetGroupServiceTestRuleRepository) RecordNodeRuleTrafficAssignments(context.Context, string, string, []string, string) error {
+	return nil
+}
+
+func (rules targetGroupServiceTestRuleRepository) RecordRuleTrafficReport(context.Context, string, string, repo.RuleTrafficReportRecord, []repo.RuleTrafficDeltaRecord, string, func() string) (bool, error) {
+	return false, nil
+}
+
 type targetGroupServiceTestAuditRepository struct {
 	store *targetGroupServiceTestStore
 }

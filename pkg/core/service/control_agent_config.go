@@ -356,6 +356,13 @@ func (service *ControlService) CompileNodeAgentConfig(ctx context.Context, organ
 			compiled.ConfigVersion = targetDesiredConfigVersion
 			compiled.ConfigHash = configHash(compiled)
 		}
+		ruleIDs := make([]string, 0, len(compiled.Rules))
+		for _, rule := range compiled.Rules {
+			ruleIDs = append(ruleIDs, rule.ID)
+		}
+		if err := repositories.Rules().RecordNodeRuleTrafficAssignments(ctx, organizationID, nodeID, ruleIDs, service.timestamp()); err != nil {
+			return err
+		}
 		result = compiled
 		return nil
 	})

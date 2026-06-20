@@ -42,6 +42,11 @@ type NodeRuntime struct {
 	logMu                sync.Mutex
 	lastErrorLogAt       time.Time
 	lastErrorSignature   string
+	trafficMu            sync.Mutex
+	trafficSpoolLoaded   bool
+	trafficPending       []RuleTrafficDelta
+	trafficInFlightID    string
+	trafficInFlight      []RuleTrafficDelta
 }
 
 type runtimeEnvelope struct {
@@ -192,6 +197,13 @@ func (runtime *NodeRuntime) runOnce(ctx context.Context) error {
 			}
 			// The control plane marks success when the restarted agent reconnects
 			// and reports the desired version in hello.
+		case "metrics_ack":
+			var payload struct {
+				TrafficReportID string `json:"traffic_report_id"`
+			}
+			if err := json.Unmarshal(envelope.Payload, &payload); err == nil {
+				runtime.acknowledgeTrafficReport(payload.TrafficReportID)
+			}
 		}
 	}
 }
@@ -464,10 +476,14 @@ func (runtime *NodeRuntime) collectMetrics() MetricsPayload {
 	}
 	if memory, err := mem.VirtualMemory(); err == nil && memory != nil {
 		metrics.RAMUsedBytes = memory.Used
+		metrics.RAMTotalBytes = memory.Total
 	}
 	metrics.UptimeSeconds = int64(time.Since(runtime.bootTime).Seconds())
 	metrics.BootTime = runtime.bootTime.Format(time.RFC3339Nano)
 	metrics.AppliedConfigVersion = runtime.getAppliedConfigVersion()
+	runtime.queueTrafficDeltas(metrics.TrafficDeltas)
+	metrics.TrafficDeltas = nil
+	runtime.attachTrafficReport(&metrics)
 	return metrics
 }
 

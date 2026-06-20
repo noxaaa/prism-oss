@@ -328,6 +328,7 @@ export type AgentMetrics = {
   bandwidth_bps?: number;
   cpu_percent?: number;
   ram_used_bytes?: number;
+  ram_total_bytes?: number;
   upload_bytes?: number;
   download_bytes?: number;
   uptime_seconds?: number;

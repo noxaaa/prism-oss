@@ -52,6 +52,19 @@ func TestOSSReleaseWorkflowPublishesPrebuiltArtifacts(t *testing.T) {
 	}
 }
 
+func TestOSSReleaseWorkflowGeneratesPublicChangelog(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, ".github", "workflows", "release.yml"))
+	for _, required := range []string{
+		"generate_release_notes: true",
+		"Prebuilt GHCR images and release binaries are published for this tag.",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("release workflow must publish a non-empty generated changelog; missing %q", required)
+		}
+	}
+}
+
 func TestOSSReleaseWorkflowUsesBuildxGhaCache(t *testing.T) {
 	root := repoRoot(t)
 	source := readText(t, filepath.Join(root, ".github", "workflows", "release.yml"))

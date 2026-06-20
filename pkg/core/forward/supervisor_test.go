@@ -194,13 +194,14 @@ func TestMetricsCounterDoesNotReportNegativeTargetTCPAfterInactivePrune(t *testi
 	metrics.setActiveTargets(activeRules)
 	metrics.addTargetTCPConnection("rule_tcp", "target_tcp", 1)
 	metrics.setActiveTargets(nil)
-	if payload := metrics.agentPayload(now.Add(time.Second)); len(payload.Targets) != 0 {
-		t.Fatalf("expected inactive target metrics to be hidden, got %#v", payload.Targets)
+	payload := metrics.agentPayload(now.Add(time.Second))
+	if len(payload.Targets) != 1 || payload.Targets[0].TCPConnections != 1 {
+		t.Fatalf("expected inactive target with an open connection to stay reportable, got %#v", payload.Targets)
 	}
 
 	metrics.addTargetTCPConnection("rule_tcp", "target_tcp", -1)
 	metrics.setActiveTargets(activeRules)
-	payload := metrics.agentPayload(now.Add(2 * time.Second))
+	payload = metrics.agentPayload(now.Add(2 * time.Second))
 	for _, target := range payload.Targets {
 		if target.TCPConnections < 0 {
 			t.Fatalf("expected target tcp connections not to go negative after inactive decrement, got %#v", payload.Targets)

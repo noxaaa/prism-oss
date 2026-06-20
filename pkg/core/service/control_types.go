@@ -400,6 +400,11 @@ type AgentRuntimeMetricsInput struct {
 	Metrics    agent.MetricsPayload
 }
 
+type AgentTrafficReportInput struct {
+	ReportID string
+	Deltas   []agent.RuleTrafficDelta
+}
+
 type RuleDiagnosticsPayload struct {
 	RuleID        string                         `json:"rule_id"`
 	GeneratedAt   string                         `json:"generated_at"`

@@ -51,12 +51,15 @@ type MetricsPayload struct {
 	BandwidthBps         int64                  `json:"bandwidth_bps"`
 	CPUPercent           float64                `json:"cpu_percent"`
 	RAMUsedBytes         uint64                 `json:"ram_used_bytes"`
+	RAMTotalBytes        uint64                 `json:"ram_total_bytes"`
 	UploadBytes          int64                  `json:"upload_bytes"`
 	DownloadBytes        int64                  `json:"download_bytes"`
 	UptimeSeconds        int64                  `json:"uptime_seconds"`
 	BootTime             string                 `json:"boot_time"`
 	AppliedConfigVersion int                    `json:"applied_config_version"`
 	Targets              []TargetMetricsPayload `json:"targets"`
+	TrafficReportID      string                 `json:"traffic_report_id,omitempty"`
+	TrafficDeltas        []RuleTrafficDelta     `json:"traffic_deltas,omitempty"`
 }
 
 type TargetMetricsPayload struct {
@@ -68,4 +71,12 @@ type TargetMetricsPayload struct {
 	UploadBytes         int64  `json:"upload_bytes"`
 	DownloadBytes       int64  `json:"download_bytes"`
 	LatencyMS           int64  `json:"latency_ms"`
+}
+
+type RuleTrafficDelta struct {
+	RuleID         string `json:"rule_id"`
+	UploadBytes    int64  `json:"upload_bytes"`
+	DownloadBytes  int64  `json:"download_bytes"`
+	TCPConnections int64  `json:"tcp_connections"`
+	UDPPackets     int64  `json:"udp_packets"`
 }

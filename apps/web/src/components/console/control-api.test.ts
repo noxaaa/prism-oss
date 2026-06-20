@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ControlAPIError } from "./control-api";
+import { ControlAPIError, formatBitrateBps } from "./control-api";
 
 describe("ControlAPIError", () => {
   it("keeps stable code and details for frontend localization", () => {
@@ -16,5 +16,12 @@ describe("ControlAPIError", () => {
       field: "format",
       supported_formats: ["PORTABLE_EXPORT", "NYANPASS"],
     });
+  });
+
+  it("formats bit rates with decimal network units", () => {
+    expect(formatBitrateBps(0)).toBe("0 bps");
+    expect(formatBitrateBps(999)).toBe("999 bps");
+    expect(formatBitrateBps(2329137)).toBe("2.3 Mbps");
+    expect(formatBitrateBps(1_250_000_000)).toBe("1.3 Gbps");
   });
 });

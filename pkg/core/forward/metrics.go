@@ -8,10 +8,11 @@ import (
 )
 
 type Metrics struct {
-	TCPConnections int64
-	UDPPackets     int64
-	UploadBytes    int64
-	DownloadBytes  int64
+	TCPConnections      int64
+	TCPConnectionEvents int64
+	UDPPackets          int64
+	UploadBytes         int64
+	DownloadBytes       int64
 }
 
 type targetMetricKey struct {
@@ -20,19 +21,22 @@ type targetMetricKey struct {
 }
 
 type targetMetricCounter struct {
-	tcpConnections int64
-	udpPackets     int64
-	uploadBytes    int64
-	downloadBytes  int64
-	latencyMS      int64
+	tcpConnections      int64
+	tcpConnectionEvents int64
+	udpSessions         int64
+	udpPackets          int64
+	uploadBytes         int64
+	downloadBytes       int64
+	latencyMS           int64
 }
 
 type targetMetricSnapshot struct {
-	TCPConnections int64
-	UDPPackets     int64
-	UploadBytes    int64
-	DownloadBytes  int64
-	LatencyMS      int64
+	TCPConnections      int64
+	TCPConnectionEvents int64
+	UDPPackets          int64
+	UploadBytes         int64
+	DownloadBytes       int64
+	LatencyMS           int64
 }
 
 func newMetricsCounter() *metricsCounter {
@@ -48,10 +52,11 @@ func (metrics *metricsCounter) snapshot() Metrics {
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
 	return Metrics{
-		TCPConnections: metrics.tcpConnections,
-		UDPPackets:     metrics.udpPackets,
-		UploadBytes:    metrics.uploadBytes,
-		DownloadBytes:  metrics.downloadBytes,
+		TCPConnections:      metrics.tcpConnections,
+		TCPConnectionEvents: metrics.tcpConnectionEvents,
+		UDPPackets:          metrics.udpPackets,
+		UploadBytes:         metrics.uploadBytes,
+		DownloadBytes:       metrics.downloadBytes,
 	}
 }
 
@@ -94,34 +99,46 @@ func (metrics *metricsCounter) pruneInactiveTargetsLocked() {
 		if metrics.activeTargets[key] {
 			continue
 		}
-		if target.tcpConnections <= 0 {
+		if target.openConnections() <= 0 {
+			metrics.queueFinalInactiveTargetDeltaLocked(key, target)
 			delete(metrics.targets, key)
+			delete(metrics.lastTargets, key)
 			continue
 		}
-		target.udpPackets = 0
-		target.uploadBytes = 0
-		target.downloadBytes = 0
 		target.latencyMS = 0
 	}
-	for key := range metrics.lastTargets {
-		if !metrics.activeTargets[key] {
-			delete(metrics.lastTargets, key)
-		}
+}
+
+func (metrics *metricsCounter) queueFinalInactiveTargetDeltaLocked(key targetMetricKey, target *targetMetricCounter) {
+	if target == nil {
+		return
+	}
+	current := targetMetricSnapshot{
+		TCPConnections:      target.tcpConnections,
+		TCPConnectionEvents: target.tcpConnectionEvents,
+		UDPPackets:          target.udpPackets,
+		UploadBytes:         target.uploadBytes,
+		DownloadBytes:       target.downloadBytes,
+		LatencyMS:           target.latencyMS,
+	}
+	if delta := targetTrafficDelta(key.ruleID, current, metrics.lastTargets[key]); delta != nil {
+		metrics.pendingDeltas = append(metrics.pendingDeltas, *delta)
 	}
 }
 
 func (metrics *metricsCounter) copyReportableTargetSnapshotsLocked() map[targetMetricKey]targetMetricSnapshot {
 	snapshots := make(map[targetMetricKey]targetMetricSnapshot, len(metrics.targets))
 	for key, target := range metrics.targets {
-		if metrics.activeApplied && !metrics.activeTargets[key] {
+		if metrics.activeApplied && !metrics.activeTargets[key] && target.openConnections() <= 0 {
 			continue
 		}
 		snapshots[key] = targetMetricSnapshot{
-			TCPConnections: target.tcpConnections,
-			UDPPackets:     target.udpPackets,
-			UploadBytes:    target.uploadBytes,
-			DownloadBytes:  target.downloadBytes,
-			LatencyMS:      target.latencyMS,
+			TCPConnections:      target.tcpConnections,
+			TCPConnectionEvents: target.tcpConnectionEvents,
+			UDPPackets:          target.udpPackets,
+			UploadBytes:         target.uploadBytes,
+			DownloadBytes:       target.downloadBytes,
+			LatencyMS:           target.latencyMS,
 		}
 	}
 	return snapshots
@@ -132,10 +149,11 @@ func (metrics *metricsCounter) agentPayload(now time.Time) agent.MetricsPayload 
 	defer metrics.mu.Unlock()
 	metrics.pruneInactiveTargetsLocked()
 	current := Metrics{
-		TCPConnections: metrics.tcpConnections,
-		UDPPackets:     metrics.udpPackets,
-		UploadBytes:    metrics.uploadBytes,
-		DownloadBytes:  metrics.downloadBytes,
+		TCPConnections:      metrics.tcpConnections,
+		TCPConnectionEvents: metrics.tcpConnectionEvents,
+		UDPPackets:          metrics.udpPackets,
+		UploadBytes:         metrics.uploadBytes,
+		DownloadBytes:       metrics.downloadBytes,
 	}
 	currentTargets := metrics.copyReportableTargetSnapshotsLocked()
 	payload := agent.MetricsPayload{
@@ -172,8 +190,15 @@ func (metrics *metricsCounter) agentPayload(now time.Time) agent.MetricsPayload 
 					DownloadBytes:       target.DownloadBytes,
 					LatencyMS:           target.LatencyMS,
 				})
+				if delta := targetTrafficDelta(key.ruleID, target, lastTarget); delta != nil {
+					payload.TrafficDeltas = append(payload.TrafficDeltas, *delta)
+				}
 			}
 		}
+	}
+	if len(metrics.pendingDeltas) > 0 {
+		payload.TrafficDeltas = mergePayloadTrafficDeltas(append(metrics.pendingDeltas, payload.TrafficDeltas...))
+		metrics.pendingDeltas = nil
 	}
 	if len(payload.Targets) == 0 {
 		for _, key := range keys {
@@ -194,10 +219,63 @@ func (metrics *metricsCounter) agentPayload(now time.Time) agent.MetricsPayload 
 	return payload
 }
 
+func mergePayloadTrafficDeltas(deltas []agent.RuleTrafficDelta) []agent.RuleTrafficDelta {
+	byRule := make(map[string]agent.RuleTrafficDelta)
+	order := make([]string, 0, len(deltas))
+	for _, delta := range deltas {
+		if delta.RuleID == "" {
+			continue
+		}
+		current, ok := byRule[delta.RuleID]
+		if !ok {
+			order = append(order, delta.RuleID)
+			current.RuleID = delta.RuleID
+		}
+		current.UploadBytes += delta.UploadBytes
+		current.DownloadBytes += delta.DownloadBytes
+		current.TCPConnections += delta.TCPConnections
+		current.UDPPackets += delta.UDPPackets
+		byRule[delta.RuleID] = current
+	}
+	merged := make([]agent.RuleTrafficDelta, 0, len(byRule))
+	for _, ruleID := range order {
+		delta := byRule[ruleID]
+		if delta.UploadBytes == 0 && delta.DownloadBytes == 0 && delta.TCPConnections == 0 && delta.UDPPackets == 0 {
+			continue
+		}
+		merged = append(merged, delta)
+	}
+	return merged
+}
+
+func targetTrafficDelta(ruleID string, current targetMetricSnapshot, last targetMetricSnapshot) *agent.RuleTrafficDelta {
+	delta := agent.RuleTrafficDelta{
+		RuleID:         ruleID,
+		UploadBytes:    positiveDelta(current.UploadBytes, last.UploadBytes),
+		DownloadBytes:  positiveDelta(current.DownloadBytes, last.DownloadBytes),
+		TCPConnections: positiveDelta(current.TCPConnectionEvents, last.TCPConnectionEvents),
+		UDPPackets:     positiveDelta(current.UDPPackets, last.UDPPackets),
+	}
+	if delta.UploadBytes == 0 && delta.DownloadBytes == 0 && delta.TCPConnections == 0 && delta.UDPPackets == 0 {
+		return nil
+	}
+	return &delta
+}
+
+func positiveDelta(current int64, last int64) int64 {
+	if current <= last {
+		return 0
+	}
+	return current - last
+}
+
 func (metrics *metricsCounter) addTCPConnection(delta int64) {
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
 	metrics.tcpConnections += delta
+	if delta > 0 {
+		metrics.tcpConnectionEvents += delta
+	}
 }
 
 func (metrics *metricsCounter) addUDP(delta int64) {
@@ -220,11 +298,11 @@ func (metrics *metricsCounter) addDownload(delta int64) {
 
 func (metrics *metricsCounter) targetLocked(ruleID string, targetID string) (*targetMetricCounter, bool) {
 	key := targetMetricKey{ruleID: ruleID, targetID: targetID}
-	if metrics.activeApplied && !metrics.activeTargets[key] {
-		return nil, false
-	}
 	target := metrics.targets[key]
 	if target == nil {
+		if metrics.activeApplied && !metrics.activeTargets[key] {
+			return nil, false
+		}
 		target = &targetMetricCounter{}
 		metrics.targets[key] = target
 	}
@@ -244,12 +322,47 @@ func (metrics *metricsCounter) addTargetTCPConnection(ruleID string, targetID st
 		metrics.targets[key] = target
 	}
 	target.tcpConnections += delta
+	if delta > 0 {
+		target.tcpConnectionEvents += delta
+	}
 	if target.tcpConnections < 0 {
 		target.tcpConnections = 0
 	}
-	if metrics.activeApplied && !metrics.activeTargets[key] && target.tcpConnections <= 0 {
-		delete(metrics.targets, key)
+	metrics.pruneClosedInactiveTargetLocked(key, target)
+}
+
+func (metrics *metricsCounter) addTargetUDPSession(ruleID string, targetID string, delta int64) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	key := targetMetricKey{ruleID: ruleID, targetID: targetID}
+	target := metrics.targets[key]
+	if target == nil {
+		if delta < 0 || (metrics.activeApplied && !metrics.activeTargets[key]) {
+			return
+		}
+		target = &targetMetricCounter{}
+		metrics.targets[key] = target
 	}
+	target.udpSessions += delta
+	if target.udpSessions < 0 {
+		target.udpSessions = 0
+	}
+	metrics.pruneClosedInactiveTargetLocked(key, target)
+}
+
+func (metrics *metricsCounter) pruneClosedInactiveTargetLocked(key targetMetricKey, target *targetMetricCounter) {
+	if metrics.activeApplied && !metrics.activeTargets[key] && target.openConnections() <= 0 {
+		metrics.queueFinalInactiveTargetDeltaLocked(key, target)
+		delete(metrics.targets, key)
+		delete(metrics.lastTargets, key)
+	}
+}
+
+func (target *targetMetricCounter) openConnections() int64 {
+	if target == nil {
+		return 0
+	}
+	return target.tcpConnections + target.udpSessions
 }
 
 func (metrics *metricsCounter) addTargetUDP(ruleID string, targetID string, delta int64) {

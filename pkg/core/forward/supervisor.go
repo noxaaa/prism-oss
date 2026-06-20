@@ -33,17 +33,19 @@ type Supervisor struct {
 }
 
 type metricsCounter struct {
-	mu             sync.Mutex
-	tcpConnections int64
-	udpPackets     int64
-	uploadBytes    int64
-	downloadBytes  int64
-	lastSnapshot   Metrics
-	targets        map[targetMetricKey]*targetMetricCounter
-	lastTargets    map[targetMetricKey]targetMetricSnapshot
-	activeTargets  map[targetMetricKey]bool
-	activeApplied  bool
-	lastSnapshotAt time.Time
+	mu                  sync.Mutex
+	tcpConnections      int64
+	tcpConnectionEvents int64
+	udpPackets          int64
+	uploadBytes         int64
+	downloadBytes       int64
+	lastSnapshot        Metrics
+	targets             map[targetMetricKey]*targetMetricCounter
+	lastTargets         map[targetMetricKey]targetMetricSnapshot
+	pendingDeltas       []agent.RuleTrafficDelta
+	activeTargets       map[targetMetricKey]bool
+	activeApplied       bool
+	lastSnapshotAt      time.Time
 }
 
 type listenerKey struct {
@@ -538,6 +540,7 @@ func (table *udpSessionTable) write(ctx context.Context, rule agent.RuleConfig, 
 			lastSeen:      time.Now(),
 		}
 		table.sessions[key] = session
+		table.metrics.addTargetUDPSession(rule.ID, target.ID, 1)
 		go table.readLoop(ctx, session)
 	}
 	session.lastSeen = time.Now()
@@ -588,6 +591,7 @@ func (table *udpSessionTable) closeAll() {
 func (table *udpSessionTable) closeSessionLocked(key string, session *udpSession) {
 	_ = session.upstream.Close()
 	delete(table.sessions, key)
+	table.metrics.addTargetUDPSession(session.ruleID, session.targetID, -1)
 }
 
 func udpSessionKey(clientAddress net.Addr, ruleID string) string {

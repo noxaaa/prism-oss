@@ -65,7 +65,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { bytes, controlDelete, controlGet, controlPatch, controlPost, optionLabel, shortDate } from "@/components/console/control-api";
 import { hasAnyPermission } from "@/components/console/permissions";
-import { useI18n } from "@/components/console/i18n";
+import { localizeControlError, useI18n } from "@/components/console/i18n";
 import { ResourceMultiSelect, ResourceSelect } from "@/components/console/resource-select";
 import { useConsoleSession } from "@/components/console/shell";
 import {
@@ -107,7 +107,7 @@ import type {
 } from "@/components/console/types";
 
 export function UserUsagePage() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const { session } = useConsoleSession();
   const canReadRules = hasAnyPermission(session, ["rules.read_own", "rules.manage_own", "rules.read_all", "rules.manage_all"]);
   const canReadTraffic = hasAnyPermission(session, ["traffic.read_own", "traffic.read_all"]);
@@ -115,14 +115,33 @@ export function UserUsagePage() {
   const rules = useControlList<Rule>(canReadRules ? "/api/control/rules" : "");
   const [trafficByRule, setTrafficByRule] = useState<Record<string, RuleTraffic>>({});
   const trafficReadableRules = useMemo(
-    () => rules.data.filter((rule) => canReadAllTraffic || rule.owner_user_id === session?.user.id),
-    [canReadAllTraffic, rules.data, session?.user.id],
+    () => rules.data.filter((rule) => canReadTraffic && (canReadAllTraffic || rule.owner_user_id === session?.user.id)),
+    [canReadAllTraffic, canReadTraffic, rules.data, session?.user.id],
   );
 
   async function loadTraffic() {
-    const pairs = await Promise.all(trafficReadableRules.map(async (rule) => [rule.id, await controlGet<RuleTraffic>(`/api/control/rules/${rule.id}/traffic`)] as const));
-    setTrafficByRule(Object.fromEntries(pairs));
+    if (!canReadTraffic || trafficReadableRules.length === 0) {
+      setTrafficByRule({});
+      return;
+    }
+    const pairs = await Promise.all(trafficReadableRules.map(async (rule) => {
+      try {
+        return [rule.id, await controlGet<RuleTraffic>(`/api/control/rules/${rule.id}/traffic`)] as const;
+      } catch (error) {
+        toast.error(localizeControlError(error, locale));
+        return [rule.id, null] as const;
+      }
+    }));
+    setTrafficByRule(Object.fromEntries(pairs.filter((pair): pair is readonly [string, RuleTraffic] => pair[1] !== null)));
   }
+
+  useEffect(() => {
+    const readableRuleIDs = new Set(trafficReadableRules.map((rule) => rule.id));
+    setTrafficByRule((current) => Object.fromEntries(Object.entries(current).filter(([ruleID]) => readableRuleIDs.has(ruleID))));
+    if (canReadTraffic && trafficReadableRules.length > 0) {
+      void loadTraffic();
+    }
+  }, [canReadTraffic, trafficReadableRules]);
 
   const totals = Object.values(trafficByRule).reduce(
     (sum, item) => ({

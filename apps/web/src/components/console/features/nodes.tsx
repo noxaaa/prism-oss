@@ -12,7 +12,7 @@ import {
   ServerIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -34,7 +34,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldSet, FieldLegend } from "@/components/ui/field";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import {
   Sheet,
@@ -45,7 +47,7 @@ import {
 } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { bytes, controlDelete, controlPatch, controlPost, shortDate } from "@/components/console/control-api";
+import { bytes, controlDelete, controlPatch, controlPost, formatBitrateBps, shortDate } from "@/components/console/control-api";
 import { localizeControlError, localizeEnum, useI18n } from "@/components/console/i18n";
 import { hasPermission } from "@/components/console/permissions";
 import { ResourceMultiSelect } from "@/components/console/resource-select";
@@ -722,16 +724,10 @@ function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
               <TableRow>
                 <TableHead>{t("overview.node")}</TableHead>
                 <TableHead>{t("overview.status")}</TableHead>
-                <TableHead>TCP</TableHead>
-                <TableHead>UDP/s</TableHead>
                 <TableHead>{t("nodes.bandwidth")}</TableHead>
                 <TableHead>CPU</TableHead>
                 <TableHead>RAM</TableHead>
-                <TableHead>{t("usage.upload")}</TableHead>
-                <TableHead>{t("usage.download")}</TableHead>
                 <TableHead>{t("nodes.uptime")}</TableHead>
-                <TableHead>{t("nodes.bootTime")}</TableHead>
-                <TableHead>{t("overview.lastSeen")}</TableHead>
                 <TableHead>{t("nodes.config")}</TableHead>
               </TableRow>
             </TableHeader>
@@ -747,16 +743,41 @@ function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
                       </div>
                     </TableCell>
                     <TableCell><StatusBadge value={metrics.status ?? node.status} /></TableCell>
-                    <TableCell>{metrics.tcp_connections ?? 0}</TableCell>
-                    <TableCell>{metrics.udp_packets_per_second ?? 0}</TableCell>
-                    <TableCell>{metrics.bandwidth_bps ?? 0} bps</TableCell>
-                    <TableCell>{percent(metrics.cpu_percent)}</TableCell>
-                    <TableCell>{bytes(metrics.ram_used_bytes)}</TableCell>
-                    <TableCell>{bytes(metrics.upload_bytes)}</TableCell>
-                    <TableCell>{bytes(metrics.download_bytes)}</TableCell>
-                    <TableCell>{duration(metrics.uptime_seconds)}</TableCell>
-                    <TableCell>{shortDate(metrics.boot_time, locale)}</TableCell>
-                    <TableCell>{shortDate(metrics.last_seen_at ?? node.last_seen_at, locale)}</TableCell>
+                    <TableCell>
+                      <HoverCard>
+                        <HoverCardTrigger asChild>
+                          <span className="inline-flex cursor-default font-medium">{formatBitrateBps(metrics.bandwidth_bps)}</span>
+                        </HoverCardTrigger>
+                        <HoverCardContent align="start">
+                          <MetricDetail label={t("usage.upload")} value={bytes(metrics.upload_bytes)} />
+                          <MetricDetail label={t("usage.download")} value={bytes(metrics.download_bytes)} />
+                          <MetricDetail label="TCP" value={metrics.tcp_connections ?? 0} />
+                          <MetricDetail label="UDP/s" value={metrics.udp_packets_per_second ?? 0} />
+                        </HoverCardContent>
+                      </HoverCard>
+                    </TableCell>
+                    <TableCell><MetricProgress value={metrics.cpu_percent} label={percent(metrics.cpu_percent)} /></TableCell>
+                    <TableCell>
+                      <HoverCard>
+                        <HoverCardTrigger asChild>
+                          <div className="inline-flex w-32 cursor-default"><MetricProgress value={ramPercent(metrics)} label={ramLabel(metrics)} /></div>
+                        </HoverCardTrigger>
+                        <HoverCardContent align="start">
+                          <MetricDetail label="RAM" value={ramDetail(metrics)} />
+                        </HoverCardContent>
+                      </HoverCard>
+                    </TableCell>
+                    <TableCell>
+                      <HoverCard>
+                        <HoverCardTrigger asChild>
+                          <span className="inline-flex cursor-default">{duration(metrics.uptime_seconds)}</span>
+                        </HoverCardTrigger>
+                        <HoverCardContent align="start">
+                          <MetricDetail label={t("nodes.bootTime")} value={shortDate(metrics.boot_time, locale)} />
+                          <MetricDetail label={t("overview.lastSeen")} value={shortDate(metrics.last_seen_at ?? node.last_seen_at, locale)} />
+                        </HoverCardContent>
+                      </HoverCard>
+                    </TableCell>
                     <TableCell>{metrics.applied_config_version ?? node.applied_config_version}/{metrics.desired_config_version ?? node.desired_config_version}</TableCell>
                   </TableRow>
                 );
@@ -767,4 +788,45 @@ function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
       </CardContent>
     </Card>
   );
+}
+
+function MetricProgress({ label, value }: { label: string; value: number | undefined }) {
+  const normalized = Math.max(0, Math.min(100, value ?? 0));
+  return (
+    <div className="flex min-w-28 items-center gap-2">
+      <Progress className="w-16" value={normalized} />
+      <span className="tabular-nums text-xs text-muted-foreground">{label}</span>
+    </div>
+  );
+}
+
+function MetricDetail({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-1">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+function ramPercent(metrics: AgentMetrics): number | undefined {
+  if (!metrics.ram_total_bytes) {
+    return undefined;
+  }
+  return (Math.max(0, metrics.ram_used_bytes ?? 0) / metrics.ram_total_bytes) * 100;
+}
+
+function ramLabel(metrics: AgentMetrics): string {
+  if (!metrics.ram_total_bytes) {
+    return bytes(metrics.ram_used_bytes);
+  }
+  return percent(ramPercent(metrics));
+}
+
+function ramDetail(metrics: AgentMetrics): string {
+  const used = bytes(metrics.ram_used_bytes);
+  if (!metrics.ram_total_bytes) {
+    return used;
+  }
+  return `${used} / ${bytes(metrics.ram_total_bytes)}`;
 }

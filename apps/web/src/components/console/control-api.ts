@@ -62,8 +62,8 @@ export function normalizeOptions(options: ResourceOption[]): ResourceOption[] {
 }
 
 export function bytes(value: number | undefined): string {
-  const amount = value ?? 0;
-  if (amount < 1024) {
+	const amount = value ?? 0;
+	if (amount < 1024) {
     return `${amount} B`;
   }
   if (amount < 1024 * 1024) {
@@ -72,7 +72,25 @@ export function bytes(value: number | undefined): string {
   if (amount < 1024 * 1024 * 1024) {
     return `${(amount / 1024 / 1024).toFixed(1)} MiB`;
   }
-  return `${(amount / 1024 / 1024 / 1024).toFixed(1)} GiB`;
+	return `${(amount / 1024 / 1024 / 1024).toFixed(1)} GiB`;
+}
+
+export function formatBitrateBps(value: number | null | undefined): string {
+  const amount = Math.max(0, value ?? 0);
+  if (amount === 0) {
+    return "0 bps";
+  }
+  const units = ["bps", "Kbps", "Mbps", "Gbps", "Tbps"];
+  let unitIndex = 0;
+  let scaled = amount;
+  while (scaled >= 1000 && unitIndex < units.length - 1) {
+    scaled /= 1000;
+    unitIndex += 1;
+  }
+  if (unitIndex === 0) {
+    return `${Math.round(scaled)} ${units[unitIndex]}`;
+  }
+  return `${scaled.toFixed(1)} ${units[unitIndex]}`;
 }
 
 export function shortDate(value?: string, locale: Locale = "en"): string {

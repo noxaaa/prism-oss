@@ -1,6 +1,9 @@
 package repo
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 func (store *PostgresStore) ListTargetsByOrganization(ctx context.Context, organizationID string) ([]TargetRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
@@ -323,6 +326,124 @@ func (store *PostgresStore) SumRuleTraffic(ctx context.Context, organizationID s
 		return RuleTrafficRecord{}, err
 	}
 	return traffic, nil
+}
+
+func (store *PostgresStore) RecordNodeRuleTrafficAssignments(ctx context.Context, organizationID string, nodeID string, ruleIDs []string, now string) error {
+	seen := make(map[string]struct{}, len(ruleIDs))
+	for _, ruleID := range ruleIDs {
+		ruleID = strings.TrimSpace(ruleID)
+		if ruleID == "" {
+			continue
+		}
+		if _, ok := seen[ruleID]; ok {
+			continue
+		}
+		seen[ruleID] = struct{}{}
+		if _, err := store.db.ExecContext(ctx, `
+			INSERT INTO node_rule_traffic_assignments (organization_id, node_id, rule_id, first_seen_at, last_seen_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (organization_id, node_id, rule_id)
+			DO UPDATE SET last_seen_at = EXCLUDED.last_seen_at
+		`, organizationID, nodeID, ruleID, now, now); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	return nil
+}
+
+func (store *PostgresStore) RecordRuleTrafficReport(ctx context.Context, organizationID string, agentID string, report RuleTrafficReportRecord, deltas []RuleTrafficDeltaRecord, now string, nextID func() string) (bool, error) {
+	reportID := strings.TrimSpace(report.ReportID)
+	if reportID == "" || len(deltas) == 0 {
+		return false, nil
+	}
+	if report.ID == "" {
+		report.ID = nextID()
+	}
+	if report.OrganizationID == "" {
+		report.OrganizationID = organizationID
+	}
+	if report.AgentID == "" {
+		report.AgentID = agentID
+	}
+	if report.CreatedAt == "" {
+		report.CreatedAt = now
+	}
+	result, err := store.db.ExecContext(ctx, `
+		INSERT INTO rule_traffic_reports (id, organization_id, agent_id, report_id, created_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (organization_id, agent_id, report_id) DO NOTHING
+	`, report.ID, report.OrganizationID, report.AgentID, reportID, report.CreatedAt)
+	if err != nil {
+		return false, mapWriteError(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 0 {
+		return false, nil
+	}
+	for _, delta := range mergeRuleTrafficDeltas(deltas) {
+		if _, err := store.db.ExecContext(ctx, `
+			INSERT INTO rule_traffic_counters (
+				id, organization_id, rule_id, period_start, period_granularity,
+				upload_bytes, download_bytes, tcp_connections, udp_packets, updated_at
+			)
+			SELECT ?, ?, ?, '1970-01-01T00:00:00Z', 'ALL_TIME', ?, ?, ?, ?, ?
+			WHERE EXISTS (
+				SELECT 1
+				FROM node_rule_traffic_assignments
+				WHERE organization_id = ? AND node_id = ? AND rule_id = ?
+			)
+			ON CONFLICT (rule_id, period_start, period_granularity)
+			DO UPDATE SET
+				upload_bytes = rule_traffic_counters.upload_bytes + EXCLUDED.upload_bytes,
+				download_bytes = rule_traffic_counters.download_bytes + EXCLUDED.download_bytes,
+				tcp_connections = rule_traffic_counters.tcp_connections + EXCLUDED.tcp_connections,
+				udp_packets = rule_traffic_counters.udp_packets + EXCLUDED.udp_packets,
+				updated_at = EXCLUDED.updated_at
+		`, nextID(), organizationID, delta.RuleID, delta.UploadBytes, delta.DownloadBytes, delta.TCPConnections, delta.UDPPackets, now, organizationID, agentID, delta.RuleID); err != nil {
+			return false, mapWriteError(err)
+		}
+	}
+	return true, nil
+}
+
+func mergeRuleTrafficDeltas(deltas []RuleTrafficDeltaRecord) []RuleTrafficDeltaRecord {
+	byRule := make(map[string]RuleTrafficDeltaRecord)
+	order := make([]string, 0, len(deltas))
+	for _, delta := range deltas {
+		ruleID := strings.TrimSpace(delta.RuleID)
+		if ruleID == "" {
+			continue
+		}
+		current, ok := byRule[ruleID]
+		if !ok {
+			order = append(order, ruleID)
+			current.RuleID = ruleID
+		}
+		current.UploadBytes += positiveRuleTrafficDelta(delta.UploadBytes)
+		current.DownloadBytes += positiveRuleTrafficDelta(delta.DownloadBytes)
+		current.TCPConnections += positiveRuleTrafficDelta(delta.TCPConnections)
+		current.UDPPackets += positiveRuleTrafficDelta(delta.UDPPackets)
+		byRule[ruleID] = current
+	}
+	merged := make([]RuleTrafficDeltaRecord, 0, len(byRule))
+	for _, ruleID := range order {
+		delta := byRule[ruleID]
+		if delta.UploadBytes == 0 && delta.DownloadBytes == 0 && delta.TCPConnections == 0 && delta.UDPPackets == 0 {
+			continue
+		}
+		merged = append(merged, delta)
+	}
+	return merged
+}
+
+func positiveRuleTrafficDelta(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func (store *PostgresStore) loadTargetGroupMembers(ctx context.Context, group *TargetGroupRecord) error {

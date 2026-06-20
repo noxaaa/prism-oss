@@ -163,6 +163,9 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
+          body: |
+            Prebuilt GHCR images and release binaries are published for this tag.
           files: |
             .release/assets/install.sh
             .release/assets/uninstall.sh

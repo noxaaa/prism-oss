@@ -51,7 +51,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { bytes, controlDelete, controlGet, controlPatch, controlPost, shortDate } from "@/components/console/control-api";
+import { bytes, controlDelete, controlGet, controlPatch, controlPost, formatBitrateBps, shortDate } from "@/components/console/control-api";
 import { localizeControlError, localizeEnum, localizeImportIssue, useI18n } from "@/components/console/i18n";
 import { hasAnyPermission, hasPermission } from "@/components/console/permissions";
 import { ResourceSelect } from "@/components/console/resource-select";
@@ -107,6 +107,8 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
   const { locale, t } = useI18n();
   const { session } = useConsoleSession();
   const canManage = hasPermission(session, "rules.manage_all") || hasPermission(session, "rules.manage_own");
+  const canReadTraffic = hasAnyPermission(session, ["traffic.read_own", "traffic.read_all"]);
+  const canReadAllTraffic = hasPermission(session, "traffic.read_all");
   const canReadTargets = hasAnyPermission(session, ["targets.read", "targets.manage"]);
   const rules = useControlList<Rule>("/api/control/rules");
   const nodeGroupOptions = useControlList<ResourceOption>("/api/control/resource-options/node-groups?access=USE");
@@ -132,6 +134,10 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
   const targetGroupsByID = useMemo(() => new Map(targetGroups.data.map((group) => [group.id, group])), [targetGroups.data]);
   const targetOptionLabelsByID = useMemo(() => new Map(targetOptions.data.map((option) => [option.value, option.label])), [targetOptions.data]);
   const targetGroupOptionLabelsByID = useMemo(() => new Map(targetGroupOptions.data.map((option) => [option.value, option.label])), [targetGroupOptions.data]);
+  const trafficReadableRules = useMemo(
+    () => rules.data.filter((rule) => canReadTraffic && (canReadAllTraffic || rule.owner_user_id === session?.user.id)),
+    [canReadAllTraffic, canReadTraffic, rules.data, session?.user.id],
+  );
 
   useEffect(() => {
     const visibleRuleIDs = new Set(rules.data.map((rule) => rule.id));
@@ -141,14 +147,34 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
     });
   }, [rules.data]);
 
-  async function refreshTraffic(ruleID: string) {
-    try {
-      const traffic = await controlGet<RuleTraffic>(`/api/control/rules/${ruleID}/traffic`);
-      setTrafficByRule((current) => ({ ...current, [ruleID]: traffic }));
-    } catch (error) {
-      toast.error(localizeControlError(error, locale));
+  useEffect(() => {
+    let active = true;
+    const readableRuleIDs = new Set(trafficReadableRules.map((rule) => rule.id));
+    setTrafficByRule((current) => Object.fromEntries(Object.entries(current).filter(([ruleID]) => readableRuleIDs.has(ruleID))));
+    if (trafficReadableRules.length === 0) {
+      return () => {
+        active = false;
+      };
     }
-  }
+    async function loadTraffic() {
+      const pairs = await Promise.all(trafficReadableRules.map(async (rule) => {
+        try {
+          return [rule.id, await controlGet<RuleTraffic>(`/api/control/rules/${rule.id}/traffic`)] as const;
+        } catch (error) {
+          toast.error(localizeControlError(error, locale));
+          return [rule.id, null] as const;
+        }
+      }));
+      if (!active) {
+        return;
+      }
+      setTrafficByRule(Object.fromEntries(pairs.filter((pair): pair is readonly [string, RuleTraffic] => pair[1] !== null)));
+    }
+    void loadTraffic();
+    return () => {
+      active = false;
+    };
+  }, [locale, trafficReadableRules]);
 
   async function ruleAction(ruleID: string, action: "enable" | "disable" | "copy") {
     try {
@@ -357,7 +383,6 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
                       onDiagnostics={() => setDiagnosticsRule(rule)}
                       onEdit={() => setEditingRule(rule)}
                       onExport={() => void exportRules([rule.id], rule.name)}
-                      onTraffic={() => void refreshTraffic(rule.id)}
                       onToggle={() => void ruleAction(rule.id, rule.enabled ? "disable" : "enable")}
                       rule={rule}
                     />
@@ -414,7 +439,6 @@ function RuleRowActions({
   onEdit,
   onExport,
   onToggle,
-  onTraffic,
   rule,
 }: {
   canManage: boolean;
@@ -424,7 +448,6 @@ function RuleRowActions({
   onEdit: () => void;
   onExport: () => void;
   onToggle: () => void;
-  onTraffic: () => void;
   rule: Rule;
 }) {
   const { t } = useI18n();
@@ -454,10 +477,6 @@ function RuleRowActions({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-40">
           <DropdownMenuGroup>
-            <DropdownMenuItem onSelect={onTraffic}>
-              <ActivityIcon />
-              {t("rules.trafficButton")}
-            </DropdownMenuItem>
             <DropdownMenuItem onSelect={onDiagnostics}>
               <RadarIcon />
               {t("rules.diagnostics")}
@@ -606,7 +625,7 @@ function RuleDiagnosticsDialog({ onOpenChange, rule }: { onOpenChange: (open: bo
 }
 
 function formatBandwidthBps(value: number): string {
-  return `${bytes(Math.round(value / 8))}/s`;
+  return formatBitrateBps(value);
 }
 
 function RuleCreateDrawer({ onCreated, onOpenChange, open }: { onCreated: () => Promise<void>; onOpenChange: (open: boolean) => void; open: boolean }) {

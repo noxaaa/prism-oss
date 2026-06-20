@@ -309,6 +309,19 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 			if !server.agentStates.UpdateMetricsForConnection(authResult.OrganizationID, authResult.AgentType, authResult.AgentID, *connectionGeneration, payload) {
 				return
 			}
+			if authResult.AgentType == "NODE" && payload.TrafficReportID != "" && len(payload.TrafficDeltas) > 0 {
+				if _, err := server.controlService.RecordNodeTrafficReport(ctx, authResult.OrganizationID, authResult.AgentID, service.AgentTrafficReportInput{ReportID: payload.TrafficReportID, Deltas: payload.TrafficDeltas}); err != nil {
+					if errors.Is(err, service.ErrNotFound) {
+						server.closeStaleAgentSession(ctx, conn, authResult)
+						return
+					}
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "TRAFFIC_REPORT_FAILED"})
+					continue
+				}
+			}
+			if authResult.AgentType == "NODE" && payload.TrafficReportID != "" && len(payload.TrafficDeltas) > 0 {
+				_ = writeAgentEnvelope(ctx, conn, "metrics_ack", map[string]any{"traffic_report_id": payload.TrafficReportID})
+			}
 		}
 	}
 }

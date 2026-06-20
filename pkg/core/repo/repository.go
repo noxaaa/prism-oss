@@ -135,6 +135,8 @@ type RuleRepository interface {
 	CountRulesByOrganization(ctx context.Context, organizationID string) (int, error)
 	CountRulesByOwner(ctx context.Context, organizationID string, ownerUserID string) (int, error)
 	SumRuleTraffic(ctx context.Context, organizationID string, ruleID string) (RuleTrafficRecord, error)
+	RecordNodeRuleTrafficAssignments(ctx context.Context, organizationID string, nodeID string, ruleIDs []string, now string) error
+	RecordRuleTrafficReport(ctx context.Context, organizationID string, agentID string, report RuleTrafficReportRecord, deltas []RuleTrafficDeltaRecord, now string, nextID func() string) (bool, error)
 }
 
 type QuotaRepository interface {
@@ -384,6 +386,22 @@ type RuleRecord struct {
 }
 
 type RuleTrafficRecord struct {
+	UploadBytes    int64
+	DownloadBytes  int64
+	TCPConnections int64
+	UDPPackets     int64
+}
+
+type RuleTrafficReportRecord struct {
+	ID             string
+	OrganizationID string
+	AgentID        string
+	ReportID       string
+	CreatedAt      string
+}
+
+type RuleTrafficDeltaRecord struct {
+	RuleID         string
 	UploadBytes    int64
 	DownloadBytes  int64
 	TCPConnections int64
