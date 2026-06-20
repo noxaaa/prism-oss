@@ -12,7 +12,6 @@ type ControlPlaneConfig struct {
 	ControlPlaneURL         string
 	ControlPlaneInternalURL string
 	ControlPlaneInternalKey string
-	DatabaseDriver          string
 	DatabaseURL             string
 	QueueDriver             string
 	QueueRedisURL           string
@@ -32,7 +31,6 @@ func LoadControlPlane() (ControlPlaneConfig, error) {
 		ControlPlaneURL:         os.Getenv("CONTROL_PLANE_URL"),
 		ControlPlaneInternalURL: os.Getenv("CONTROL_PLANE_INTERNAL_URL"),
 		ControlPlaneInternalKey: os.Getenv("CONTROL_PLANE_INTERNAL_JWT_SECRET"),
-		DatabaseDriver:          envOrDefault("DATABASE_DRIVER", "sqlite"),
 		DatabaseURL:             os.Getenv("DATABASE_URL"),
 		QueueDriver:             envOrDefault("QUEUE_DRIVER", "asynq"),
 		QueueRedisURL:           os.Getenv("QUEUE_REDIS_URL"),
@@ -48,6 +46,9 @@ func LoadControlPlane() (ControlPlaneConfig, error) {
 	}
 	if cfg.ControlPlaneURL == "" {
 		return ControlPlaneConfig{}, errors.New("CONTROL_PLANE_URL is required")
+	}
+	if cfg.DatabaseURL == "" {
+		return ControlPlaneConfig{}, errors.New("DATABASE_URL is required")
 	}
 	if cfg.AgentTokenSigningSecret == "" {
 		return ControlPlaneConfig{}, errors.New("AGENT_TOKEN_SIGNING_SECRET is required")

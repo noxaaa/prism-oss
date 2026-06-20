@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"os/exec"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/noxaaa/prism-oss/pkg/core/auth"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
@@ -206,23 +209,65 @@ func (extension testControlRouteExtension) RegisterControlRoutes(registry Contro
 	extension.register(registry)
 }
 
-func openMigratedOSSControlTestStore(t *testing.T) (*sql.DB, *repo.SQLiteStore) {
+func openMigratedOSSControlTestStore(t *testing.T) (*sql.DB, *repo.PostgresStore) {
 	t.Helper()
 
 	root := repoRoot(t)
-	databasePath := filepath.Join(t.TempDir(), "control-oss.db")
-	cmd := exec.Command("go", "run", "./cmd/migrate", "-database", databasePath, "-dir", "migrations/core", "up")
+	baseURL := os.Getenv("TEST_DATABASE_URL")
+	if baseURL == "" {
+		baseURL = os.Getenv("DATABASE_URL")
+	}
+	if baseURL == "" {
+		t.Skip("TEST_DATABASE_URL or DATABASE_URL is required for PostgreSQL handler integration tests")
+	}
+	databaseName := "prism_handler_test_" + strings.ReplaceAll(uuid.NewString(), "-", "_")
+	adminDB, err := sql.Open("pgx", baseURL)
+	if err != nil {
+		t.Fatalf("open postgres admin database: %v", err)
+	}
+	if _, err := adminDB.Exec(`CREATE DATABASE ` + quoteIdentifier(databaseName)); err != nil {
+		_ = adminDB.Close()
+		t.Fatalf("create handler test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := adminDB.Exec(`DROP DATABASE IF EXISTS ` + quoteIdentifier(databaseName) + ` WITH (FORCE)`); err != nil {
+			t.Fatalf("drop handler test database: %v", err)
+		}
+		_ = adminDB.Close()
+	})
+	migrationURL := databaseURLWithName(t, baseURL, databaseName, "")
+	databaseURL := databaseURLWithName(t, baseURL, databaseName, "app,auth,public")
+	cmd := exec.Command("go", "run", "./cmd/migrate", "-database", migrationURL, "-dir", "migrations/auth,migrations/core", "up")
 	cmd.Dir = root
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("run OSS migrate command: %v output=%s", err, output)
 	}
 
-	db, err := repo.OpenSQLite(databasePath)
+	db, err := repo.OpenPostgres(databaseURL)
 	if err != nil {
-		t.Fatalf("open OSS sqlite: %v", err)
+		t.Fatalf("open OSS postgres: %v", err)
 	}
-	return db, repo.NewSQLiteStore(db)
+	return db, repo.NewPostgresStore(db)
+}
+
+func quoteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func databaseURLWithName(t *testing.T, rawURL string, databaseName string, searchPath string) string {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse database URL: %v", err)
+	}
+	parsed.Path = "/" + databaseName
+	query := parsed.Query()
+	if searchPath != "" {
+		query.Set("options", "-c search_path="+searchPath)
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func assertMissingPermission(t *testing.T, permissions []string, expected string) {

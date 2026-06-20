@@ -1,6 +1,4 @@
-import type { Database as SQLiteDatabase } from "better-sqlite3";
-
-import { createSQLiteDatabase } from "./auth";
+import { getPostgresPool } from "./auth";
 
 export type WebEdition = "oss" | "full";
 
@@ -9,8 +7,14 @@ export type SignupPolicy = {
 };
 
 type SignupPolicyOptions = {
-  database?: SQLiteDatabase;
+  database?: PolicyDatabase;
   webEdition?: WebEdition;
+  closeDatabase?: boolean;
+};
+
+type PolicyDatabase = {
+  query(sql: string): Promise<{ rows: Array<{ count?: number | string | bigint }> }>;
+  end(): Promise<void>;
 };
 
 export function isAuthSignUpPath(url: string): boolean {
@@ -36,7 +40,7 @@ export function webEditionFromEnv(value = process.env.NEXT_PUBLIC_PRISM_EDITION)
   throw new Error(`Unsupported NEXT_PUBLIC_PRISM_EDITION: ${value}`);
 }
 
-export function resolveSignupPolicy(options: SignupPolicyOptions = {}): SignupPolicy {
+export async function resolveSignupPolicy(options: SignupPolicyOptions = {}): Promise<SignupPolicy> {
   const webEdition = options.webEdition ?? webEditionFromEnv();
   if (webEdition !== "oss") {
     return { registrationClosed: false };
@@ -45,14 +49,14 @@ export function resolveSignupPolicy(options: SignupPolicyOptions = {}): SignupPo
     return { registrationClosed: false };
   }
 
-  const database = options.database ?? createSQLiteDatabase();
-  const shouldClose = !options.database;
+  const database = options.database ?? getPostgresPool();
   try {
-    const row = database.prepare("SELECT count(*) AS count FROM organizations WHERE deleted_at IS NULL").get() as { count: number | bigint };
-    return { registrationClosed: Number(row.count) > 0 };
+    const result = await database.query("SELECT count(*) AS count FROM app.organizations WHERE deleted_at IS NULL");
+    const row = result.rows[0] as { count: number | string | bigint } | undefined;
+    return { registrationClosed: Number(row?.count ?? 0) > 0 };
   } finally {
-    if (shouldClose) {
-      database.close();
+    if (options.closeDatabase) {
+      await database.end();
     }
   }
 }

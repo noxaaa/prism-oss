@@ -2,9 +2,9 @@ package repo
 
 import "context"
 
-func (store *SQLiteStore) ListNodeGroupsByOrganization(ctx context.Context, organizationID string) ([]NodeGroupRecord, error) {
+func (store *PostgresStore) ListNodeGroupsByOrganization(ctx context.Context, organizationID string) ([]NodeGroupRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, name, description, created_at, updated_at, coalesce(deleted_at, '')
+		SELECT id, organization_id, name, description, created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM node_groups
 		WHERE organization_id = ? AND deleted_at IS NULL
 		ORDER BY name, id
@@ -25,16 +25,16 @@ func (store *SQLiteStore) ListNodeGroupsByOrganization(ctx context.Context, orga
 	return nodeGroups, rows.Err()
 }
 
-func (store *SQLiteStore) FindNodeGroupByID(ctx context.Context, organizationID string, nodeGroupID string) (NodeGroupRecord, error) {
+func (store *PostgresStore) FindNodeGroupByID(ctx context.Context, organizationID string, nodeGroupID string) (NodeGroupRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
-		SELECT id, organization_id, name, description, created_at, updated_at, coalesce(deleted_at, '')
+		SELECT id, organization_id, name, description, created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM node_groups
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, organizationID, nodeGroupID)
 	return scanNodeGroup(row)
 }
 
-func (store *SQLiteStore) CreateNodeGroup(ctx context.Context, nodeGroup NodeGroupRecord) error {
+func (store *PostgresStore) CreateNodeGroup(ctx context.Context, nodeGroup NodeGroupRecord) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO node_groups (id, organization_id, name, description, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
@@ -42,7 +42,7 @@ func (store *SQLiteStore) CreateNodeGroup(ctx context.Context, nodeGroup NodeGro
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) UpdateNodeGroup(ctx context.Context, nodeGroup NodeGroupRecord) error {
+func (store *PostgresStore) UpdateNodeGroup(ctx context.Context, nodeGroup NodeGroupRecord) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE node_groups
 		SET name = ?, description = ?, updated_at = ?
@@ -54,7 +54,7 @@ func (store *SQLiteStore) UpdateNodeGroup(ctx context.Context, nodeGroup NodeGro
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) DeleteNodeGroup(ctx context.Context, organizationID string, nodeGroupID string, deletedAt string) error {
+func (store *PostgresStore) DeleteNodeGroup(ctx context.Context, organizationID string, nodeGroupID string, deletedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE node_groups
 		SET deleted_at = ?, updated_at = ?
@@ -66,14 +66,14 @@ func (store *SQLiteStore) DeleteNodeGroup(ctx context.Context, organizationID st
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) ListNodesByOrganization(ctx context.Context, organizationID string) ([]NodeRecord, error) {
+func (store *PostgresStore) ListNodesByOrganization(ctx context.Context, organizationID string) ([]NodeRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT id, organization_id, name, status, public_description, desired_config_version, applied_config_version,
-		       config_status, config_error_message, coalesce(config_status_updated_at, ''),
-		       coalesce(last_seen_at, ''), coalesce(registered_at, ''),
+		       config_status, config_error_message, coalesce(config_status_updated_at::text, ''),
+		       coalesce(last_seen_at::text, ''), coalesce(registered_at::text, ''),
 		       agent_version, agent_commit, agent_build_time, agent_auto_update_enabled, desired_agent_version,
-		       agent_update_status, agent_update_error, coalesce(agent_update_started_at, ''), coalesce(agent_update_finished_at, ''),
-		       created_at, updated_at, coalesce(deleted_at, '')
+		       agent_update_status, agent_update_error, coalesce(agent_update_started_at::text, ''), coalesce(agent_update_finished_at::text, ''),
+		       created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM nodes
 		WHERE organization_id = ? AND deleted_at IS NULL
 		ORDER BY name, id
@@ -97,14 +97,14 @@ func (store *SQLiteStore) ListNodesByOrganization(ctx context.Context, organizat
 	return nodes, rows.Err()
 }
 
-func (store *SQLiteStore) FindNodeByID(ctx context.Context, organizationID string, nodeID string) (NodeRecord, error) {
+func (store *PostgresStore) FindNodeByID(ctx context.Context, organizationID string, nodeID string) (NodeRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, name, status, public_description, desired_config_version, applied_config_version,
-		       config_status, config_error_message, coalesce(config_status_updated_at, ''),
-		       coalesce(last_seen_at, ''), coalesce(registered_at, ''),
+		       config_status, config_error_message, coalesce(config_status_updated_at::text, ''),
+		       coalesce(last_seen_at::text, ''), coalesce(registered_at::text, ''),
 		       agent_version, agent_commit, agent_build_time, agent_auto_update_enabled, desired_agent_version,
-		       agent_update_status, agent_update_error, coalesce(agent_update_started_at, ''), coalesce(agent_update_finished_at, ''),
-		       created_at, updated_at, coalesce(deleted_at, '')
+		       agent_update_status, agent_update_error, coalesce(agent_update_started_at::text, ''), coalesce(agent_update_finished_at::text, ''),
+		       created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM nodes
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, organizationID, nodeID)
@@ -118,7 +118,7 @@ func (store *SQLiteStore) FindNodeByID(ctx context.Context, organizationID strin
 	return node, nil
 }
 
-func (store *SQLiteStore) CreateNode(ctx context.Context, node NodeRecord, groupIDs []string, listenIPs []NodeListenIPRecord, portRanges []NodePortRangeRecord, now string, nextID func() string) error {
+func (store *PostgresStore) CreateNode(ctx context.Context, node NodeRecord, groupIDs []string, listenIPs []NodeListenIPRecord, portRanges []NodePortRangeRecord, now string, nextID func() string) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO nodes (
 			id, organization_id, name, status, public_description, desired_config_version, applied_config_version,
@@ -137,7 +137,7 @@ func (store *SQLiteStore) CreateNode(ctx context.Context, node NodeRecord, group
 	return store.replaceNodePortRanges(ctx, node.OrganizationID, node.ID, portRanges, now, nextID)
 }
 
-func (store *SQLiteStore) UpdateNode(ctx context.Context, node NodeRecord, replaceGroups bool, groupIDs []string, replaceListenIPs bool, listenIPs []NodeListenIPRecord, replacePortRanges bool, portRanges []NodePortRangeRecord, now string, nextID func() string) error {
+func (store *PostgresStore) UpdateNode(ctx context.Context, node NodeRecord, replaceGroups bool, groupIDs []string, replaceListenIPs bool, listenIPs []NodeListenIPRecord, replacePortRanges bool, portRanges []NodePortRangeRecord, now string, nextID func() string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET name = ?, public_description = ?, updated_at = ?
@@ -167,7 +167,7 @@ func (store *SQLiteStore) UpdateNode(ctx context.Context, node NodeRecord, repla
 	return nil
 }
 
-func (store *SQLiteStore) MarkNodeAgentConnected(ctx context.Context, organizationID string, nodeID string, now string) error {
+func (store *PostgresStore) MarkNodeAgentConnected(ctx context.Context, organizationID string, nodeID string, now string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET status = 'ONLINE',
@@ -182,7 +182,7 @@ func (store *SQLiteStore) MarkNodeAgentConnected(ctx context.Context, organizati
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) UpdateNodeAgentVersion(ctx context.Context, organizationID string, nodeID string, version NodeAgentVersionRecord, now string) error {
+func (store *PostgresStore) UpdateNodeAgentVersion(ctx context.Context, organizationID string, nodeID string, version NodeAgentVersionRecord, now string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET agent_version = ?,
@@ -198,24 +198,20 @@ func (store *SQLiteStore) UpdateNodeAgentVersion(ctx context.Context, organizati
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) UpdateNodeAgentUpdatePolicy(ctx context.Context, organizationID string, nodeID string, enabled bool, now string) error {
-	enabledValue := 0
-	if enabled {
-		enabledValue = 1
-	}
+func (store *PostgresStore) UpdateNodeAgentUpdatePolicy(ctx context.Context, organizationID string, nodeID string, enabled bool, now string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET agent_auto_update_enabled = ?,
 		    updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, enabledValue, now, organizationID, nodeID)
+	`, enabled, now, organizationID, nodeID)
 	if err != nil {
 		return mapWriteError(err)
 	}
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) MarkNodeAgentUpdateRequested(ctx context.Context, organizationID string, nodeID string, targetVersion string, now string) error {
+func (store *PostgresStore) MarkNodeAgentUpdateRequested(ctx context.Context, organizationID string, nodeID string, targetVersion string, now string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET desired_agent_version = ?,
@@ -232,7 +228,7 @@ func (store *SQLiteStore) MarkNodeAgentUpdateRequested(ctx context.Context, orga
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) MarkNodeAgentUpdateSatisfied(ctx context.Context, organizationID string, nodeID string, targetVersion string, now string) error {
+func (store *PostgresStore) MarkNodeAgentUpdateSatisfied(ctx context.Context, organizationID string, nodeID string, targetVersion string, now string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET desired_agent_version = ?,
@@ -249,7 +245,7 @@ func (store *SQLiteStore) MarkNodeAgentUpdateSatisfied(ctx context.Context, orga
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) RecordNodeAgentUpdateResult(ctx context.Context, organizationID string, nodeID string, status string, errorMessage string, now string) error {
+func (store *PostgresStore) RecordNodeAgentUpdateResult(ctx context.Context, organizationID string, nodeID string, status string, errorMessage string, now string) error {
 	finishedAt := any(now)
 	if status == "RUNNING" {
 		finishedAt = nil
@@ -268,7 +264,7 @@ func (store *SQLiteStore) RecordNodeAgentUpdateResult(ctx context.Context, organ
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) MarkNodeAgentDisconnected(ctx context.Context, organizationID string, nodeID string, now string) error {
+func (store *PostgresStore) MarkNodeAgentDisconnected(ctx context.Context, organizationID string, nodeID string, now string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET status = 'OFFLINE',
@@ -282,7 +278,7 @@ func (store *SQLiteStore) MarkNodeAgentDisconnected(ctx context.Context, organiz
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) RecordNodeConfigAck(ctx context.Context, organizationID string, nodeID string, configVersion int, status string, errorMessage string, now string) error {
+func (store *PostgresStore) RecordNodeConfigAck(ctx context.Context, organizationID string, nodeID string, configVersion int, status string, errorMessage string, now string) error {
 	if status == "APPLIED" {
 		_, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
@@ -322,7 +318,7 @@ func (store *SQLiteStore) RecordNodeConfigAck(ctx context.Context, organizationI
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) EnsureDesiredConfigVersionAtLeast(ctx context.Context, organizationID string, nodeID string, configVersion int, now string) error {
+func (store *PostgresStore) EnsureDesiredConfigVersionAtLeast(ctx context.Context, organizationID string, nodeID string, configVersion int, now string) error {
 	_, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET desired_config_version = ?,
@@ -338,7 +334,7 @@ func (store *SQLiteStore) EnsureDesiredConfigVersionAtLeast(ctx context.Context,
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) IncrementDesiredConfigForNode(ctx context.Context, organizationID string, nodeID string, now string) error {
+func (store *PostgresStore) IncrementDesiredConfigForNode(ctx context.Context, organizationID string, nodeID string, now string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET desired_config_version =
@@ -358,7 +354,7 @@ func (store *SQLiteStore) IncrementDesiredConfigForNode(ctx context.Context, org
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) IncrementDesiredConfigForNodeGroup(ctx context.Context, organizationID string, nodeGroupID string, now string) error {
+func (store *PostgresStore) IncrementDesiredConfigForNodeGroup(ctx context.Context, organizationID string, nodeGroupID string, now string) error {
 	_, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET desired_config_version =
@@ -381,7 +377,7 @@ func (store *SQLiteStore) IncrementDesiredConfigForNodeGroup(ctx context.Context
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) DeleteNode(ctx context.Context, organizationID string, nodeID string, deletedAt string) error {
+func (store *PostgresStore) DeleteNode(ctx context.Context, organizationID string, nodeID string, deletedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET deleted_at = ?, updated_at = ?
@@ -393,9 +389,9 @@ func (store *SQLiteStore) DeleteNode(ctx context.Context, organizationID string,
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) ListMonitorGroupsByOrganization(ctx context.Context, organizationID string) ([]MonitorGroupRecord, error) {
+func (store *PostgresStore) ListMonitorGroupsByOrganization(ctx context.Context, organizationID string) ([]MonitorGroupRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, name, description, created_at, updated_at, coalesce(deleted_at, '')
+		SELECT id, organization_id, name, description, created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM monitor_groups
 		WHERE organization_id = ? AND deleted_at IS NULL
 		ORDER BY name, id
@@ -416,16 +412,16 @@ func (store *SQLiteStore) ListMonitorGroupsByOrganization(ctx context.Context, o
 	return monitorGroups, rows.Err()
 }
 
-func (store *SQLiteStore) FindMonitorGroupByID(ctx context.Context, organizationID string, monitorGroupID string) (MonitorGroupRecord, error) {
+func (store *PostgresStore) FindMonitorGroupByID(ctx context.Context, organizationID string, monitorGroupID string) (MonitorGroupRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
-		SELECT id, organization_id, name, description, created_at, updated_at, coalesce(deleted_at, '')
+		SELECT id, organization_id, name, description, created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM monitor_groups
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, organizationID, monitorGroupID)
 	return scanMonitorGroup(row)
 }
 
-func (store *SQLiteStore) CreateMonitorGroup(ctx context.Context, monitorGroup MonitorGroupRecord) error {
+func (store *PostgresStore) CreateMonitorGroup(ctx context.Context, monitorGroup MonitorGroupRecord) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO monitor_groups (id, organization_id, name, description, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
@@ -433,7 +429,7 @@ func (store *SQLiteStore) CreateMonitorGroup(ctx context.Context, monitorGroup M
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) UpdateMonitorGroup(ctx context.Context, monitorGroup MonitorGroupRecord) error {
+func (store *PostgresStore) UpdateMonitorGroup(ctx context.Context, monitorGroup MonitorGroupRecord) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE monitor_groups
 		SET name = ?, description = ?, updated_at = ?
@@ -445,7 +441,7 @@ func (store *SQLiteStore) UpdateMonitorGroup(ctx context.Context, monitorGroup M
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) DeleteMonitorGroup(ctx context.Context, organizationID string, monitorGroupID string, deletedAt string) error {
+func (store *PostgresStore) DeleteMonitorGroup(ctx context.Context, organizationID string, monitorGroupID string, deletedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE monitor_groups
 		SET deleted_at = ?, updated_at = ?
@@ -457,10 +453,10 @@ func (store *SQLiteStore) DeleteMonitorGroup(ctx context.Context, organizationID
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) ListMonitorsByOrganization(ctx context.Context, organizationID string) ([]MonitorRecord, error) {
+func (store *PostgresStore) ListMonitorsByOrganization(ctx context.Context, organizationID string) ([]MonitorRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT id, organization_id, name, status, desired_config_version, applied_config_version,
-		       coalesce(last_seen_at, ''), coalesce(registered_at, ''), created_at, updated_at, coalesce(deleted_at, '')
+		       coalesce(last_seen_at::text, ''), coalesce(registered_at::text, ''), created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM monitors
 		WHERE organization_id = ? AND deleted_at IS NULL
 		ORDER BY name, id
@@ -486,10 +482,10 @@ func (store *SQLiteStore) ListMonitorsByOrganization(ctx context.Context, organi
 	return monitors, rows.Err()
 }
 
-func (store *SQLiteStore) FindMonitorByID(ctx context.Context, organizationID string, monitorID string) (MonitorRecord, error) {
+func (store *PostgresStore) FindMonitorByID(ctx context.Context, organizationID string, monitorID string) (MonitorRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, name, status, desired_config_version, applied_config_version,
-		       coalesce(last_seen_at, ''), coalesce(registered_at, ''), created_at, updated_at, coalesce(deleted_at, '')
+		       coalesce(last_seen_at::text, ''), coalesce(registered_at::text, ''), created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM monitors
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, organizationID, monitorID)
@@ -505,7 +501,7 @@ func (store *SQLiteStore) FindMonitorByID(ctx context.Context, organizationID st
 	return monitor, nil
 }
 
-func (store *SQLiteStore) CreateMonitor(ctx context.Context, monitor MonitorRecord, groupIDs []string, now string, nextID func() string) error {
+func (store *PostgresStore) CreateMonitor(ctx context.Context, monitor MonitorRecord, groupIDs []string, now string, nextID func() string) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO monitors (
 			id, organization_id, name, status, desired_config_version, applied_config_version, created_at, updated_at
@@ -517,7 +513,7 @@ func (store *SQLiteStore) CreateMonitor(ctx context.Context, monitor MonitorReco
 	return store.replaceMonitorGroups(ctx, monitor.OrganizationID, monitor.ID, groupIDs, now, nextID)
 }
 
-func (store *SQLiteStore) UpdateMonitor(ctx context.Context, monitor MonitorRecord, replaceGroups bool, groupIDs []string, now string, nextID func() string) error {
+func (store *PostgresStore) UpdateMonitor(ctx context.Context, monitor MonitorRecord, replaceGroups bool, groupIDs []string, now string, nextID func() string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE monitors
 		SET name = ?, updated_at = ?
@@ -535,7 +531,7 @@ func (store *SQLiteStore) UpdateMonitor(ctx context.Context, monitor MonitorReco
 	return nil
 }
 
-func (store *SQLiteStore) MarkMonitorAgentConnected(ctx context.Context, organizationID string, monitorID string, now string) error {
+func (store *PostgresStore) MarkMonitorAgentConnected(ctx context.Context, organizationID string, monitorID string, now string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE monitors
 		SET status = 'ONLINE',
@@ -550,7 +546,7 @@ func (store *SQLiteStore) MarkMonitorAgentConnected(ctx context.Context, organiz
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) MarkMonitorAgentDisconnected(ctx context.Context, organizationID string, monitorID string, now string) error {
+func (store *PostgresStore) MarkMonitorAgentDisconnected(ctx context.Context, organizationID string, monitorID string, now string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE monitors
 		SET status = 'OFFLINE',
@@ -564,7 +560,7 @@ func (store *SQLiteStore) MarkMonitorAgentDisconnected(ctx context.Context, orga
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) DeleteMonitor(ctx context.Context, organizationID string, monitorID string, deletedAt string) error {
+func (store *PostgresStore) DeleteMonitor(ctx context.Context, organizationID string, monitorID string, deletedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE monitors
 		SET deleted_at = ?, updated_at = ?
@@ -576,7 +572,7 @@ func (store *SQLiteStore) DeleteMonitor(ctx context.Context, organizationID stri
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) loadNodeDetails(ctx context.Context, node *NodeRecord) error {
+func (store *PostgresStore) loadNodeDetails(ctx context.Context, node *NodeRecord) error {
 	groupIDs, err := store.listNodeGroupIDs(ctx, node.OrganizationID, node.ID)
 	if err != nil {
 		return err
@@ -595,7 +591,7 @@ func (store *SQLiteStore) loadNodeDetails(ctx context.Context, node *NodeRecord)
 	return nil
 }
 
-func (store *SQLiteStore) listNodeGroupIDs(ctx context.Context, organizationID string, nodeID string) ([]string, error) {
+func (store *PostgresStore) listNodeGroupIDs(ctx context.Context, organizationID string, nodeID string) ([]string, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT node_group_members.node_group_id
 		FROM node_group_members
@@ -622,7 +618,7 @@ func (store *SQLiteStore) listNodeGroupIDs(ctx context.Context, organizationID s
 	return groupIDs, rows.Err()
 }
 
-func (store *SQLiteStore) listNodeListenIPs(ctx context.Context, organizationID string, nodeID string) ([]NodeListenIPRecord, error) {
+func (store *PostgresStore) listNodeListenIPs(ctx context.Context, organizationID string, nodeID string) ([]NodeListenIPRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT id, organization_id, node_id, listen_ip, display_name, enabled, created_at, updated_at
 		FROM node_listen_ips
@@ -645,7 +641,7 @@ func (store *SQLiteStore) listNodeListenIPs(ctx context.Context, organizationID 
 	return listenIPs, rows.Err()
 }
 
-func (store *SQLiteStore) listNodePortRanges(ctx context.Context, organizationID string, nodeID string) ([]NodePortRangeRecord, error) {
+func (store *PostgresStore) listNodePortRanges(ctx context.Context, organizationID string, nodeID string) ([]NodePortRangeRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT id, organization_id, node_id, protocol, start_port, end_port, enabled, created_at, updated_at
 		FROM node_port_ranges
@@ -668,7 +664,7 @@ func (store *SQLiteStore) listNodePortRanges(ctx context.Context, organizationID
 	return portRanges, rows.Err()
 }
 
-func (store *SQLiteStore) replaceNodeGroups(ctx context.Context, organizationID string, nodeID string, groupIDs []string, now string, nextID func() string) error {
+func (store *PostgresStore) replaceNodeGroups(ctx context.Context, organizationID string, nodeID string, groupIDs []string, now string, nextID func() string) error {
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM node_group_members WHERE organization_id = ? AND node_id = ?`, organizationID, nodeID); err != nil {
 		return mapWriteError(err)
 	}
@@ -683,7 +679,7 @@ func (store *SQLiteStore) replaceNodeGroups(ctx context.Context, organizationID 
 	return nil
 }
 
-func (store *SQLiteStore) replaceNodeListenIPs(ctx context.Context, organizationID string, nodeID string, listenIPs []NodeListenIPRecord, now string, nextID func() string) error {
+func (store *PostgresStore) replaceNodeListenIPs(ctx context.Context, organizationID string, nodeID string, listenIPs []NodeListenIPRecord, now string, nextID func() string) error {
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM node_listen_ips WHERE organization_id = ? AND node_id = ?`, organizationID, nodeID); err != nil {
 		return mapWriteError(err)
 	}
@@ -695,14 +691,14 @@ func (store *SQLiteStore) replaceNodeListenIPs(ctx context.Context, organization
 		if _, err := store.db.ExecContext(ctx, `
 			INSERT INTO node_listen_ips (id, organization_id, node_id, listen_ip, display_name, enabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, id, organizationID, nodeID, listenIP.ListenIP, listenIP.DisplayName, boolToInt(listenIP.Enabled), now, now); err != nil {
+		`, id, organizationID, nodeID, listenIP.ListenIP, listenIP.DisplayName, boolToDB(listenIP.Enabled), now, now); err != nil {
 			return mapWriteError(err)
 		}
 	}
 	return nil
 }
 
-func (store *SQLiteStore) replaceNodePortRanges(ctx context.Context, organizationID string, nodeID string, portRanges []NodePortRangeRecord, now string, nextID func() string) error {
+func (store *PostgresStore) replaceNodePortRanges(ctx context.Context, organizationID string, nodeID string, portRanges []NodePortRangeRecord, now string, nextID func() string) error {
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM node_port_ranges WHERE organization_id = ? AND node_id = ?`, organizationID, nodeID); err != nil {
 		return mapWriteError(err)
 	}
@@ -714,14 +710,14 @@ func (store *SQLiteStore) replaceNodePortRanges(ctx context.Context, organizatio
 		if _, err := store.db.ExecContext(ctx, `
 			INSERT INTO node_port_ranges (id, organization_id, node_id, protocol, start_port, end_port, enabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, id, organizationID, nodeID, portRange.Protocol, portRange.StartPort, portRange.EndPort, boolToInt(portRange.Enabled), now, now); err != nil {
+		`, id, organizationID, nodeID, portRange.Protocol, portRange.StartPort, portRange.EndPort, boolToDB(portRange.Enabled), now, now); err != nil {
 			return mapWriteError(err)
 		}
 	}
 	return nil
 }
 
-func (store *SQLiteStore) listMonitorGroupIDs(ctx context.Context, organizationID string, monitorID string) ([]string, error) {
+func (store *PostgresStore) listMonitorGroupIDs(ctx context.Context, organizationID string, monitorID string) ([]string, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT monitor_group_id
 		FROM monitor_group_members
@@ -744,7 +740,7 @@ func (store *SQLiteStore) listMonitorGroupIDs(ctx context.Context, organizationI
 	return groupIDs, rows.Err()
 }
 
-func (store *SQLiteStore) replaceMonitorGroups(ctx context.Context, organizationID string, monitorID string, groupIDs []string, now string, nextID func() string) error {
+func (store *PostgresStore) replaceMonitorGroups(ctx context.Context, organizationID string, monitorID string, groupIDs []string, now string, nextID func() string) error {
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM monitor_group_members WHERE organization_id = ? AND monitor_id = ?`, organizationID, monitorID); err != nil {
 		return mapWriteError(err)
 	}

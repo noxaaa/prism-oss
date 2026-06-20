@@ -61,11 +61,11 @@ func TestCoreMigrationsPersistDocumentedRuleRoutingFields(t *testing.T) {
 	if err := db.QueryRow(`
 		SELECT inbound_binding_id, sni_hostname, proxy_protocol_in, proxy_protocol_out
 		FROM forwarding_rules
-		WHERE id = 'rule_documented_fields'
-	`).Scan(&inboundBindingID, &sniHostname, &proxyProtocolIn, &proxyProtocolOut); err != nil {
+		WHERE id = $1
+	`, fixtureUUID("rule_documented_fields")).Scan(&inboundBindingID, &sniHostname, &proxyProtocolIn, &proxyProtocolOut); err != nil {
 		t.Fatalf("read documented rule fields: %v", err)
 	}
-	if inboundBindingID != "inbound_binding_documented_fields" ||
+	if inboundBindingID != fixtureUUID("inbound_binding_documented_fields") ||
 		sniHostname != "app.example.com" ||
 		proxyProtocolIn != "V1" ||
 		proxyProtocolOut != "V2" {

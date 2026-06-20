@@ -34,6 +34,6 @@ export async function getConsoleServerContext(): Promise<ConsoleServerContext> {
     appName: process.env.APP_NAME ?? "APP_NAME",
     initialUser,
     locale,
-    registrationClosed: resolveSignupPolicy().registrationClosed,
+    registrationClosed: (await resolveSignupPolicy()).registrationClosed,
   };
 }

@@ -21,4 +21,4 @@ build-agents:
 	go build -o node-agent ./cmd/node-agent
 
 migrate:
-	go run ./cmd/migrate -database "$${DATABASE_URL:-./local.db}" up
+	go run ./cmd/migrate -database "$${DATABASE_URL:?set DATABASE_URL}" up

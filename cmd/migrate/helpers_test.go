@@ -2,23 +2,57 @@ package main
 
 import (
 	"database/sql"
-	"path/filepath"
+	"net/url"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func openMigratedCoreDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	databasePath := filepath.Join(t.TempDir(), "app.db")
+	baseURL := os.Getenv("TEST_DATABASE_URL")
+	if baseURL == "" {
+		baseURL = os.Getenv("DATABASE_URL")
+	}
+	if baseURL == "" {
+		t.Skip("TEST_DATABASE_URL or DATABASE_URL is required for PostgreSQL migration tests")
+	}
+	databaseName := "prism_migrate_test_" + strings.ReplaceAll(uuid.NewString(), "-", "_")
+	adminDB, err := sql.Open("pgx", baseURL)
+	if err != nil {
+		t.Fatalf("open postgres admin database: %v", err)
+	}
+	if _, err := adminDB.Exec(`CREATE DATABASE ` + quoteIdentifier(databaseName)); err != nil {
+		_ = adminDB.Close()
+		t.Fatalf("create test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := adminDB.Exec(`DROP DATABASE IF EXISTS ` + quoteIdentifier(databaseName) + ` WITH (FORCE)`); err != nil {
+			t.Fatalf("drop test database: %v", err)
+		}
+		_ = adminDB.Close()
+	})
+	databaseURL, err := databaseURLWithName(baseURL, databaseName, "app,auth,public")
+	if err != nil {
+		t.Fatalf("build test database URL: %v", err)
+	}
+	migrationURL, err := databaseURLWithName(baseURL, databaseName, "")
+	if err != nil {
+		t.Fatalf("build migration database URL: %v", err)
+	}
 	if err := run([]string{
-		"-database", databasePath,
-		"-dir", "../../migrations/core",
+		"-database", migrationURL,
+		"-dir", "../../migrations/auth,../../migrations/core",
 		"up",
 	}); err != nil {
 		t.Fatalf("run migrate up: %v", err)
 	}
 
-	db, err := openSQLite(databasePath)
+	db, err := openPostgres(databaseURL)
 	if err != nil {
 		t.Fatalf("open migrated database: %v", err)
 	}
@@ -29,8 +63,8 @@ func seedTenantFixture(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	statements := []string{
-		`INSERT INTO "user" (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('user_a', 'User A', 'a@example.com', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-		`INSERT INTO "user" (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('user_b', 'User B', 'b@example.com', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		`INSERT INTO "user" ("id", "name", "email", "emailVerified", "createdAt", "updatedAt") VALUES ('user_a', 'User A', 'a@example.com', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		`INSERT INTO "user" ("id", "name", "email", "emailVerified", "createdAt", "updatedAt") VALUES ('user_b', 'User B', 'b@example.com', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 		`INSERT INTO organizations (id, name, slug, created_at, updated_at) VALUES ('org_a', 'Org A', 'org-a', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 		`INSERT INTO organizations (id, name, slug, created_at, updated_at) VALUES ('org_b', 'Org B', 'org-b', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 		`INSERT INTO node_groups (id, organization_id, name, created_at, updated_at) VALUES ('node_group_a', 'org_a', 'Node Group A', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
@@ -83,7 +117,7 @@ func seedTenantFixture(t *testing.T, db *sql.DB) {
 func tableExists(t *testing.T, db *sql.DB, table string) bool {
 	t.Helper()
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1`, table).Scan(&count); err != nil {
 		t.Fatalf("read table %s existence: %v", table, err)
 	}
 	return count > 0
@@ -91,6 +125,7 @@ func tableExists(t *testing.T, db *sql.DB, table string) bool {
 
 func mustExec(t *testing.T, db *sql.DB, statement string) {
 	t.Helper()
+	statement = rewriteFixtureSQL(statement)
 	if _, err := db.Exec(statement); err != nil {
 		t.Fatalf("exec statement: %v\n%s", err, statement)
 	}
@@ -98,7 +133,165 @@ func mustExec(t *testing.T, db *sql.DB, statement string) {
 
 func expectExecError(t *testing.T, db *sql.DB, statement string) {
 	t.Helper()
+	statement = rewriteFixtureSQL(statement)
 	if _, err := db.Exec(statement); err == nil {
 		t.Fatalf("expected statement to fail:\n%s", statement)
 	}
+}
+
+func quoteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func databaseURLWithName(rawURL string, databaseName string, searchPath string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	parsed.Path = "/" + databaseName
+	query := parsed.Query()
+	if searchPath != "" {
+		query.Set("options", "-c search_path="+searchPath)
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
+}
+
+var quotedFixtureTokenPattern = regexp.MustCompile(`'([a-z][a-z0-9_]*(?:_[a-z0-9]+)*)'`)
+
+func rewriteFixtureSQL(statement string) string {
+	statement = quotedFixtureTokenPattern.ReplaceAllStringFunc(statement, func(value string) string {
+		token := strings.Trim(value, "'")
+		if !isUUIDFixtureToken(token) {
+			return value
+		}
+		return "'" + fixtureUUID(token) + "'"
+	})
+	statement = rewriteBooleanInsertValues(statement)
+	replacer := strings.NewReplacer(
+		"SET enabled = 1", "SET enabled = true",
+		"SET enabled = 0", "SET enabled = false",
+	)
+	return replacer.Replace(statement)
+}
+
+func rewriteBooleanInsertValues(statement string) string {
+	lower := strings.ToLower(statement)
+	valuesIndex := strings.Index(lower, "values")
+	if valuesIndex < 0 {
+		return statement
+	}
+	columnsOpen := strings.Index(statement, "(")
+	if columnsOpen < 0 || columnsOpen > valuesIndex {
+		return statement
+	}
+	columnsClose := findMatchingParen(statement, columnsOpen)
+	if columnsClose < 0 || columnsClose > valuesIndex {
+		return statement
+	}
+	valuesOpen := strings.Index(statement[valuesIndex:], "(")
+	if valuesOpen < 0 {
+		return statement
+	}
+	valuesOpen += valuesIndex
+	valuesClose := findMatchingParen(statement, valuesOpen)
+	if valuesClose < 0 {
+		return statement
+	}
+
+	columns := splitSQLList(statement[columnsOpen+1 : columnsClose])
+	values := splitSQLList(statement[valuesOpen+1 : valuesClose])
+	if len(columns) != len(values) {
+		return statement
+	}
+	for index, column := range columns {
+		if !isBooleanColumn(column) {
+			continue
+		}
+		switch strings.TrimSpace(values[index]) {
+		case "1":
+			values[index] = "true"
+		case "0":
+			values[index] = "false"
+		}
+	}
+	return statement[:valuesOpen+1] + strings.Join(values, ", ") + statement[valuesClose:]
+}
+
+func findMatchingParen(value string, openIndex int) int {
+	depth := 0
+	inQuote := false
+	for index := openIndex; index < len(value); index++ {
+		character := value[index]
+		if character == '\'' {
+			inQuote = !inQuote
+			continue
+		}
+		if inQuote {
+			continue
+		}
+		switch character {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+func splitSQLList(value string) []string {
+	parts := make([]string, 0)
+	start := 0
+	inQuote := false
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character == '\'' {
+			inQuote = !inQuote
+			continue
+		}
+		if character == ',' && !inQuote {
+			parts = append(parts, strings.TrimSpace(value[start:index]))
+			start = index + 1
+		}
+	}
+	parts = append(parts, strings.TrimSpace(value[start:]))
+	return parts
+}
+
+func isBooleanColumn(column string) bool {
+	normalized := strings.Trim(strings.TrimSpace(column), `"`)
+	switch normalized {
+	case "enabled", "emailVerified", "is_system", "agent_auto_update_enabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func isUUIDFixtureToken(token string) bool {
+	for _, prefix := range []string{
+		"org_",
+		"node_",
+		"listen_ip_",
+		"target_",
+		"inbound_",
+		"rule_",
+		"member_",
+		"role_",
+		"monitor_",
+		"quota_",
+	} {
+		if strings.HasPrefix(token, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func fixtureUUID(token string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(token)).String()
 }

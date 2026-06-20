@@ -4,7 +4,7 @@ This guide covers the Docker Compose installation created by `scripts/install.sh
 
 ## Configuration
 
-The installer writes a local `.env` file on first run. Keep this file private because it contains authentication and agent secrets. On later runs, the upgrade helper preserves secrets and custom values while updating the image tag used by Compose.
+The installer writes a local `.env` file on first run. Keep this file private because it contains authentication, database, and agent secrets. On later runs, the upgrade helper preserves secrets and custom values while updating the image tag used by Compose.
 
 Common settings:
 
@@ -13,29 +13,36 @@ Common settings:
 - `CONTROL_PLANE_PORT`: host port for the control-plane API. Default: `8080`.
 - `CONTROL_PLANE_BIND_HOST`: host interface for the control-plane API. Default: `0.0.0.0`.
 - `PUBLIC_WEB_URL`: browser URL for the web console. Set this explicitly when automatic address detection does not match the URL you use in the browser.
-- `CONTROL_PLANE_URL`: URL that agents use to reach the control plane. The installer derives this as `http://<PUBLIC_WEB_URL host>:<CONTROL_PLANE_PORT>` unless `--control-url` is provided. For agents on other hosts, this must be a reachable host or DNS name, not localhost. If `CONTROL_PLANE_BIND_HOST` is loopback, the generated URL stays loopback.
-- `AGENT_RELEASE_VERSION`: GitHub Release tag used by copied node install commands. The installer writes the installed tag so remote node-agent binaries match the running control plane.
+- `CONTROL_PLANE_URL`: URL that agents use to reach the control plane. The installer derives this as `http://<PUBLIC_WEB_URL host>:<CONTROL_PLANE_PORT>` unless `--control-url` is provided.
+- `DATABASE_URL`: PostgreSQL connection URL used by migrate, control-plane, and web.
+- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: bundled PostgreSQL container settings. These are omitted when installing with `--database-url`.
+- `AGENT_RELEASE_VERSION`: GitHub Release tag used by copied node install commands.
 - `PRISM_IMAGE_REGISTRY`: image registry namespace. Default: `ghcr.io/noxaaa`.
 - `PRISM_IMAGE_TAG`: image tag used for `prism-oss-web`, `prism-oss-control-plane`, and `prism-oss-migrate`.
 - `BETTER_AUTH_URL`: optional auth base URL override. Defaults to `PUBLIC_WEB_URL`.
-- `BETTER_AUTH_TRUSTED_ORIGINS`: comma-separated browser origins accepted by the auth service. The installer includes `PUBLIC_WEB_URL`, `127.0.0.1`, and `localhost` by default.
-- `OSS_SETUP_TOKEN`: one-time first-owner setup token. Keep it private; sign-up is rejected without it until the first owner completes setup.
-- `PRISM_OSS_DATABASE_URL`: SQLite database path inside the containers. Default: `/data/oss.db`.
+- `BETTER_AUTH_TRUSTED_ORIGINS`: comma-separated browser origins accepted by the auth service.
+- `OSS_SETUP_TOKEN`: one-time first-owner setup token.
 
-Do not edit generated secrets after the first start unless you are intentionally rotating credentials.
+The default install starts a bundled `postgres:16` container and stores data in the `postgres-data` Docker volume. To use external PostgreSQL 16 instead, pass:
+
+```sh
+./scripts/install.sh --database-url "postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require"
+```
+
+External PostgreSQL installs do not render a `postgres` service in `docker-compose.yml`.
+
+SQLite has been removed. During indev, old local test instances must be purged and rebuilt; no SQLite-to-PostgreSQL data migration is provided.
 
 ## Start And Stop
 
 ```sh
 docker compose up -d
 docker compose ps
-docker compose logs -f web control-plane
+docker compose logs -f web control-plane postgres
 docker compose down
 ```
 
 Open the setup URL printed by the installer and create the first owner account. The setup URL includes `OSS_SETUP_TOKEN`; sign-up is rejected without that token until the first owner completes setup. After that account exists, this single-user edition disables further sign-ups.
-
-The console copy action uses the GitHub Release `install-node-agent.sh` helper so remote nodes download, verify, install, and run the matching `node-agent` binary as a systemd service.
 
 ## Upgrade
 
@@ -45,12 +52,6 @@ The console copy action uses the GitHub Release `install-node-agent.sh` helper s
 
 The upgrade helper updates `PRISM_IMAGE_TAG` and `AGENT_RELEASE_VERSION`, pulls the selected release images, runs the `migrate` image, and restarts the Compose services. Existing secrets, custom trusted origins, custom `.env` values, and Docker volumes are preserved.
 
-You can also run the installer directly when you need to pass the full install options again:
-
-```sh
-./scripts/install.sh --version latest
-```
-
 For a pinned upgrade, pass an explicit tag:
 
 ```sh
@@ -59,16 +60,13 @@ For a pinned upgrade, pass an explicit tag:
 
 ## Backup
 
-The SQLite database lives in the `sqlite-data` Docker volume. To copy it out:
+For the bundled PostgreSQL container:
 
 ```sh
-docker compose stop web control-plane
-docker compose cp control-plane:/data/oss.db ./oss.db.backup
-for suffix in '-wal' '-shm'; do docker compose cp "control-plane:/data/oss.db${suffix}" "./oss.db.backup${suffix}" || true; done
-docker compose up -d
+docker compose exec -T postgres pg_dump -U "${POSTGRES_USER:-prism}" -d "${POSTGRES_DB:-prism}" --format=custom > prism.dump
 ```
 
-Keep backups private. They contain user, rule, target, node, audit, and token metadata. The command copies `/data/oss.db`, `/data/oss.db-wal`, and `/data/oss.db-shm` when the WAL files are present; keep `oss.db.backup`, `oss.db.backup-wal`, and `oss.db.backup-shm` together because SQLite WAL mode can store committed data in the WAL file.
+For external PostgreSQL, use your database provider's managed backup workflow or run `pg_dump` against the external `DATABASE_URL`.
 
 ## Reset
 
@@ -76,6 +74,12 @@ Reset removes containers and local data volumes:
 
 ```sh
 docker compose down -v --remove-orphans
+```
+
+The release uninstall helper exposes the same destructive reset as:
+
+```sh
+./uninstall.sh --purge
 ```
 
 Run `./scripts/install.sh` again to recreate `.env` only if you removed it yourself. Existing secret values are not regenerated by the installer.

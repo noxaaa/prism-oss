@@ -45,7 +45,7 @@ jobs:
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/node-agent" ./cmd/node-agent
             cp "$out_dir/control-plane-oss" "$assets_dir/control-plane-oss-linux-${arch}"
             tar -C "$out_dir" -czf "$assets_dir/node-agent-linux-${arch}.tar.gz" node-agent
-            tar -czf "$assets_dir/migrate-linux-${arch}.tar.gz" -C "$out_dir" migrate -C "$GITHUB_WORKSPACE" migrations/core
+            tar -czf "$assets_dir/migrate-linux-${arch}.tar.gz" -C "$out_dir" migrate -C "$GITHUB_WORKSPACE" migrations/auth migrations/core
           done
           (cd "$assets_dir" && sha256sum * > SHA256SUMS)
 

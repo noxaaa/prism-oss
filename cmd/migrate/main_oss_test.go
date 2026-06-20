@@ -10,8 +10,8 @@ func TestDefaultMigrationsDirUsesOSSBuildDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default migrations dir: %v", err)
 	}
-	if got != "migrations/core" {
-		t.Fatalf("expected OSS build default migrations to be core-only, got %q", got)
+	if got != "migrations/auth,migrations/core" {
+		t.Fatalf("expected OSS build default migrations to include auth and core, got %q", got)
 	}
 }
 
@@ -25,7 +25,7 @@ func TestDefaultMigrationsDirRejectsFullInOSSBuild(t *testing.T) {
 }
 
 func TestDefaultMigrationsDirRejectsFullInOSSBuildBeforeEnvironmentDirs(t *testing.T) {
-	t.Setenv("MIGRATIONS_DIRS", "migrations/core")
+	t.Setenv("MIGRATIONS_DIRS", "migrations/auth,migrations/core")
 	t.Setenv("PRISM_EDITION", "full")
 
 	if got, err := defaultMigrationsDir(); err == nil {

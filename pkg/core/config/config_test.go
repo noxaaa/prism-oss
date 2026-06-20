@@ -16,6 +16,7 @@ func TestLoadControlPlaneReadsRuntimeDisplayNameAndURLs(t *testing.T) {
 	t.Setenv("APP_ENV", "development")
 	t.Setenv("PUBLIC_WEB_URL", "http://localhost:3000")
 	t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	t.Setenv("DATABASE_URL", "postgres://prism:prism@localhost:5432/prism")
 	t.Setenv("AGENT_TOKEN_SIGNING_SECRET", "agent-token-secret-32-bytes")
 	t.Setenv("AGENT_RELEASE_VERSION", "v1.2.3")
 
@@ -37,6 +38,7 @@ func TestLoadControlPlaneReadsRuntimeDisplayNameAndURLs(t *testing.T) {
 func TestLoadControlPlaneDefaultsAgentReleaseVersionToLatest(t *testing.T) {
 	t.Setenv("APP_NAME", "Runtime Name")
 	t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	t.Setenv("DATABASE_URL", "postgres://prism:prism@localhost:5432/prism")
 	t.Setenv("AGENT_TOKEN_SIGNING_SECRET", "agent-token-secret-32-bytes")
 	t.Setenv("AGENT_RELEASE_VERSION", "")
 
@@ -52,12 +54,19 @@ func TestLoadControlPlaneDefaultsAgentReleaseVersionToLatest(t *testing.T) {
 func TestLoadControlPlaneRequiresAgentRegistrationConfig(t *testing.T) {
 	t.Setenv("APP_NAME", "Runtime Name")
 	t.Setenv("CONTROL_PLANE_URL", "")
+	t.Setenv("DATABASE_URL", "postgres://prism:prism@localhost:5432/prism")
 	t.Setenv("AGENT_TOKEN_SIGNING_SECRET", "agent-token-secret-32-bytes")
 	if _, err := LoadControlPlane(); err == nil {
 		t.Fatalf("expected missing CONTROL_PLANE_URL error")
 	}
 
 	t.Setenv("CONTROL_PLANE_URL", "http://localhost:8080")
+	t.Setenv("DATABASE_URL", "")
+	if _, err := LoadControlPlane(); err == nil {
+		t.Fatalf("expected missing DATABASE_URL error")
+	}
+
+	t.Setenv("DATABASE_URL", "postgres://prism:prism@localhost:5432/prism")
 	t.Setenv("AGENT_TOKEN_SIGNING_SECRET", "")
 	if _, err := LoadControlPlane(); err == nil {
 		t.Fatalf("expected missing AGENT_TOKEN_SIGNING_SECRET error")

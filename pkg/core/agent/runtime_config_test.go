@@ -25,7 +25,7 @@ func TestLoadRuntimeConfigReadsOnlyAgentRuntimeEnv(t *testing.T) {
 	t.Setenv("AGENT_CREDENTIAL", "credential-token")
 	t.Setenv("AGENT_CREDENTIAL_FILE", "/var/lib/agent/credential.json")
 	t.Setenv("LOG_LEVEL", "debug")
-	t.Setenv("DATABASE_URL", "sqlite:///control.db")
+	t.Setenv("DATABASE_URL", "postgres://ignored")
 	t.Setenv("QUEUE_REDIS_URL", "redis://queue")
 	t.Setenv("CACHE_REDIS_URL", "redis://cache")
 	t.Setenv("CONTROL_PLANE_INTERNAL_JWT_SECRET", "control-secret")

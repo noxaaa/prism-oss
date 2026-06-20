@@ -17,6 +17,8 @@ control_url=""
 control_url_provided=0
 image_registry="ghcr.io/noxaaa"
 image_registry_provided=0
+database_url=""
+database_url_provided=0
 version="latest"
 
 usage() {
@@ -33,6 +35,7 @@ Options:
   --control-bind-host HOST
                            Host interface for the control-plane API. Defaults to 0.0.0.0.
   --control-url URL        URL that node agents use to reach the control plane.
+  --database-url URL       External PostgreSQL DATABASE_URL. When set, no local postgres service is rendered.
   --image-registry HOST    Image registry namespace. Defaults to ghcr.io/noxaaa.
   -h, --help              Show this help.
 USAGE
@@ -48,6 +51,7 @@ while [ "$#" -gt 0 ]; do
     --control-port) control_port="${2:?missing value for --control-port}"; control_port_provided=1; shift 2 ;;
     --control-bind-host) control_bind_host="${2:?missing value for --control-bind-host}"; control_bind_host_provided=1; shift 2 ;;
     --control-url) control_url="${2:?missing value for --control-url}"; control_url_provided=1; shift 2 ;;
+    --database-url) database_url="${2:?missing value for --database-url}"; database_url_provided=1; shift 2 ;;
     --image-registry) image_registry="${2:?missing value for --image-registry}"; image_registry_provided=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -227,32 +231,46 @@ set_env_value_if_requested_or_missing() {
 }
 
 write_compose() {
+  if [ "$database_url_provided" = "1" ]; then
+    write_compose_external_postgres
+  else
+    write_compose_embedded_postgres
+  fi
+}
+
+write_compose_embedded_postgres() {
   cat > docker-compose.yml <<'YAML'
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-prism}
+      POSTGRES_USER: ${POSTGRES_USER:-prism}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
 
-  sqlite-permissions:
-    image: busybox:1.36
-    command: ["sh", "-c", "chown -R 65532:65532 /data"]
-    volumes:
-      - sqlite-data:/data
-
   migrate:
     image: ${PRISM_IMAGE_REGISTRY:-ghcr.io/noxaaa}/prism-oss-migrate:${PRISM_IMAGE_TAG:-latest}
     depends_on:
-      sqlite-permissions:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     command: ["up"]
     environment:
-      DATABASE_URL: ${PRISM_OSS_DATABASE_URL:-/data/oss.db}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       PRISM_EDITION: oss
-      MIGRATIONS_DIRS: /migrations/core
-    volumes:
-      - sqlite-data:/data
+      MIGRATIONS_DIRS: /migrations/auth,/migrations/core
 
   control-plane:
     image: ${PRISM_IMAGE_REGISTRY:-ghcr.io/noxaaa}/prism-oss-control-plane:${PRISM_IMAGE_TAG:-latest}
@@ -271,14 +289,12 @@ services:
       AGENT_RELEASE_VERSION: ${AGENT_RELEASE_VERSION:-latest}
       CONTROL_PLANE_INTERNAL_JWT_SECRET: ${CONTROL_PLANE_INTERNAL_JWT_SECRET:?set CONTROL_PLANE_INTERNAL_JWT_SECRET in .env}
       AGENT_TOKEN_SIGNING_SECRET: ${AGENT_TOKEN_SIGNING_SECRET:?set AGENT_TOKEN_SIGNING_SECRET in .env}
-      DATABASE_URL: ${PRISM_OSS_DATABASE_URL:-/data/oss.db}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       QUEUE_REDIS_URL: ${QUEUE_REDIS_URL:-redis://redis:6379/0}
       CACHE_REDIS_URL: ${CACHE_REDIS_URL:-redis://redis:6379/0}
       CONTROL_PLANE_HTTP_ADDR: 0.0.0.0:8080
     ports:
       - "${CONTROL_PLANE_BIND_HOST:-0.0.0.0}:${CONTROL_PLANE_PORT:-8080}:8080"
-    volumes:
-      - sqlite-data:/data
 
   web:
     image: ${PRISM_IMAGE_REGISTRY:-ghcr.io/noxaaa}/prism-oss-web:${PRISM_IMAGE_TAG:-latest}
@@ -291,18 +307,80 @@ services:
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000}}
       BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000},http://127.0.0.1:${WEB_PORT:-3000},http://localhost:${WEB_PORT:-3000}}
       OSS_SETUP_TOKEN: ${OSS_SETUP_TOKEN:?set OSS_SETUP_TOKEN in .env}
-      DATABASE_URL: ${PRISM_OSS_DATABASE_URL:-/data/oss.db}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       CONTROL_PLANE_INTERNAL_URL: ${CONTROL_PLANE_INTERNAL_URL:-http://control-plane:8080}
       CONTROL_PLANE_INTERNAL_JWT_SECRET: ${CONTROL_PLANE_INTERNAL_JWT_SECRET:?set CONTROL_PLANE_INTERNAL_JWT_SECRET in .env}
       NEXT_PUBLIC_PRISM_EDITION: oss
     ports:
       - "0.0.0.0:${WEB_PORT:-3000}:3000"
+
+volumes:
+  postgres-data:
+  redis-data:
+YAML
+}
+
+write_compose_external_postgres() {
+  cat > docker-compose.yml <<'YAML'
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - sqlite-data:/data
+      - redis-data:/data
+
+  migrate:
+    image: ${PRISM_IMAGE_REGISTRY:-ghcr.io/noxaaa}/prism-oss-migrate:${PRISM_IMAGE_TAG:-latest}
+    command: ["up"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      PRISM_EDITION: oss
+      MIGRATIONS_DIRS: /migrations/auth,/migrations/core
+
+  control-plane:
+    image: ${PRISM_IMAGE_REGISTRY:-ghcr.io/noxaaa}/prism-oss-control-plane:${PRISM_IMAGE_TAG:-latest}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    environment:
+      APP_NAME: ${APP_NAME:-OSS Control Console}
+      APP_ENV: ${APP_ENV:-production}
+      PRISM_EDITION: oss
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://127.0.0.1:3000}
+      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:-http://127.0.0.1:8080}
+      CONTROL_PLANE_INTERNAL_URL: ${CONTROL_PLANE_INTERNAL_URL:-http://control-plane:8080}
+      AGENT_RELEASE_VERSION: ${AGENT_RELEASE_VERSION:-latest}
+      CONTROL_PLANE_INTERNAL_JWT_SECRET: ${CONTROL_PLANE_INTERNAL_JWT_SECRET:?set CONTROL_PLANE_INTERNAL_JWT_SECRET in .env}
+      AGENT_TOKEN_SIGNING_SECRET: ${AGENT_TOKEN_SIGNING_SECRET:?set AGENT_TOKEN_SIGNING_SECRET in .env}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      QUEUE_REDIS_URL: ${QUEUE_REDIS_URL:-redis://redis:6379/0}
+      CACHE_REDIS_URL: ${CACHE_REDIS_URL:-redis://redis:6379/0}
+      CONTROL_PLANE_HTTP_ADDR: 0.0.0.0:8080
+    ports:
+      - "${CONTROL_PLANE_BIND_HOST:-0.0.0.0}:${CONTROL_PLANE_PORT:-8080}:8080"
+
+  web:
+    image: ${PRISM_IMAGE_REGISTRY:-ghcr.io/noxaaa}/prism-oss-web:${PRISM_IMAGE_TAG:-latest}
+    depends_on:
+      control-plane:
+        condition: service_started
+    environment:
+      APP_NAME: ${APP_NAME:-OSS Control Console}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000}}
+      BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000},http://127.0.0.1:${WEB_PORT:-3000},http://localhost:${WEB_PORT:-3000}}
+      OSS_SETUP_TOKEN: ${OSS_SETUP_TOKEN:?set OSS_SETUP_TOKEN in .env}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      CONTROL_PLANE_INTERNAL_URL: ${CONTROL_PLANE_INTERNAL_URL:-http://control-plane:8080}
+      CONTROL_PLANE_INTERNAL_JWT_SECRET: ${CONTROL_PLANE_INTERNAL_JWT_SECRET:?set CONTROL_PLANE_INTERNAL_JWT_SECRET in .env}
+      NEXT_PUBLIC_PRISM_EDITION: oss
+    ports:
+      - "0.0.0.0:${WEB_PORT:-3000}:3000"
 
 volumes:
   redis-data:
-  sqlite-data:
 YAML
 }
 
@@ -489,7 +567,6 @@ fi
 resolved_version="$(resolve_release_version)"
 mkdir -p "$install_dir"
 cd "$install_dir"
-write_compose
 write_upgrade_script
 write_uninstall_script
 
@@ -529,6 +606,28 @@ trusted_origins_requested=0
 if [ "$public_web_url_provided" = "1" ] || [ "$web_port_provided" = "1" ]; then
   trusted_origins_requested=1
 fi
+if [ "$database_url_provided" = "0" ]; then
+  if [ -f ".env" ]; then
+    existing_database_url="$(env_value DATABASE_URL)"
+    existing_postgres_password="$(env_value POSTGRES_PASSWORD)"
+    if [ -n "$existing_database_url" ] && [ -z "$existing_postgres_password" ]; then
+      database_url="$existing_database_url"
+      database_url_provided=1
+    fi
+  fi
+fi
+if [ "$database_url_provided" = "0" ]; then
+  postgres_password="$(generate_url_safe_secret)"
+  if [ -f ".env" ]; then
+    existing_postgres_password="$(env_value POSTGRES_PASSWORD)"
+    [ -n "$existing_postgres_password" ] && postgres_password="$existing_postgres_password"
+  fi
+  resolved_database_url="postgres://prism:${postgres_password}@postgres:5432/prism?sslmode=disable"
+else
+  resolved_database_url="$database_url"
+fi
+
+write_compose
 
 if [ ! -f ".env" ]; then
   umask 077
@@ -545,7 +644,12 @@ if [ ! -f ".env" ]; then
     printf 'PUBLIC_WEB_URL=%s\n' "$resolved_public_url"
     printf 'CONTROL_PLANE_URL=%s\n' "$resolved_control_url"
     printf 'CONTROL_PLANE_INTERNAL_URL=http://control-plane:8080\n'
-    printf 'PRISM_OSS_DATABASE_URL=/data/oss.db\n'
+    if [ "$database_url_provided" = "0" ]; then
+      printf 'POSTGRES_DB=prism\n'
+      printf 'POSTGRES_USER=prism\n'
+      printf 'POSTGRES_PASSWORD=%s\n' "$postgres_password"
+    fi
+    printf 'DATABASE_URL=%s\n' "$resolved_database_url"
     printf 'QUEUE_REDIS_URL=redis://redis:6379/0\n'
     printf 'CACHE_REDIS_URL=redis://redis:6379/0\n'
     printf 'BETTER_AUTH_SECRET=%s\n' "$(generate_secret)"
@@ -568,12 +672,17 @@ else
   set_env_value_if_requested_or_missing CONTROL_PLANE_BIND_HOST "$control_bind_host" "$control_bind_host_provided"
   set_env_value_if_requested_or_missing PUBLIC_WEB_URL "$resolved_public_url" "$public_web_url_provided"
   set_env_value_if_requested_or_missing CONTROL_PLANE_URL "$resolved_control_url" "$control_url_requested"
+  if [ "$database_url_provided" = "0" ]; then
+    set_env_value_if_requested_or_missing POSTGRES_DB prism 0
+    set_env_value_if_requested_or_missing POSTGRES_USER prism 0
+    set_env_value_if_requested_or_missing POSTGRES_PASSWORD "$postgres_password" 0
+  fi
+  set_env_value_if_requested_or_missing DATABASE_URL "$resolved_database_url" "$database_url_provided"
   set_env_value_if_requested_or_missing BETTER_AUTH_URL "$resolved_public_url" "$public_web_url_provided"
   set_env_value_if_requested_or_missing BETTER_AUTH_TRUSTED_ORIGINS "$trusted_origins" "$trusted_origins_requested"
 fi
 
 docker compose pull
-docker compose run -T --rm sqlite-permissions </dev/null
 docker compose run -T --rm migrate up </dev/null
 docker compose up -d --remove-orphans
 

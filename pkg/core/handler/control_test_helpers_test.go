@@ -69,7 +69,7 @@ func seedBetterAuthUser(t *testing.T, db *sql.DB, id string, email string, name 
 
 	_, err := db.Exec(`
 		INSERT INTO "user" ("id", "name", "email", "emailVerified", "createdAt", "updatedAt")
-		VALUES (?, ?, ?, 0, ?, ?)
+		VALUES ($1, $2, $3, false, $4, $5)
 	`, id, name, email, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatalf("seed user: %v", err)

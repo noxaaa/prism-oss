@@ -14,7 +14,7 @@ if (webEdition === "full" && (!existsSync(fullEditionRegistry) || !existsSync(fu
 const nextConfig = {
   allowedDevOrigins: ["127.0.0.1"],
   outputFileTracingRoot: path.resolve("../.."),
-  serverExternalPackages: ["better-sqlite3"],
+  serverExternalPackages: ["pg"],
   webpack(config) {
     if (webEdition === "full") {
       config.resolve.alias = {

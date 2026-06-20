@@ -45,11 +45,9 @@ func scanMemberRows(rows *sql.Rows) (MemberRecord, error) {
 
 func scanRole(row rowScanner) (RoleRecord, error) {
 	var role RoleRecord
-	var isSystem int
-	if err := row.Scan(&role.ID, &role.OrganizationID, &role.Key, &role.Name, &role.Description, &isSystem, &role.CreatedAt, &role.UpdatedAt, &role.DeletedAt); err != nil {
+	if err := row.Scan(&role.ID, &role.OrganizationID, &role.Key, &role.Name, &role.Description, &role.IsSystem, &role.CreatedAt, &role.UpdatedAt, &role.DeletedAt); err != nil {
 		return RoleRecord{}, mapReadError(err)
 	}
-	role.IsSystem = isSystem == 1
 	return role, nil
 }
 
@@ -71,7 +69,6 @@ func scanNodeGroupRows(rows *sql.Rows) (NodeGroupRecord, error) {
 
 func scanNode(row rowScanner) (NodeRecord, error) {
 	var node NodeRecord
-	var autoUpdate int
 	if err := row.Scan(
 		&node.ID,
 		&node.OrganizationID,
@@ -88,7 +85,7 @@ func scanNode(row rowScanner) (NodeRecord, error) {
 		&node.AgentVersion,
 		&node.AgentCommit,
 		&node.AgentBuildTime,
-		&autoUpdate,
+		&node.AgentAutoUpdateEnabled,
 		&node.DesiredAgentVersion,
 		&node.AgentUpdateStatus,
 		&node.AgentUpdateError,
@@ -100,7 +97,6 @@ func scanNode(row rowScanner) (NodeRecord, error) {
 	); err != nil {
 		return NodeRecord{}, mapReadError(err)
 	}
-	node.AgentAutoUpdateEnabled = autoUpdate == 1
 	return node, nil
 }
 
@@ -110,11 +106,9 @@ func scanNodeRows(rows *sql.Rows) (NodeRecord, error) {
 
 func scanNodeListenIP(row rowScanner) (NodeListenIPRecord, error) {
 	var listenIP NodeListenIPRecord
-	var enabled int
-	if err := row.Scan(&listenIP.ID, &listenIP.OrganizationID, &listenIP.NodeID, &listenIP.ListenIP, &listenIP.DisplayName, &enabled, &listenIP.CreatedAt, &listenIP.UpdatedAt); err != nil {
+	if err := row.Scan(&listenIP.ID, &listenIP.OrganizationID, &listenIP.NodeID, &listenIP.ListenIP, &listenIP.DisplayName, &listenIP.Enabled, &listenIP.CreatedAt, &listenIP.UpdatedAt); err != nil {
 		return NodeListenIPRecord{}, mapReadError(err)
 	}
-	listenIP.Enabled = enabled == 1
 	return listenIP, nil
 }
 
@@ -124,11 +118,9 @@ func scanNodeListenIPRows(rows *sql.Rows) (NodeListenIPRecord, error) {
 
 func scanNodePortRange(row rowScanner) (NodePortRangeRecord, error) {
 	var portRange NodePortRangeRecord
-	var enabled int
-	if err := row.Scan(&portRange.ID, &portRange.OrganizationID, &portRange.NodeID, &portRange.Protocol, &portRange.StartPort, &portRange.EndPort, &enabled, &portRange.CreatedAt, &portRange.UpdatedAt); err != nil {
+	if err := row.Scan(&portRange.ID, &portRange.OrganizationID, &portRange.NodeID, &portRange.Protocol, &portRange.StartPort, &portRange.EndPort, &portRange.Enabled, &portRange.CreatedAt, &portRange.UpdatedAt); err != nil {
 		return NodePortRangeRecord{}, mapReadError(err)
 	}
-	portRange.Enabled = enabled == 1
 	return portRange, nil
 }
 
@@ -174,11 +166,9 @@ func scanMonitorRows(rows *sql.Rows) (MonitorRecord, error) {
 
 func scanTarget(row rowScanner) (TargetRecord, error) {
 	var target TargetRecord
-	var enabled int
-	if err := row.Scan(&target.ID, &target.OrganizationID, &target.Name, &target.Host, &target.Port, &enabled, &target.CreatedAt, &target.UpdatedAt, &target.DeletedAt); err != nil {
+	if err := row.Scan(&target.ID, &target.OrganizationID, &target.Name, &target.Host, &target.Port, &target.Enabled, &target.CreatedAt, &target.UpdatedAt, &target.DeletedAt); err != nil {
 		return TargetRecord{}, mapReadError(err)
 	}
-	target.Enabled = enabled == 1
 	return target, nil
 }
 
@@ -200,11 +190,9 @@ func scanTargetGroupRows(rows *sql.Rows) (TargetGroupRecord, error) {
 
 func scanTargetGroupMember(row rowScanner) (TargetGroupMemberRecord, error) {
 	var member TargetGroupMemberRecord
-	var enabled int
-	if err := row.Scan(&member.ID, &member.OrganizationID, &member.TargetGroupID, &member.TargetID, &member.Priority, &enabled, &member.CreatedAt, &member.UpdatedAt); err != nil {
+	if err := row.Scan(&member.ID, &member.OrganizationID, &member.TargetGroupID, &member.TargetID, &member.Priority, &member.Enabled, &member.CreatedAt, &member.UpdatedAt); err != nil {
 		return TargetGroupMemberRecord{}, mapReadError(err)
 	}
-	member.Enabled = enabled == 1
 	return member, nil
 }
 
@@ -214,13 +202,12 @@ func scanTargetGroupMemberRows(rows *sql.Rows) (TargetGroupMemberRecord, error) 
 
 func scanRule(row rowScanner) (RuleRecord, error) {
 	var rule RuleRecord
-	var enabled int
 	if err := row.Scan(
 		&rule.ID,
 		&rule.OrganizationID,
 		&rule.OwnerUserID,
 		&rule.Name,
-		&enabled,
+		&rule.Enabled,
 		&rule.Status,
 		&rule.ForwardingType,
 		&rule.Protocol,
@@ -247,7 +234,6 @@ func scanRule(row rowScanner) (RuleRecord, error) {
 	); err != nil {
 		return RuleRecord{}, mapReadError(err)
 	}
-	rule.Enabled = enabled == 1
 	return rule, nil
 }
 
@@ -326,11 +312,8 @@ func requireAffected(result sql.Result) error {
 	return nil
 }
 
-func boolToInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
+func boolToDB(value bool) bool {
+	return value
 }
 
 func nullable(value string) any {

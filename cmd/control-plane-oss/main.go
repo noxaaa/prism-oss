@@ -22,7 +22,7 @@ func main() {
 	if len(secret) == 0 {
 		log.Fatal("CONTROL_PLANE_INTERNAL_JWT_SECRET is required")
 	}
-	db, err := repo.OpenSQLite(cfg.DatabaseURL)
+	db, err := repo.OpenPostgres(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func main() {
 			log.Printf("close database: %v", err)
 		}
 	}()
-	store := repo.NewSQLiteStore(db)
+	store := repo.NewPostgresStore(db)
 	controlEdition, err := ossControlPlaneEdition()
 	if err != nil {
 		log.Fatal(err)

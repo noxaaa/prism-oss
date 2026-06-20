@@ -60,7 +60,7 @@ func OSSProvider() Provider {
 			CapabilityBasicMetrics,
 			CapabilitySingleUserAuth,
 		},
-		migrationDirs: []string{"migrations/core"},
+		migrationDirs: []string{"migrations/auth", "migrations/core"},
 	}
 }
 

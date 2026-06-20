@@ -10,15 +10,17 @@ import (
 	"strings"
 	"unicode"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
-	_ "modernc.org/sqlite"
 
 	"github.com/noxaaa/prism-oss/pkg/edition"
 )
 
 type migrationGroup struct {
-	Dir       string
-	TableName string
+	Dir        string
+	TableName  string
+	SchemaName string
+	SearchPath string
 }
 
 func main() {
@@ -32,14 +34,14 @@ func run(args []string) error {
 	flags := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 
-	databaseURL := flags.String("database", os.Getenv("DATABASE_URL"), "SQLite database path or DSN")
+	databaseURL := flags.String("database", os.Getenv("DATABASE_URL"), "PostgreSQL connection URL")
 	migrationsDir := flags.String("dir", "", "goose migrations directory or comma-separated directories")
 
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *databaseURL == "" {
-		return errors.New("database path is required through -database or DATABASE_URL")
+		return errors.New("PostgreSQL DATABASE_URL is required through -database or DATABASE_URL")
 	}
 	if *migrationsDir == "" {
 		defaultDir, err := defaultMigrationsDir()
@@ -54,13 +56,13 @@ func run(args []string) error {
 		command = flags.Arg(0)
 	}
 
-	db, err := openSQLite(normalizeSQLiteDatabaseURL(*databaseURL))
+	db, err := openPostgres(*databaseURL)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 
-	if err := goose.SetDialect("sqlite3"); err != nil {
+	if err := goose.SetDialect("postgres"); err != nil {
 		return fmt.Errorf("set goose dialect: %w", err)
 	}
 
@@ -93,34 +95,14 @@ func run(args []string) error {
 	}
 }
 
-func openSQLite(databaseURL string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", databaseURL)
+func openPostgres(databaseURL string) (*sql.DB, error) {
+	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
 		return nil, err
 	}
-	if err := configureSQLite(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	return db, nil
-}
-
-func normalizeSQLiteDatabaseURL(databaseURL string) string {
-	return strings.TrimPrefix(databaseURL, "sqlite://")
-}
-
-func configureSQLite(db *sql.DB) error {
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
-	}
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			return fmt.Errorf("configure sqlite %s: %w", pragma, err)
-		}
-	}
-	return nil
 }
 
 func defaultMigrationsDir() (string, error) {
@@ -149,7 +131,12 @@ func splitMigrationDirs(value string) []migrationGroup {
 			continue
 		}
 		dir := filepath.Clean(part)
-		groups = append(groups, migrationGroup{Dir: dir, TableName: migrationVersionTableName(dir)})
+		groups = append(groups, migrationGroup{
+			Dir:        dir,
+			TableName:  migrationVersionTableName(dir),
+			SchemaName: migrationSchemaName(dir),
+			SearchPath: migrationSearchPath(dir),
+		})
 	}
 	return groups
 }
@@ -159,10 +146,34 @@ func migrationVersionTableName(dir string) string {
 	switch base {
 	case "core":
 		return "goose_db_version_core"
+	case "auth":
+		return "goose_db_version_auth"
 	case "commercial":
 		return "goose_db_version_commercial"
 	default:
 		return "goose_db_version_" + sanitizeIdentifier(base)
+	}
+}
+
+func migrationSchemaName(dir string) string {
+	switch filepath.Base(filepath.Clean(dir)) {
+	case "auth":
+		return "auth"
+	case "commercial":
+		return "commercial"
+	default:
+		return "app"
+	}
+}
+
+func migrationSearchPath(dir string) string {
+	switch filepath.Base(filepath.Clean(dir)) {
+	case "auth":
+		return "auth, public"
+	case "commercial":
+		return "commercial, app, auth, public"
+	default:
+		return "app, auth, public"
 	}
 }
 
@@ -183,8 +194,43 @@ func sanitizeIdentifier(value string) string {
 }
 
 func runGooseWithTable(db *sql.DB, group migrationGroup, runFunc func(*sql.DB, string, ...goose.OptionsFunc) error) error {
+	if err := ensureMigrationSchema(db, group.SchemaName); err != nil {
+		return err
+	}
+	if err := applyMigrationSearchPath(db, group.SearchPath); err != nil {
+		return err
+	}
 	previousTableName := goose.TableName()
 	goose.SetTableName(group.TableName)
 	defer goose.SetTableName(previousTableName)
 	return runFunc(db, group.Dir)
+}
+
+func ensureMigrationSchema(db *sql.DB, schemaName string) error {
+	if !isIdentifier(schemaName) {
+		return fmt.Errorf("invalid migration schema %q", schemaName)
+	}
+	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS ` + schemaName); err != nil {
+		return fmt.Errorf("create migration schema %s: %w", schemaName, err)
+	}
+	return nil
+}
+
+func applyMigrationSearchPath(db *sql.DB, searchPath string) error {
+	if _, err := db.Exec(`SET search_path TO ` + searchPath); err != nil {
+		return fmt.Errorf("set migration search_path %s: %w", searchPath, err)
+	}
+	return nil
+}
+
+func isIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+			return false
+		}
+	}
+	return true
 }

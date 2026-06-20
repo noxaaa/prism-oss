@@ -8,6 +8,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: prism_ci
+          POSTGRES_USER: prism
+          POSTGRES_PASSWORD: prism
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U prism -d prism_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgres://prism:prism@127.0.0.1:5432/prism_ci?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -29,5 +45,5 @@ jobs:
           APP_NAME: "OSS Control Console"
           BETTER_AUTH_SECRET: "ci-only-better-auth-secret-32-bytes"
           BETTER_AUTH_URL: "http://localhost:3000"
-          DATABASE_URL: ":memory:"
+          DATABASE_URL: postgres://prism:prism@127.0.0.1:5432/prism_ci?sslmode=disable
           NEXT_PUBLIC_PRISM_EDITION: "oss"

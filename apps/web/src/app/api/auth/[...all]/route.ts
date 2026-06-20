@@ -10,7 +10,7 @@ export const GET = authHandlers.GET;
 
 export async function POST(request: Request): Promise<Response> {
   if (isAuthSignUpPath(request.url)) {
-    if (resolveSignupPolicy().registrationClosed) {
+    if ((await resolveSignupPolicy()).registrationClosed) {
       return Response.json(
         {
           error: {

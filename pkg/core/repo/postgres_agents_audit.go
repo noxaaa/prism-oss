@@ -2,9 +2,9 @@ package repo
 
 import "context"
 
-func (store *SQLiteStore) ListQuotasByOrganization(ctx context.Context, organizationID string) ([]QuotaRecord, error) {
+func (store *PostgresStore) ListQuotasByOrganization(ctx context.Context, organizationID string) ([]QuotaRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, scope, coalesce(subject_user_id, ''), coalesce(subject_rule_id, ''),
+		SELECT id, organization_id, scope, coalesce(subject_user_id, ''), coalesce(subject_rule_id::text, ''),
 		       rule_limit, traffic_limit_bytes, traffic_limit_mode, over_limit_action, created_at, updated_at
 		FROM quotas
 		WHERE organization_id = ?
@@ -38,10 +38,10 @@ func (store *SQLiteStore) ListQuotasByOrganization(ctx context.Context, organiza
 	return quotas, rows.Err()
 }
 
-func (store *SQLiteStore) ListRegistrationTokens(ctx context.Context, organizationID string, agentType string, agentID string) ([]AgentRegistrationTokenRecord, error) {
+func (store *PostgresStore) ListRegistrationTokens(ctx context.Context, organizationID string, agentType string, agentID string) ([]AgentRegistrationTokenRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT id, organization_id, agent_type, agent_id, token_hash, expires_at,
-		       coalesce(used_at, ''), coalesce(revoked_at, ''), created_at, coalesce(created_by_user_id, '')
+		       coalesce(used_at::text, ''), coalesce(revoked_at::text, ''), created_at, coalesce(created_by_user_id, '')
 		FROM agent_registration_tokens
 		WHERE organization_id = ? AND agent_type = ? AND agent_id = ?
 		ORDER BY created_at DESC, id DESC
@@ -62,17 +62,17 @@ func (store *SQLiteStore) ListRegistrationTokens(ctx context.Context, organizati
 	return tokens, rows.Err()
 }
 
-func (store *SQLiteStore) FindRegistrationTokenByHash(ctx context.Context, tokenHash string) (AgentRegistrationTokenRecord, error) {
+func (store *PostgresStore) FindRegistrationTokenByHash(ctx context.Context, tokenHash string) (AgentRegistrationTokenRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, agent_type, agent_id, token_hash, expires_at,
-		       coalesce(used_at, ''), coalesce(revoked_at, ''), created_at, coalesce(created_by_user_id, '')
+		       coalesce(used_at::text, ''), coalesce(revoked_at::text, ''), created_at, coalesce(created_by_user_id, '')
 		FROM agent_registration_tokens
 		WHERE token_hash = ?
 	`, tokenHash)
 	return scanRegistrationToken(row)
 }
 
-func (store *SQLiteStore) CreateRegistrationToken(ctx context.Context, token AgentRegistrationTokenRecord) error {
+func (store *PostgresStore) CreateRegistrationToken(ctx context.Context, token AgentRegistrationTokenRecord) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO agent_registration_tokens (
 			id, organization_id, agent_type, agent_id, token_hash, expires_at, created_at, created_by_user_id
@@ -81,7 +81,7 @@ func (store *SQLiteStore) CreateRegistrationToken(ctx context.Context, token Age
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) ClaimRegistrationToken(ctx context.Context, organizationID string, tokenID string, claimedAt string) error {
+func (store *PostgresStore) ClaimRegistrationToken(ctx context.Context, organizationID string, tokenID string, claimedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE agent_registration_tokens
 		SET used_at = ?
@@ -94,7 +94,7 @@ func (store *SQLiteStore) ClaimRegistrationToken(ctx context.Context, organizati
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) ReleaseRegistrationTokenUse(ctx context.Context, organizationID string, tokenID string) error {
+func (store *PostgresStore) ReleaseRegistrationTokenUse(ctx context.Context, organizationID string, tokenID string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE agent_registration_tokens
 		SET used_at = NULL
@@ -106,7 +106,7 @@ func (store *SQLiteStore) ReleaseRegistrationTokenUse(ctx context.Context, organ
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) RevokeActiveUnusedRegistrationTokens(ctx context.Context, organizationID string, agentType string, agentID string, revokedAt string) error {
+func (store *PostgresStore) RevokeActiveUnusedRegistrationTokens(ctx context.Context, organizationID string, agentType string, agentID string, revokedAt string) error {
 	_, err := store.db.ExecContext(ctx, `
 		UPDATE agent_registration_tokens
 		SET revoked_at = ?
@@ -116,7 +116,7 @@ func (store *SQLiteStore) RevokeActiveUnusedRegistrationTokens(ctx context.Conte
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) RevokeRegistrationToken(ctx context.Context, organizationID string, agentType string, agentID string, tokenID string, revokedAt string) error {
+func (store *PostgresStore) RevokeRegistrationToken(ctx context.Context, organizationID string, agentType string, agentID string, tokenID string, revokedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE agent_registration_tokens
 		SET revoked_at = ?
@@ -129,22 +129,22 @@ func (store *SQLiteStore) RevokeRegistrationToken(ctx context.Context, organizat
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) FindCredentialByHash(ctx context.Context, credentialHash string) (AgentCredentialRecord, error) {
+func (store *PostgresStore) FindCredentialByHash(ctx context.Context, credentialHash string) (AgentCredentialRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, agent_type, agent_id, credential_hash,
-		       coalesce(registration_token_id, ''), coalesce(activated_at, ''),
-		       coalesce(revoked_at, ''), created_at, coalesce(rotated_at, '')
+		       coalesce(registration_token_id::text, ''), coalesce(activated_at::text, ''),
+		       coalesce(revoked_at::text, ''), created_at, coalesce(rotated_at::text, '')
 		FROM agent_credentials
 		WHERE credential_hash = ?
 	`, credentialHash)
 	return scanAgentCredential(row)
 }
 
-func (store *SQLiteStore) FindPendingCredentialByRegistrationToken(ctx context.Context, organizationID string, registrationTokenID string) (AgentCredentialRecord, error) {
+func (store *PostgresStore) FindPendingCredentialByRegistrationToken(ctx context.Context, organizationID string, registrationTokenID string) (AgentCredentialRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, agent_type, agent_id, credential_hash,
-		       coalesce(registration_token_id, ''), coalesce(activated_at, ''),
-		       coalesce(revoked_at, ''), created_at, coalesce(rotated_at, '')
+		       coalesce(registration_token_id::text, ''), coalesce(activated_at::text, ''),
+		       coalesce(revoked_at::text, ''), created_at, coalesce(rotated_at::text, '')
 		FROM agent_credentials
 		WHERE organization_id = ? AND registration_token_id = ?
 		  AND activated_at IS NULL AND revoked_at IS NULL
@@ -154,7 +154,7 @@ func (store *SQLiteStore) FindPendingCredentialByRegistrationToken(ctx context.C
 	return scanAgentCredential(row)
 }
 
-func (store *SQLiteStore) CreateCredential(ctx context.Context, credential AgentCredentialRecord) error {
+func (store *PostgresStore) CreateCredential(ctx context.Context, credential AgentCredentialRecord) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO agent_credentials (
 			id, organization_id, agent_type, agent_id, credential_hash, registration_token_id, activated_at, created_at, rotated_at
@@ -163,7 +163,7 @@ func (store *SQLiteStore) CreateCredential(ctx context.Context, credential Agent
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) ActivateCredential(ctx context.Context, organizationID string, credentialID string, activatedAt string) error {
+func (store *PostgresStore) ActivateCredential(ctx context.Context, organizationID string, credentialID string, activatedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE agent_credentials
 		SET activated_at = ?
@@ -175,7 +175,7 @@ func (store *SQLiteStore) ActivateCredential(ctx context.Context, organizationID
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) RevokeActiveCredentialsExcept(ctx context.Context, organizationID string, agentType string, agentID string, keepCredentialID string, revokedAt string) error {
+func (store *PostgresStore) RevokeActiveCredentialsExcept(ctx context.Context, organizationID string, agentType string, agentID string, keepCredentialID string, revokedAt string) error {
 	_, err := store.db.ExecContext(ctx, `
 		UPDATE agent_credentials
 		SET revoked_at = ?,
@@ -187,7 +187,7 @@ func (store *SQLiteStore) RevokeActiveCredentialsExcept(ctx context.Context, org
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) RevokeCredential(ctx context.Context, organizationID string, credentialID string, revokedAt string) error {
+func (store *PostgresStore) RevokeCredential(ctx context.Context, organizationID string, credentialID string, revokedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE agent_credentials
 		SET revoked_at = ?,
@@ -200,12 +200,12 @@ func (store *SQLiteStore) RevokeCredential(ctx context.Context, organizationID s
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) CreateAuditLog(ctx context.Context, audit AuditLogRecord) error {
+func (store *PostgresStore) CreateAuditLog(ctx context.Context, audit AuditLogRecord) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO audit_logs (
 			id, organization_id, actor_user_id, actor_roles_json, actor_permissions_json,
 			action, resource_type, resource_id, result, error_message, metadata_json, source_ip, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?::jsonb, ?, ?)
 	`, audit.ID, audit.OrganizationID, nullable(audit.ActorUserID), audit.ActorRolesJSON, audit.ActorPermissionsJSON, audit.Action, audit.ResourceType, audit.ResourceID, audit.Result, nullable(audit.ErrorMessage), audit.MetadataJSON, nullable(audit.SourceIP), audit.CreatedAt)
 	return mapWriteError(err)
 }

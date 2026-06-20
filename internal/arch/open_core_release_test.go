@@ -142,7 +142,7 @@ func TestOSSStandaloneMigrateReleaseAssetPackagesMigrations(t *testing.T) {
 	source := readText(t, filepath.Join(root, ".github", "workflows", "release.yml"))
 	for _, required := range []string{
 		"GOOS=linux GOARCH=\"$arch\" CGO_ENABLED=0 go build -ldflags \"$ldflags\" -o \"$out_dir/migrate\" ./cmd/migrate",
-		"tar -czf \"$assets_dir/migrate-linux-${arch}.tar.gz\" -C \"$out_dir\" migrate -C \"$GITHUB_WORKSPACE\" migrations/core",
+		"tar -czf \"$assets_dir/migrate-linux-${arch}.tar.gz\" -C \"$out_dir\" migrate -C \"$GITHUB_WORKSPACE\" migrations/auth migrations/core",
 		"migrate-linux-amd64.tar.gz",
 		"migrate-linux-arm64.tar.gz",
 	} {
@@ -670,8 +670,9 @@ func TestOSSReleaseComposeUsesPackagedMigrationDirectory(t *testing.T) {
 		"scripts/install.sh": readText(t, filepath.Join(root, "scripts", "install.sh")),
 	} {
 		for _, required := range []string{
-			"MIGRATIONS_DIRS: /migrations/core",
-			"DATABASE_URL: ${PRISM_OSS_DATABASE_URL:-/data/oss.db}",
+			"MIGRATIONS_DIRS: /migrations/auth,/migrations/core",
+			"DATABASE_URL:",
+			"${DATABASE_URL:",
 			"PRISM_EDITION: oss",
 		} {
 			if !strings.Contains(source, required) {
@@ -681,33 +682,29 @@ func TestOSSReleaseComposeUsesPackagedMigrationDirectory(t *testing.T) {
 	}
 }
 
-func TestOSSComposeRepairsSQLiteVolumeOwnershipBeforeMigration(t *testing.T) {
+func TestOSSComposeUsesPostgresServiceBeforeMigration(t *testing.T) {
 	root := repoRoot(t)
 	for relative, source := range map[string]string{
 		"docker-compose.yml": readText(t, filepath.Join(root, "docker-compose.yml")),
 		"scripts/install.sh": readText(t, filepath.Join(root, "scripts", "install.sh")),
 	} {
 		for _, required := range []string{
-			"sqlite-permissions:",
-			"busybox:1.36",
-			"chown -R 65532:65532 /data",
-			"condition: service_completed_successfully",
+			"postgres:16",
+			"postgres-data:",
+			"pg_isready",
+			"condition: service_healthy",
 		} {
 			if !strings.Contains(source, required) {
-				t.Fatalf("%s must repair sqlite-data ownership before migrations; missing %q", relative, required)
+				t.Fatalf("%s must run PostgreSQL before migrations; missing %q", relative, required)
 			}
 		}
 	}
 
 	for _, relative := range []string{"scripts/install.sh"} {
 		source := readText(t, filepath.Join(root, filepath.FromSlash(relative)))
-		permissionCommand := "docker compose run -T --rm sqlite-permissions </dev/null"
 		migrateCommand := "docker compose run -T --rm migrate up </dev/null"
-		if !strings.Contains(source, permissionCommand) || !strings.Contains(source, migrateCommand) {
-			t.Fatalf("%s must run sqlite-permissions before migrations without requiring a TTY or consuming curl-pipe stdin", relative)
-		}
-		if strings.Index(source, permissionCommand) > strings.Index(source, migrateCommand) {
-			t.Fatalf("%s must run sqlite-permissions before migrate", relative)
+		if !strings.Contains(source, migrateCommand) {
+			t.Fatalf("%s must run migrate without requiring a TTY or consuming curl-pipe stdin", relative)
 		}
 	}
 }
@@ -769,11 +766,11 @@ func TestOSSBackupDocsDoNotDependOnMigrateImageShell(t *testing.T) {
 	root := repoRoot(t)
 	source := readText(t, filepath.Join(root, "docs", "docker-compose.md"))
 	for _, required := range []string{
-		"docker compose cp control-plane:/data/oss.db ./oss.db.backup",
-		"docker compose cp \"control-plane:/data/oss.db${suffix}\" \"./oss.db.backup${suffix}\"",
+		"docker compose exec -T postgres pg_dump",
+		"prism.dump",
 	} {
 		if !strings.Contains(source, required) {
-			t.Fatalf("backup docs must include shell-independent copy command %q", required)
+			t.Fatalf("backup docs must include PostgreSQL backup command %q", required)
 		}
 	}
 	for _, forbidden := range []string{
@@ -837,7 +834,6 @@ func TestOSSInstallPersistsResolvedAgentRelease(t *testing.T) {
 func TestOSSAgentUpdateColumnsUseForwardMigration(t *testing.T) {
 	root := repoRoot(t)
 	initialMigration := readText(t, filepath.Join(root, "migrations", "core", "00001_core.sql"))
-	agentUpdateMigration := readText(t, filepath.Join(root, "migrations", "core", "00002_agent_update_fields.sql"))
 	for _, column := range []string{
 		"agent_version",
 		"agent_commit",
@@ -849,12 +845,12 @@ func TestOSSAgentUpdateColumnsUseForwardMigration(t *testing.T) {
 		"agent_update_started_at",
 		"agent_update_finished_at",
 	} {
-		if strings.Contains(initialMigration, column) {
-			t.Fatalf("new agent update column %s must not be added by rewriting 00001_core.sql", column)
+		if !strings.Contains(initialMigration, column) {
+			t.Fatalf("PostgreSQL-only initial schema must include agent update column %s", column)
 		}
-		if !strings.Contains(agentUpdateMigration, "ADD COLUMN "+column) {
-			t.Fatalf("00002_agent_update_fields.sql must add column %s", column)
-		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "migrations", "core", "00002_agent_update_fields.sql")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("indev PostgreSQL hard switch must fold old forward migrations into the initial schema, stat err=%v", err)
 	}
 }
 

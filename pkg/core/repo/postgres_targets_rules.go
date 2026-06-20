@@ -2,9 +2,9 @@ package repo
 
 import "context"
 
-func (store *SQLiteStore) ListTargetsByOrganization(ctx context.Context, organizationID string) ([]TargetRecord, error) {
+func (store *PostgresStore) ListTargetsByOrganization(ctx context.Context, organizationID string) ([]TargetRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, name, host, port, enabled, created_at, updated_at, coalesce(deleted_at, '')
+		SELECT id, organization_id, name, host, port, enabled, created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM targets
 		WHERE organization_id = ? AND deleted_at IS NULL
 		ORDER BY name, id
@@ -25,36 +25,36 @@ func (store *SQLiteStore) ListTargetsByOrganization(ctx context.Context, organiz
 	return targets, rows.Err()
 }
 
-func (store *SQLiteStore) FindTargetByID(ctx context.Context, organizationID string, targetID string) (TargetRecord, error) {
+func (store *PostgresStore) FindTargetByID(ctx context.Context, organizationID string, targetID string) (TargetRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
-		SELECT id, organization_id, name, host, port, enabled, created_at, updated_at, coalesce(deleted_at, '')
+		SELECT id, organization_id, name, host, port, enabled, created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM targets
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, organizationID, targetID)
 	return scanTarget(row)
 }
 
-func (store *SQLiteStore) CreateTarget(ctx context.Context, target TargetRecord) error {
+func (store *PostgresStore) CreateTarget(ctx context.Context, target TargetRecord) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO targets (id, organization_id, name, host, port, enabled, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, target.ID, target.OrganizationID, target.Name, target.Host, target.Port, boolToInt(target.Enabled), target.CreatedAt, target.UpdatedAt)
+	`, target.ID, target.OrganizationID, target.Name, target.Host, target.Port, boolToDB(target.Enabled), target.CreatedAt, target.UpdatedAt)
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) UpdateTarget(ctx context.Context, target TargetRecord) error {
+func (store *PostgresStore) UpdateTarget(ctx context.Context, target TargetRecord) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE targets
 		SET name = ?, host = ?, port = ?, enabled = ?, updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, target.Name, target.Host, target.Port, boolToInt(target.Enabled), target.UpdatedAt, target.OrganizationID, target.ID)
+	`, target.Name, target.Host, target.Port, boolToDB(target.Enabled), target.UpdatedAt, target.OrganizationID, target.ID)
 	if err != nil {
 		return mapWriteError(err)
 	}
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) DeleteTarget(ctx context.Context, organizationID string, targetID string, deletedAt string) error {
+func (store *PostgresStore) DeleteTarget(ctx context.Context, organizationID string, targetID string, deletedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE targets
 		SET deleted_at = ?, updated_at = ?
@@ -66,9 +66,9 @@ func (store *SQLiteStore) DeleteTarget(ctx context.Context, organizationID strin
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) ListTargetGroupsByOrganization(ctx context.Context, organizationID string) ([]TargetGroupRecord, error) {
+func (store *PostgresStore) ListTargetGroupsByOrganization(ctx context.Context, organizationID string) ([]TargetGroupRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, name, description, scheduler, created_at, updated_at, coalesce(deleted_at, '')
+		SELECT id, organization_id, name, description, scheduler, created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM target_groups
 		WHERE organization_id = ? AND deleted_at IS NULL
 		ORDER BY name, id
@@ -92,9 +92,9 @@ func (store *SQLiteStore) ListTargetGroupsByOrganization(ctx context.Context, or
 	return groups, rows.Err()
 }
 
-func (store *SQLiteStore) FindTargetGroupByID(ctx context.Context, organizationID string, targetGroupID string) (TargetGroupRecord, error) {
+func (store *PostgresStore) FindTargetGroupByID(ctx context.Context, organizationID string, targetGroupID string) (TargetGroupRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
-		SELECT id, organization_id, name, description, scheduler, created_at, updated_at, coalesce(deleted_at, '')
+		SELECT id, organization_id, name, description, scheduler, created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM target_groups
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, organizationID, targetGroupID)
@@ -108,7 +108,7 @@ func (store *SQLiteStore) FindTargetGroupByID(ctx context.Context, organizationI
 	return group, nil
 }
 
-func (store *SQLiteStore) CreateTargetGroup(ctx context.Context, targetGroup TargetGroupRecord, members []TargetGroupMemberRecord, now string, nextID func() string) error {
+func (store *PostgresStore) CreateTargetGroup(ctx context.Context, targetGroup TargetGroupRecord, members []TargetGroupMemberRecord, now string, nextID func() string) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO target_groups (id, organization_id, name, description, scheduler, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -119,7 +119,7 @@ func (store *SQLiteStore) CreateTargetGroup(ctx context.Context, targetGroup Tar
 	return store.replaceTargetGroupMembers(ctx, targetGroup.OrganizationID, targetGroup.ID, members, now, nextID)
 }
 
-func (store *SQLiteStore) UpdateTargetGroup(ctx context.Context, targetGroup TargetGroupRecord, members []TargetGroupMemberRecord, now string, nextID func() string) error {
+func (store *PostgresStore) UpdateTargetGroup(ctx context.Context, targetGroup TargetGroupRecord, members []TargetGroupMemberRecord, now string, nextID func() string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE target_groups
 		SET name = ?, description = ?, scheduler = ?, updated_at = ?
@@ -134,7 +134,7 @@ func (store *SQLiteStore) UpdateTargetGroup(ctx context.Context, targetGroup Tar
 	return store.replaceTargetGroupMembers(ctx, targetGroup.OrganizationID, targetGroup.ID, members, now, nextID)
 }
 
-func (store *SQLiteStore) DeleteTargetGroup(ctx context.Context, organizationID string, targetGroupID string, deletedAt string) error {
+func (store *PostgresStore) DeleteTargetGroup(ctx context.Context, organizationID string, targetGroupID string, deletedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE target_groups
 		SET deleted_at = ?, updated_at = ?
@@ -146,12 +146,12 @@ func (store *SQLiteStore) DeleteTargetGroup(ctx context.Context, organizationID 
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) ListRulesByOrganization(ctx context.Context, organizationID string) ([]RuleRecord, error) {
+func (store *PostgresStore) ListRulesByOrganization(ctx context.Context, organizationID string) ([]RuleRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT forwarding_rules.id, forwarding_rules.organization_id, owner_user_id, name, enabled, status,
 		       forwarding_type, forwarding_rules.protocol, forwarding_rules.match_type, inbound_binding_id, coalesce(sni_hostname, ''),
-		       target_type, coalesce(target_id, ''), coalesce(target_group_id, ''), proxy_protocol_in, proxy_protocol_out,
-		       config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at, ''),
+		       target_type, coalesce(target_id::text, ''), coalesce(target_group_id::text, ''), proxy_protocol_in, proxy_protocol_out,
+		       config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
 		       inbound_bindings.id, inbound_bindings.organization_id, inbound_bindings.node_group_id, inbound_bindings.listen_ip,
 		       inbound_bindings.protocol, inbound_bindings.port, inbound_bindings.match_type, inbound_bindings.created_at
 		FROM forwarding_rules
@@ -180,12 +180,12 @@ func (store *SQLiteStore) ListRulesByOrganization(ctx context.Context, organizat
 	return rules, rows.Err()
 }
 
-func (store *SQLiteStore) FindRuleByID(ctx context.Context, organizationID string, ruleID string) (RuleRecord, error) {
+func (store *PostgresStore) FindRuleByID(ctx context.Context, organizationID string, ruleID string) (RuleRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT forwarding_rules.id, forwarding_rules.organization_id, owner_user_id, name, enabled, status,
 		       forwarding_type, forwarding_rules.protocol, forwarding_rules.match_type, inbound_binding_id, coalesce(sni_hostname, ''),
-		       target_type, coalesce(target_id, ''), coalesce(target_group_id, ''), proxy_protocol_in, proxy_protocol_out,
-		       config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at, ''),
+		       target_type, coalesce(target_id::text, ''), coalesce(target_group_id::text, ''), proxy_protocol_in, proxy_protocol_out,
+		       config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
 		       inbound_bindings.id, inbound_bindings.organization_id, inbound_bindings.node_group_id, inbound_bindings.listen_ip,
 		       inbound_bindings.protocol, inbound_bindings.port, inbound_bindings.match_type, inbound_bindings.created_at
 		FROM forwarding_rules
@@ -204,7 +204,7 @@ func (store *SQLiteStore) FindRuleByID(ctx context.Context, organizationID strin
 	return rule, nil
 }
 
-func (store *SQLiteStore) CreateRule(ctx context.Context, rule RuleRecord, binding InboundBindingRecord, tags []string, now string, nextID func() string) error {
+func (store *PostgresStore) CreateRule(ctx context.Context, rule RuleRecord, binding InboundBindingRecord, tags []string, now string, nextID func() string) error {
 	if err := store.upsertInboundBinding(ctx, binding); err != nil {
 		return err
 	}
@@ -213,8 +213,8 @@ func (store *SQLiteStore) CreateRule(ctx context.Context, rule RuleRecord, bindi
 			id, organization_id, owner_user_id, name, enabled, status, forwarding_type, protocol, match_type,
 			inbound_binding_id, sni_hostname, target_type, target_id, target_group_id,
 			proxy_protocol_in, proxy_protocol_out, config_version, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nullif(?, ''), nullif(?, ''), ?, ?, ?, ?, ?)
-	`, rule.ID, rule.OrganizationID, rule.OwnerUserID, rule.Name, boolToInt(rule.Enabled), rule.Status, rule.ForwardingType, rule.Protocol, rule.MatchType,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nullif(?, '')::uuid, nullif(?, '')::uuid, ?, ?, ?, ?, ?)
+	`, rule.ID, rule.OrganizationID, rule.OwnerUserID, rule.Name, boolToDB(rule.Enabled), rule.Status, rule.ForwardingType, rule.Protocol, rule.MatchType,
 		binding.ID, nullIfEmpty(rule.SNIHostname), rule.TargetType, rule.TargetID, rule.TargetGroupID,
 		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.ConfigVersion, rule.CreatedAt, rule.UpdatedAt)
 	if err != nil {
@@ -223,17 +223,17 @@ func (store *SQLiteStore) CreateRule(ctx context.Context, rule RuleRecord, bindi
 	return store.replaceRuleTags(ctx, rule.OrganizationID, rule.ID, tags, now, nextID)
 }
 
-func (store *SQLiteStore) UpdateRule(ctx context.Context, rule RuleRecord, binding InboundBindingRecord, tags []string, now string, nextID func() string) error {
+func (store *PostgresStore) UpdateRule(ctx context.Context, rule RuleRecord, binding InboundBindingRecord, tags []string, now string, nextID func() string) error {
 	if err := store.upsertInboundBinding(ctx, binding); err != nil {
 		return err
 	}
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE forwarding_rules
 		SET name = ?, enabled = ?, status = ?, forwarding_type = ?, protocol = ?, match_type = ?, inbound_binding_id = ?,
-		    sni_hostname = ?, target_type = ?, target_id = nullif(?, ''), target_group_id = nullif(?, ''),
+		    sni_hostname = ?, target_type = ?, target_id = nullif(?, '')::uuid, target_group_id = nullif(?, '')::uuid,
 		    proxy_protocol_in = ?, proxy_protocol_out = ?, config_version = ?, updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, rule.Name, boolToInt(rule.Enabled), rule.Status, rule.ForwardingType, rule.Protocol, rule.MatchType, binding.ID,
+	`, rule.Name, boolToDB(rule.Enabled), rule.Status, rule.ForwardingType, rule.Protocol, rule.MatchType, binding.ID,
 		nullIfEmpty(rule.SNIHostname), rule.TargetType, rule.TargetID, rule.TargetGroupID,
 		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.ConfigVersion, rule.UpdatedAt, rule.OrganizationID, rule.ID)
 	if err != nil {
@@ -245,10 +245,10 @@ func (store *SQLiteStore) UpdateRule(ctx context.Context, rule RuleRecord, bindi
 	return store.replaceRuleTags(ctx, rule.OrganizationID, rule.ID, tags, now, nextID)
 }
 
-func (store *SQLiteStore) DeleteRule(ctx context.Context, organizationID string, ruleID string, deletedAt string) error {
+func (store *PostgresStore) DeleteRule(ctx context.Context, organizationID string, ruleID string, deletedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE forwarding_rules
-		SET deleted_at = ?, updated_at = ?, enabled = 0, status = 'DISABLED'
+		SET deleted_at = ?, updated_at = ?, enabled = false, status = 'DISABLED'
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, deletedAt, deletedAt, organizationID, ruleID)
 	if err != nil {
@@ -257,7 +257,7 @@ func (store *SQLiteStore) DeleteRule(ctx context.Context, organizationID string,
 	return requireAffected(result)
 }
 
-func (store *SQLiteStore) ListEnabledInboundBindings(ctx context.Context, organizationID string) ([]RuleRecord, error) {
+func (store *PostgresStore) ListEnabledInboundBindings(ctx context.Context, organizationID string) ([]RuleRecord, error) {
 	rules, err := store.ListRulesByOrganization(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -271,7 +271,7 @@ func (store *SQLiteStore) ListEnabledInboundBindings(ctx context.Context, organi
 	return filtered, nil
 }
 
-func (store *SQLiteStore) CountRulesByOrganization(ctx context.Context, organizationID string) (int, error) {
+func (store *PostgresStore) CountRulesByOrganization(ctx context.Context, organizationID string) (int, error) {
 	var count int
 	if err := store.db.QueryRowContext(ctx, `
 		SELECT count(*)
@@ -283,7 +283,7 @@ func (store *SQLiteStore) CountRulesByOrganization(ctx context.Context, organiza
 	return count, nil
 }
 
-func (store *SQLiteStore) CountRulesByOwner(ctx context.Context, organizationID string, ownerUserID string) (int, error) {
+func (store *PostgresStore) CountRulesByOwner(ctx context.Context, organizationID string, ownerUserID string) (int, error) {
 	var count int
 	if err := store.db.QueryRowContext(ctx, `
 		SELECT count(*)
@@ -295,7 +295,7 @@ func (store *SQLiteStore) CountRulesByOwner(ctx context.Context, organizationID 
 	return count, nil
 }
 
-func (store *SQLiteStore) SumRuleTraffic(ctx context.Context, organizationID string, ruleID string) (RuleTrafficRecord, error) {
+func (store *PostgresStore) SumRuleTraffic(ctx context.Context, organizationID string, ruleID string) (RuleTrafficRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT coalesce(sum(upload_bytes), 0), coalesce(sum(download_bytes), 0),
 		       coalesce(sum(tcp_connections), 0), coalesce(sum(udp_packets), 0)
@@ -309,7 +309,7 @@ func (store *SQLiteStore) SumRuleTraffic(ctx context.Context, organizationID str
 	return traffic, nil
 }
 
-func (store *SQLiteStore) loadTargetGroupMembers(ctx context.Context, group *TargetGroupRecord) error {
+func (store *PostgresStore) loadTargetGroupMembers(ctx context.Context, group *TargetGroupRecord) error {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT id, organization_id, target_group_id, target_id, priority, enabled, created_at, updated_at
 		FROM target_group_members
@@ -336,7 +336,7 @@ func (store *SQLiteStore) loadTargetGroupMembers(ctx context.Context, group *Tar
 	return nil
 }
 
-func (store *SQLiteStore) replaceTargetGroupMembers(ctx context.Context, organizationID string, targetGroupID string, members []TargetGroupMemberRecord, now string, nextID func() string) error {
+func (store *PostgresStore) replaceTargetGroupMembers(ctx context.Context, organizationID string, targetGroupID string, members []TargetGroupMemberRecord, now string, nextID func() string) error {
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM target_group_members WHERE organization_id = ? AND target_group_id = ?`, organizationID, targetGroupID); err != nil {
 		return mapWriteError(err)
 	}
@@ -344,14 +344,14 @@ func (store *SQLiteStore) replaceTargetGroupMembers(ctx context.Context, organiz
 		if _, err := store.db.ExecContext(ctx, `
 			INSERT INTO target_group_members (id, organization_id, target_group_id, target_id, priority, enabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, nextID(), organizationID, targetGroupID, member.TargetID, member.Priority, boolToInt(member.Enabled), now, now); err != nil {
+		`, nextID(), organizationID, targetGroupID, member.TargetID, member.Priority, boolToDB(member.Enabled), now, now); err != nil {
 			return mapWriteError(err)
 		}
 	}
 	return nil
 }
 
-func (store *SQLiteStore) upsertInboundBinding(ctx context.Context, binding InboundBindingRecord) error {
+func (store *PostgresStore) upsertInboundBinding(ctx context.Context, binding InboundBindingRecord) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO inbound_bindings (id, organization_id, node_group_id, listen_ip, protocol, port, match_type, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -361,7 +361,7 @@ func (store *SQLiteStore) upsertInboundBinding(ctx context.Context, binding Inbo
 	return mapWriteError(err)
 }
 
-func (store *SQLiteStore) loadRuleTags(ctx context.Context, rule *RuleRecord) error {
+func (store *PostgresStore) loadRuleTags(ctx context.Context, rule *RuleRecord) error {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT tag
 		FROM rule_tags
@@ -388,7 +388,7 @@ func (store *SQLiteStore) loadRuleTags(ctx context.Context, rule *RuleRecord) er
 	return nil
 }
 
-func (store *SQLiteStore) replaceRuleTags(ctx context.Context, organizationID string, ruleID string, tags []string, now string, nextID func() string) error {
+func (store *PostgresStore) replaceRuleTags(ctx context.Context, organizationID string, ruleID string, tags []string, now string, nextID func() string) error {
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM rule_tags WHERE organization_id = ? AND rule_id = ?`, organizationID, ruleID); err != nil {
 		return mapWriteError(err)
 	}

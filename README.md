@@ -8,7 +8,7 @@ This repository contains a single-user forwarding control plane and agent stack 
 - Node agents with outbound control-plane connections.
 - Single-user account setup and local authorization.
 - Targets, target groups, rules, import/export, basic metrics, and audit records.
-- Core goose migrations only.
+- PostgreSQL-only goose migrations with separate `auth` and `app` schemas.
 - A Next.js control console that uses `APP_NAME` for display text.
 
 ## Quick Start
@@ -21,7 +21,7 @@ Install the OSS control plane with Docker Compose:
 curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install.sh | bash
 ```
 
-The installer writes a local `.env`, writes an image-based `docker-compose.yml`, pulls the selected release images, runs the `migrate` image, and starts Redis, the control plane, and the web console. Open the setup URL printed by the installer. On a remote host, pass `--public-web-url http://YOUR_SERVER_IP:3000` and `--control-url http://YOUR_SERVER_IP:8080` when automatic address detection cannot infer reachable URLs.
+The installer writes a local `.env`, writes an image-based `docker-compose.yml`, pulls the selected release images, runs the `migrate` image, and starts PostgreSQL 16, Redis, the control plane, and the web console. Open the setup URL printed by the installer. On a remote host, pass `--public-web-url http://YOUR_SERVER_IP:3000` and `--control-url http://YOUR_SERVER_IP:8080` when automatic address detection cannot infer reachable URLs.
 
 Pinned release flow:
 
@@ -35,6 +35,14 @@ Useful options:
 ```sh
 ./scripts/install.sh --version v0.1.3 --dir "$HOME/prism-oss" --app-name "OSS Control Console" --web-port 3000 --public-web-url http://YOUR_SERVER_IP:3000 --control-port 8080 --control-bind-host 0.0.0.0 --control-url http://YOUR_SERVER_IP:8080
 ```
+
+Use an external PostgreSQL 16 database instead of the bundled container:
+
+```sh
+./scripts/install.sh --database-url "postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require"
+```
+
+SQLite has been removed during indev. Existing test installs must be rebuilt with `./uninstall.sh --purge` and reinstalled; no SQLite data upgrade path is provided.
 
 Upgrade an installed control plane from the install directory:
 

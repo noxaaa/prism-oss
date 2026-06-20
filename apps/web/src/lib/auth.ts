@@ -1,29 +1,37 @@
-import Database, { type Database as SQLiteDatabase } from "better-sqlite3";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
+import { Pool, type PoolConfig } from "pg";
 
-export function resolveSQLiteDatabasePath(databaseURL = process.env.DATABASE_URL): string {
+export type PostgresDatabase = Pool;
+
+let sharedPool: Pool | undefined;
+
+export function resolvePostgresDatabaseURL(databaseURL = process.env.DATABASE_URL): string {
   if (!databaseURL) {
-    if (process.env.NODE_ENV === "test") {
-      return ":memory:";
+    if (process.env.NODE_ENV === "test" || process.env.NEXT_PHASE === "phase-production-build") {
+      return "postgres://prism:prism@127.0.0.1:5432/prism_build";
     }
-    if (process.env.NEXT_PHASE === "phase-production-build") {
-      return ":memory:";
-    }
-    throw new Error("DATABASE_URL is required for BetterAuth SQLite storage");
-  }
-  if (databaseURL.startsWith("sqlite://")) {
-    return databaseURL.slice("sqlite://".length);
+    throw new Error("DATABASE_URL is required for BetterAuth PostgreSQL storage");
   }
   return databaseURL;
 }
 
-export function createSQLiteDatabase(databasePath = resolveSQLiteDatabasePath()): SQLiteDatabase {
-  const database = new Database(databasePath, { timeout: 5000 });
-  database.pragma("foreign_keys = ON");
-  if (databasePath !== ":memory:") {
-    database.pragma("journal_mode = WAL");
-  }
-  return database;
+export function postgresPoolConfig(databaseURL = resolvePostgresDatabaseURL()): PoolConfig {
+  return {
+    connectionString: databaseURL,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+    options: "-c search_path=auth,public",
+  };
+}
+
+export function createPostgresPool(databaseURL = resolvePostgresDatabaseURL()): Pool {
+  return new Pool(postgresPoolConfig(databaseURL));
+}
+
+export function getPostgresPool(): Pool {
+  sharedPool ??= createPostgresPool();
+  return sharedPool;
 }
 
 export function parseTrustedOrigins(value = process.env.BETTER_AUTH_TRUSTED_ORIGINS): string[] | undefined {
@@ -69,7 +77,7 @@ export function resolveTrustedOrigins(request?: Request): string[] | undefined {
   ]);
 }
 
-export function buildAuthOptions(database: SQLiteDatabase = createSQLiteDatabase()): BetterAuthOptions {
+export function buildAuthOptions(database: PostgresDatabase = getPostgresPool()): BetterAuthOptions {
   return {
     database,
     secret:
