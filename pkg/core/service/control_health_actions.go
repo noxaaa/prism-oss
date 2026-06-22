@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
@@ -144,6 +145,8 @@ type latestHealthEvaluation struct {
 	Results []repo.HealthResultRecord
 }
 
+const minimumMonitorHealthEvaluationFreshness = 2 * time.Minute
+
 func (service *ControlService) latestHealthEvaluation(ctx context.Context, repositories repo.Repositories, organizationID string, check repo.HealthCheckRecord, fallback repo.HealthResultRecord) (latestHealthEvaluation, error) {
 	latest, err := repositories.HealthChecks().ListLatestHealthResultsByCheck(ctx, organizationID, check.ID)
 	if err != nil {
@@ -157,9 +160,11 @@ func (service *ControlService) latestHealthEvaluation(ctx context.Context, repos
 	if err != nil {
 		return latestHealthEvaluation{}, err
 	}
+	now := service.now().UTC()
+	freshness := monitorHealthEvaluationFreshness(check)
 	scopedMonitors := make(map[string]bool, len(monitors))
 	for _, monitor := range monitors {
-		if strings.EqualFold(strings.TrimSpace(monitor.Status), "OFFLINE") {
+		if !monitorFreshForHealthEvaluation(monitor, now, freshness) {
 			continue
 		}
 		if healthCheckTargetsMonitor(check, monitor, activeMonitorGroupIDs) {
@@ -200,6 +205,30 @@ func (service *ControlService) latestHealthEvaluation(ctx context.Context, repos
 		selected.Status = "ONLINE"
 	}
 	return latestHealthEvaluation{Result: selected, Results: candidates}, nil
+}
+
+func monitorHealthEvaluationFreshness(check repo.HealthCheckRecord) time.Duration {
+	freshness := time.Duration(check.IntervalSeconds*3+check.TimeoutSeconds) * time.Second
+	if freshness < minimumMonitorHealthEvaluationFreshness {
+		return minimumMonitorHealthEvaluationFreshness
+	}
+	return freshness
+}
+
+func monitorFreshForHealthEvaluation(monitor repo.MonitorRecord, now time.Time, freshness time.Duration) bool {
+	status := strings.ToUpper(strings.TrimSpace(monitor.Status))
+	if status == "OFFLINE" {
+		return false
+	}
+	lastSeenAt := strings.TrimSpace(monitor.LastSeenAt)
+	if lastSeenAt == "" {
+		return status == ""
+	}
+	lastSeen, err := time.Parse(time.RFC3339Nano, lastSeenAt)
+	if err != nil {
+		return false
+	}
+	return !lastSeen.Before(now.Add(-freshness))
 }
 
 func aggregateHealthResultsByCheck(results []repo.HealthResultRecord) []repo.HealthResultRecord {

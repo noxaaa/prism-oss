@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/noxaaa/prism-oss/pkg/core/dns"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
@@ -352,6 +353,93 @@ func TestRecordMonitorHealthResultsIgnoresDisconnectedMonitorLatestResult(t *tes
 	}
 	if got := provider.lastInput().Values; len(got) != 1 || got[0] != "192.0.2.1" {
 		t.Fatalf("expected desired value to be restored, got %#v", got)
+	}
+}
+
+func TestRecordMonitorHealthResultsIgnoresStaleMonitorLatestResult(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+			Status:         "ONLINE",
+			LastSeenAt:     "2026-06-20T00:10:00Z",
+			GroupIDs:       []string{"monitor_group_1"},
+		},
+		monitors: []repo.MonitorRecord{{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+			Status:         "ONLINE",
+			LastSeenAt:     "2026-06-20T00:10:00Z",
+			GroupIDs:       []string{"monitor_group_1"},
+		}, {
+			ID:             "monitor_2",
+			OrganizationID: "org_1",
+			Status:         "ONLINE",
+			LastSeenAt:     "2026-06-20T00:00:00Z",
+			GroupIDs:       []string{"monitor_group_1"},
+		}},
+		monitorGroups: map[string]repo.MonitorGroupRecord{
+			"monitor_group_1": {ID: "monitor_group_1", OrganizationID: "org_1"},
+		},
+		checks: []repo.HealthCheckRecord{{
+			ID:              "health_1",
+			OrganizationID:  "org_1",
+			Name:            "edge probe",
+			Enabled:         true,
+			IntervalSeconds: 30,
+			TimeoutSeconds:  3,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:       "health_target_1",
+				TargetID: "target_1",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType:      "MONITOR_GROUP",
+				MonitorGroupID: "monitor_group_1",
+			}},
+		}},
+		results: []repo.HealthResultRecord{{
+			ID:                  "existing_result_1",
+			OrganizationID:      "org_1",
+			HealthCheckID:       "health_1",
+			HealthCheckTargetID: "health_target_1",
+			MonitorID:           "monitor_2",
+			TargetID:            "target_1",
+			Status:              "OFFLINE",
+			ObservedAt:          "2026-06-20T00:00:00Z",
+		}},
+		rules: []repo.HealthEvaluationRuleRecord{{
+			ID:             "rule_1",
+			OrganizationID: "org_1",
+			HealthCheckID:  "health_1",
+			Enabled:        true,
+			Events: []repo.HealthEventRecord{{
+				ID:         "event_1",
+				EventType:  "WEBHOOK",
+				Enabled:    true,
+				ConfigJSON: `{"url":"https://hooks.example.test/health"}`,
+			}},
+		}},
+	}
+	executor := &recordingHealthActionExecutor{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		HealthActionExecutors: []HealthActionExecutor{executor},
+	})
+	control.now = func() time.Time { return time.Date(2026, 6, 20, 0, 10, 5, 0, time.UTC) }
+
+	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
+		HealthCheckID:       "health_1",
+		HealthCheckTargetID: "health_target_1",
+		TargetID:            "target_1",
+		Status:              "ONLINE",
+		ObservedAt:          "2026-06-20T00:10:00Z",
+	}}); err != nil {
+		t.Fatalf("record monitor health results: %v", err)
+	}
+	if len(executor.executed) != 1 {
+		t.Fatalf("expected custom executor to run once, got %#v", executor.executed)
+	}
+	if executor.executed[0].Status != "ONLINE" {
+		t.Fatalf("expected stale offline result to be ignored, got %#v", executor.executed[0])
 	}
 }
 

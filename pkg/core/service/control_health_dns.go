@@ -686,6 +686,9 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 		if err != nil {
 			return err
 		}
+		if strings.TrimSpace(record.ProviderDeletePendingAt) != "" {
+			return ErrConflict
+		}
 		previousRecord := record
 		if strings.TrimSpace(input.HealthCheckID) == "" {
 			if err := service.ensureCanRemoveDNSHealthBinding(ctx, repositories, identity, record.ID); err != nil {
@@ -777,8 +780,11 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 	if !service.hasPermission(identity, string(domain.PermissionDNSManage)) {
 		return ErrForbidden
 	}
+	var retireAction dnsEventAction
+	var hasRetireAction bool
 	var action dnsEventAction
 	var hasAction bool
+	var hasProviderWork bool
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		record, err := repositories.DNSRecords().FindDNSRecordByID(ctx, identity.OrganizationID, recordID)
 		if err != nil {
@@ -787,7 +793,15 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 		if err := service.ensureCanRemoveDNSHealthBinding(ctx, repositories, identity, recordID); err != nil {
 			return err
 		}
-		providerAction, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, nil, true)
+		providerAction, ok, err := service.buildDNSRecordPendingRetireAction(ctx, repositories, identity.OrganizationID, record)
+		if err != nil {
+			return err
+		}
+		if ok {
+			retireAction = providerAction
+			hasRetireAction = true
+		}
+		providerAction, ok, err = service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, nil, true)
 		if err != nil {
 			return err
 		}
@@ -795,7 +809,8 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 			action = providerAction
 			hasAction = true
 		}
-		if hasAction {
+		hasProviderWork = hasRetireAction || hasAction
+		if hasProviderWork {
 			return repositories.DNSRecords().MarkDNSRecordProviderDeletePending(ctx, identity.OrganizationID, recordID, service.timestamp())
 		}
 		deletedAt := service.timestamp()
@@ -810,9 +825,23 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 	if err != nil {
 		return mapServiceError(err)
 	}
-	if hasAction {
-		if err := service.executeDNSProviderAction(ctx, action); err != nil {
-			return err
+	if hasProviderWork {
+		if hasRetireAction {
+			if err := service.executeDNSProviderAction(ctx, retireAction); err != nil {
+				return err
+			}
+			clearedAt := service.timestamp()
+			err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+				return repositories.DNSRecords().ClearDNSRecordPendingRetire(ctx, identity.OrganizationID, recordID, clearedAt)
+			})
+			if err != nil {
+				return mapServiceError(err)
+			}
+		}
+		if hasAction {
+			if err := service.executeDNSProviderAction(ctx, action); err != nil {
+				return err
+			}
 		}
 		err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 			deletedAt := service.timestamp()

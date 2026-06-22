@@ -57,6 +57,101 @@ func TestDeleteDNSRecordProviderFailureKeepsRecordRetryable(t *testing.T) {
 	}
 }
 
+func TestDeleteDNSRecordRetiresPendingProviderIdentityBeforeCurrentDelete(t *testing.T) {
+	currentDeleteErr := errors.New("current provider delete failed")
+	store := &healthDNSTestStore{
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:                           "dns_1",
+			OrganizationID:               "org_1",
+			DNSCredentialID:              "credential_1",
+			Zone:                         "new-zone",
+			RecordName:                   "new.example.com",
+			RecordType:                   "A",
+			DesiredValuesJSON:            `["192.0.2.1"]`,
+			LastAppliedValuesJSON:        `["192.0.2.1"]`,
+			LastAppliedAt:                "2026-06-20T00:00:00Z",
+			PendingRetireDNSCredentialID: "credential_1",
+			PendingRetireZone:            "old-zone",
+			PendingRetireRecordName:      "old.example.com",
+			PendingRetireRecordType:      "A",
+			PendingRetireValuesJSON:      `["192.0.2.1"]`,
+			PendingRetireAt:              "2026-06-20T00:00:01Z",
+		},
+	}
+	provider := &healthDNSTestProvider{err: currentDeleteErr, errAt: 2}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		Authorizer:             healthDNSTestAuthorizer{},
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	err = control.DeleteDNSRecord(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), "dns_1")
+	if !errors.Is(err, currentDeleteErr) {
+		t.Fatalf("expected current provider delete error, got %v", err)
+	}
+	if provider.calls() != 2 {
+		t.Fatalf("expected pending retire and current delete calls, got %d", provider.calls())
+	}
+	if input := provider.inputs[0]; input.Zone != "old-zone" || input.RecordName != "old.example.com" || len(input.Values) != 0 {
+		t.Fatalf("expected pending old identity to be retired first, got %#v", input)
+	}
+	if input := provider.inputs[1]; input.Zone != "new-zone" || input.RecordName != "new.example.com" || len(input.Values) != 0 {
+		t.Fatalf("expected current identity delete second, got %#v", input)
+	}
+	if dnsRecordHasPendingRetire(store.record) {
+		t.Fatalf("expected successful pending retire to be cleared before current delete retry, record=%#v", store.record)
+	}
+	if store.record.ProviderDeletePendingAt == "" || store.deletedDNSRecordID != "" {
+		t.Fatalf("current delete failure must keep local record retryable and delete-pending, record=%#v deleted=%q", store.record, store.deletedDNSRecordID)
+	}
+}
+
+func TestUpdateDNSRecordRejectsProviderDeletePendingRecord(t *testing.T) {
+	store := &healthDNSTestStore{
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:                      "dns_1",
+			OrganizationID:          "org_1",
+			DNSCredentialID:         "credential_1",
+			Zone:                    "zone_1",
+			RecordName:              "app.example.com",
+			RecordType:              "A",
+			DesiredValuesJSON:       `["192.0.2.1"]`,
+			LastAppliedValuesJSON:   `["192.0.2.1"]`,
+			ProviderDeletePendingAt: "2026-06-20T00:00:00Z",
+		},
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		Authorizer:             healthDNSTestAuthorizer{},
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+
+	_, err := control.UpdateDNSRecord(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), "dns_1", DNSRecordMutationInput{
+		DNSCredentialID: "credential_1",
+		Zone:            "zone_1",
+		RecordName:      "app.example.com",
+		RecordType:      "A",
+		DesiredValues:   []string{"198.51.100.10"},
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	if provider.calls() != 0 {
+		t.Fatalf("provider delete pending records must not be updated, got %d provider calls", provider.calls())
+	}
+	if store.updatedDNSRecord.ID != "" || store.record.DesiredValuesJSON != `["192.0.2.1"]` {
+		t.Fatalf("provider delete pending update must leave record unchanged, updated=%#v record=%#v", store.updatedDNSRecord, store.record)
+	}
+}
+
 func TestRecordMonitorHealthResultsSkipsDNSRecordPendingProviderDelete(t *testing.T) {
 	store := &healthDNSTestStore{
 		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
@@ -189,8 +284,8 @@ func TestUpdateDNSRecordIdentityRetireFailureRetriesOldIdentity(t *testing.T) {
 
 func TestRecordMonitorHealthResultsDeleteOfflineRemovesAllOfflineTargets(t *testing.T) {
 	store := &healthDNSTestStore{
-		monitor:  repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1", Status: "ONLINE"},
-		monitors: []repo.MonitorRecord{{ID: "monitor_1", OrganizationID: "org_1", Status: "ONLINE"}},
+		monitor:  repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1", Status: "ONLINE", LastSeenAt: "2026-06-20T00:00:00Z"},
+		monitors: []repo.MonitorRecord{{ID: "monitor_1", OrganizationID: "org_1", Status: "ONLINE", LastSeenAt: "2026-06-20T00:00:00Z"}},
 		checks: []repo.HealthCheckRecord{{
 			ID:             "health_1",
 			OrganizationID: "org_1",
@@ -242,6 +337,7 @@ func TestRecordMonitorHealthResultsDeleteOfflineRemovesAllOfflineTargets(t *test
 		DNSSecretEncryptionKey: "test-dns-key",
 		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
 	})
+	control.now = func() time.Time { return time.Date(2026, 6, 20, 0, 0, 1, 0, time.UTC) }
 	encrypted, err := control.encryptDNSSecret("cloudflare-token")
 	if err != nil {
 		t.Fatalf("encrypt test secret: %v", err)

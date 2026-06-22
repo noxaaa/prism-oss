@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/noxaaa/prism-oss/pkg/core/dns"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
@@ -622,8 +623,8 @@ func TestUpdateDNSRecordDoesNotApplyProviderBeforeLocalStateCommits(t *testing.T
 
 func TestRecordMonitorHealthResultsDeleteOfflinePreservesHealthyDNSValues(t *testing.T) {
 	store := &healthDNSTestStore{
-		monitor:  repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1", Status: "ONLINE"},
-		monitors: []repo.MonitorRecord{{ID: "monitor_1", OrganizationID: "org_1", Status: "ONLINE"}},
+		monitor:  repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1", Status: "ONLINE", LastSeenAt: "2026-06-20T00:00:00Z"},
+		monitors: []repo.MonitorRecord{{ID: "monitor_1", OrganizationID: "org_1", Status: "ONLINE", LastSeenAt: "2026-06-20T00:00:00Z"}},
 		checks: []repo.HealthCheckRecord{{
 			ID:             "health_1",
 			OrganizationID: "org_1",
@@ -671,6 +672,7 @@ func TestRecordMonitorHealthResultsDeleteOfflinePreservesHealthyDNSValues(t *tes
 		DNSSecretEncryptionKey: "test-dns-key",
 		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
 	})
+	control.now = func() time.Time { return time.Date(2026, 6, 20, 0, 0, 1, 0, time.UTC) }
 	encrypted, err := control.encryptDNSSecret("cloudflare-token")
 	if err != nil {
 		t.Fatalf("encrypt test secret: %v", err)
