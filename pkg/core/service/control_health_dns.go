@@ -135,7 +135,7 @@ func (service *ControlService) ListHealthResults(ctx context.Context, identity I
 }
 
 func (service *ControlService) RecordMonitorHealthResults(ctx context.Context, organizationID string, monitorID string, results []HealthResultInput) error {
-	var actions []dnsEventAction
+	var actions []healthEventAction
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		now := service.timestamp()
 		records := make([]repo.HealthResultRecord, 0, len(results))
@@ -158,15 +158,15 @@ func (service *ControlService) RecordMonitorHealthResults(ctx context.Context, o
 			return err
 		}
 		var err error
-		actions, err = service.buildDNSEventActions(ctx, repositories, organizationID, records)
+		actions, err = service.buildHealthEventActions(ctx, repositories, organizationID, records)
 		return err
 	})
 	if err != nil {
 		return mapServiceError(err)
 	}
 	for _, action := range actions {
-		if err := service.applyDNSEventAction(ctx, action); err != nil {
-			return err
+		if err := action.executor.Execute(ctx, action.payload); err != nil {
+			return mapServiceError(err)
 		}
 	}
 	return nil
@@ -555,6 +555,19 @@ type dnsEventAction struct {
 	LastAppliedValues string
 }
 
+type dnsHealthEventExecutor struct {
+	service *ControlService
+}
+
+func (executor dnsHealthEventExecutor) Supports(eventType string) bool {
+	switch strings.ToUpper(strings.TrimSpace(eventType)) {
+	case "DNS_FAILOVER", "DNS_DELETE_OFFLINE", "DNS_DELETE_ALL", "DNS_RESTORE":
+		return true
+	default:
+		return false
+	}
+}
+
 func (service *ControlService) createDNSHealthEvent(ctx context.Context, repositories repo.Repositories, organizationID string, input DNSRecordMutationInput, record repo.DNSRecordRecord, now string) error {
 	if _, err := repositories.HealthChecks().FindHealthCheckByID(ctx, organizationID, input.HealthCheckID); err != nil {
 		return err
@@ -590,8 +603,8 @@ func (service *ControlService) createDNSHealthEvent(ctx context.Context, reposit
 	return repositories.HealthChecks().CreateHealthEvaluationRule(ctx, rule, []repo.HealthEventRecord{event})
 }
 
-func (service *ControlService) buildDNSEventActions(ctx context.Context, repositories repo.Repositories, organizationID string, results []repo.HealthResultRecord) ([]dnsEventAction, error) {
-	actions := make([]dnsEventAction, 0)
+func (service *ControlService) buildHealthEventActions(ctx context.Context, repositories repo.Repositories, organizationID string, results []repo.HealthResultRecord) ([]healthEventAction, error) {
+	actions := make([]healthEventAction, 0)
 	seenRulesByCheck := map[string][]repo.HealthEvaluationRuleRecord{}
 	for _, result := range results {
 		status := strings.ToUpper(strings.TrimSpace(result.Status))
@@ -615,36 +628,48 @@ func (service *ControlService) buildDNSEventActions(ctx context.Context, reposit
 				if !event.Enabled {
 					continue
 				}
-				action, ok, err := service.buildDNSEventAction(ctx, repositories, organizationID, event, status)
-				if err != nil || !ok {
+				executor := service.healthEventExecutorForType(event.EventType)
+				if executor == nil {
+					return nil, ErrInvalidInput
+				}
+				payload, ok, err := executor.BuildAction(ctx, repositories, HealthEventExecutionInput{
+					OrganizationID: organizationID,
+					Event:          event,
+					Result:         result,
+				})
+				if err != nil {
 					return nil, err
 				}
-				actions = append(actions, action)
+				if !ok {
+					continue
+				}
+				actions = append(actions, healthEventAction{executor: executor, payload: payload})
 			}
 		}
 	}
 	return actions, nil
 }
 
-func (service *ControlService) buildDNSEventAction(ctx context.Context, repositories repo.Repositories, organizationID string, event repo.HealthEventRecord, status string) (dnsEventAction, bool, error) {
+func (executor dnsHealthEventExecutor) BuildAction(ctx context.Context, repositories repo.Repositories, input HealthEventExecutionInput) (any, bool, error) {
 	var config dnsHealthEventConfig
-	if err := json.Unmarshal([]byte(event.ConfigJSON), &config); err != nil {
+	if err := json.Unmarshal([]byte(input.Event.ConfigJSON), &config); err != nil {
 		return dnsEventAction{}, false, err
 	}
 	if strings.TrimSpace(config.DNSRecordID) == "" {
 		return dnsEventAction{}, false, ErrInvalidInput
 	}
-	record, err := repositories.DNSRecords().FindDNSRecordByID(ctx, organizationID, config.DNSRecordID)
+	record, err := repositories.DNSRecords().FindDNSRecordByID(ctx, input.OrganizationID, config.DNSRecordID)
 	if err != nil {
 		return dnsEventAction{}, false, err
 	}
-	credential, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, organizationID, record.DNSCredentialID)
+	credential, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, input.OrganizationID, record.DNSCredentialID)
 	if err != nil {
 		return dnsEventAction{}, false, err
 	}
 	desiredValues := parseStringListJSON(record.DesiredValuesJSON)
 	values := desiredValues
-	switch event.EventType {
+	status := strings.ToUpper(strings.TrimSpace(input.Result.Status))
+	switch strings.ToUpper(strings.TrimSpace(input.Event.EventType)) {
 	case "DNS_FAILOVER":
 		if status == "OFFLINE" {
 			values = config.FailoverValues
@@ -663,7 +688,7 @@ func (service *ControlService) buildDNSEventAction(ctx context.Context, reposito
 		return dnsEventAction{}, false, ErrInvalidInput
 	}
 	return dnsEventAction{
-		OrganizationID:    organizationID,
+		OrganizationID:    input.OrganizationID,
 		DNSRecordID:       record.ID,
 		Provider:          credential.Provider,
 		EncryptedSecret:   credential.EncryptedSecret,
@@ -675,12 +700,16 @@ func (service *ControlService) buildDNSEventAction(ctx context.Context, reposito
 	}, true, nil
 }
 
-func (service *ControlService) applyDNSEventAction(ctx context.Context, action dnsEventAction) error {
-	secret, err := service.decryptDNSSecret(action.EncryptedSecret)
+func (executor dnsHealthEventExecutor) Execute(ctx context.Context, rawAction any) error {
+	action, ok := rawAction.(dnsEventAction)
+	if !ok {
+		return ErrInvalidInput
+	}
+	secret, err := executor.service.decryptDNSSecret(action.EncryptedSecret)
 	if err != nil {
 		return err
 	}
-	provider, ok := service.dnsProviders.ProviderForKey(action.Provider)
+	provider, ok := executor.service.dnsProviders.ProviderForKey(action.Provider)
 	if !ok {
 		return ErrInvalidInput
 	}
@@ -693,8 +722,8 @@ func (service *ControlService) applyDNSEventAction(ctx context.Context, action d
 	}); err != nil {
 		return err
 	}
-	err = service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
-		return repositories.DNSRecords().UpdateDNSRecordLastApplied(ctx, action.OrganizationID, action.DNSRecordID, action.LastAppliedValues, service.timestamp())
+	err = executor.service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		return repositories.DNSRecords().UpdateDNSRecordLastApplied(ctx, action.OrganizationID, action.DNSRecordID, action.LastAppliedValues, executor.service.timestamp())
 	})
 	return mapServiceError(err)
 }

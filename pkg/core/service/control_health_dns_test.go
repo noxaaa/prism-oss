@@ -73,12 +73,73 @@ func TestRecordMonitorHealthResultsAppliesDNSFailover(t *testing.T) {
 	}
 }
 
+func TestRecordMonitorHealthResultsUsesCustomHealthEventExecutor(t *testing.T) {
+	store := &healthDNSTestStore{
+		rules: []repo.HealthEvaluationRuleRecord{{
+			ID:             "rule_1",
+			OrganizationID: "org_1",
+			HealthCheckID:  "health_1",
+			Enabled:        true,
+			Events: []repo.HealthEventRecord{{
+				ID:         "event_1",
+				EventType:  "WEBHOOK",
+				Enabled:    true,
+				ConfigJSON: `{"url":"https://hooks.example.test/health"}`,
+			}},
+		}},
+	}
+	executor := &recordingHealthEventExecutor{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		HealthEventExecutors: []HealthEventExecutor{executor},
+	})
+
+	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
+		HealthCheckID:       "health_1",
+		HealthCheckTargetID: "health_target_1",
+		TargetID:            "target_1",
+		Status:              "OFFLINE",
+		ObservedAt:          "2026-06-20T00:00:00Z",
+	}}); err != nil {
+		t.Fatalf("record monitor health results: %v", err)
+	}
+	if len(executor.executed) != 1 {
+		t.Fatalf("expected custom executor to run once, got %#v", executor.executed)
+	}
+	action := executor.executed[0]
+	if action.EventID != "event_1" || action.Status != "OFFLINE" || action.ConfigJSON != `{"url":"https://hooks.example.test/health"}` {
+		t.Fatalf("unexpected custom action: %#v", action)
+	}
+}
+
 type healthDNSTestProvider struct {
 	input dns.ApplyRecordInput
 }
 
 func (provider *healthDNSTestProvider) ApplyRecord(_ context.Context, input dns.ApplyRecordInput) error {
 	provider.input = input
+	return nil
+}
+
+type recordingHealthEventExecutor struct {
+	executed []recordingHealthEventAction
+}
+
+type recordingHealthEventAction struct {
+	EventID    string
+	Status     string
+	ConfigJSON string
+}
+
+func (executor *recordingHealthEventExecutor) Supports(eventType string) bool {
+	return eventType == "WEBHOOK"
+}
+
+func (executor *recordingHealthEventExecutor) BuildAction(_ context.Context, _ repo.Repositories, input HealthEventExecutionInput) (any, bool, error) {
+	return recordingHealthEventAction{EventID: input.Event.ID, Status: input.Result.Status, ConfigJSON: input.Event.ConfigJSON}, true, nil
+}
+
+func (executor *recordingHealthEventExecutor) Execute(_ context.Context, action any) error {
+	executor.executed = append(executor.executed, action.(recordingHealthEventAction))
 	return nil
 }
 

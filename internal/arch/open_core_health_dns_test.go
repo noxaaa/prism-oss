@@ -19,6 +19,8 @@ func TestOSSMigrationsIncludeMonitorHealthAndDNSTables(t *testing.T) {
 		"CREATE TABLE health_results",
 		"CREATE TABLE health_evaluation_rules",
 		"CREATE TABLE health_events",
+		"'WEBHOOK'",
+		"'EMAIL'",
 		"CREATE TABLE dns_credentials",
 		"CREATE TABLE dns_records",
 		"validate_monitor_agent_auth",

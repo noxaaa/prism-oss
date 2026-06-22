@@ -281,7 +281,7 @@ CREATE TABLE health_events (
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   deleted_at timestamptz,
-  CHECK (event_type IN ('DNS_FAILOVER', 'DNS_DELETE_OFFLINE', 'DNS_DELETE_ALL', 'DNS_RESTORE')),
+  CHECK (event_type IN ('DNS_FAILOVER', 'DNS_DELETE_OFFLINE', 'DNS_DELETE_ALL', 'DNS_RESTORE', 'WEBHOOK', 'EMAIL')),
   FOREIGN KEY (organization_id, health_evaluation_rule_id) REFERENCES health_evaluation_rules(organization_id, id) ON DELETE CASCADE
 );
 
