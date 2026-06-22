@@ -159,6 +159,29 @@ func (store *PostgresStore) ListHealthResults(ctx context.Context, organizationI
 	return results, rows.Err()
 }
 
+func (store *PostgresStore) ListLatestHealthResultsByCheck(ctx context.Context, organizationID string, healthCheckID string) ([]HealthResultRecord, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT DISTINCT ON (health_check_target_id, monitor_id)
+		       id, organization_id, health_check_id, health_check_target_id, monitor_id, target_id, status, COALESCE(latency_ms, -1), error_message, observed_at, created_at
+		FROM health_results
+		WHERE organization_id = ? AND health_check_id = ?
+		ORDER BY health_check_target_id, monitor_id, observed_at DESC, created_at DESC, id DESC
+	`, organizationID, healthCheckID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	results := make([]HealthResultRecord, 0)
+	for rows.Next() {
+		result, err := scanHealthResultRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
+
 func (store *PostgresStore) RecordHealthResults(ctx context.Context, organizationID string, results []HealthResultRecord) error {
 	for _, result := range results {
 		if _, err := store.db.ExecContext(ctx, `

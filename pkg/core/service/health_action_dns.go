@@ -65,7 +65,9 @@ func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, reposit
 			values = nil
 		}
 	case "DNS_DELETE_ALL":
-		values = nil
+		if status == "OFFLINE" {
+			values = nil
+		}
 	case "DNS_RESTORE":
 		if status != "ONLINE" {
 			return dnsEventAction{}, false, nil

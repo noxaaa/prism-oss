@@ -166,6 +166,97 @@ func TestRecordMonitorHealthResultsAggregatesDNSActionPerCheck(t *testing.T) {
 	}
 }
 
+func TestRecordMonitorHealthResultsEvaluatesLatestResultsAcrossMonitorGroup(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+			GroupIDs:       []string{"monitor_group_1"},
+		},
+		monitors: []repo.MonitorRecord{{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+			GroupIDs:       []string{"monitor_group_1"},
+		}, {
+			ID:             "monitor_2",
+			OrganizationID: "org_1",
+			GroupIDs:       []string{"monitor_group_1"},
+		}},
+		monitorGroups: map[string]repo.MonitorGroupRecord{
+			"monitor_group_1": {ID: "monitor_group_1", OrganizationID: "org_1"},
+		},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:       "health_target_1",
+				TargetID: "target_1",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType:      "MONITOR_GROUP",
+				MonitorGroupID: "monitor_group_1",
+			}},
+		}},
+		results: []repo.HealthResultRecord{{
+			ID:                  "existing_result_1",
+			OrganizationID:      "org_1",
+			HealthCheckID:       "health_1",
+			HealthCheckTargetID: "health_target_1",
+			MonitorID:           "monitor_2",
+			TargetID:            "target_1",
+			Status:              "OFFLINE",
+			ObservedAt:          "2026-06-20T00:00:00Z",
+		}},
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:                    "dns_1",
+			OrganizationID:        "org_1",
+			DNSCredentialID:       "credential_1",
+			Zone:                  "zone_1",
+			RecordName:            "health.example.com",
+			RecordType:            "A",
+			DesiredValuesJSON:     `["192.0.2.1"]`,
+			LastAppliedValuesJSON: `["198.51.100.10"]`,
+		},
+		rules: []repo.HealthEvaluationRuleRecord{{
+			ID:             "rule_1",
+			OrganizationID: "org_1",
+			HealthCheckID:  "health_1",
+			Enabled:        true,
+			Events: []repo.HealthEventRecord{{
+				ID:         "event_1",
+				EventType:  "DNS_FAILOVER",
+				Enabled:    true,
+				ConfigJSON: `{"dns_record_id":"dns_1","failover_values":["198.51.100.10"]}`,
+			}},
+		}},
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
+		HealthCheckID:       "health_1",
+		HealthCheckTargetID: "health_target_1",
+		TargetID:            "target_1",
+		Status:              "ONLINE",
+		ObservedAt:          "2026-06-20T00:00:05Z",
+	}}); err != nil {
+		t.Fatalf("record monitor health results: %v", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("expected monitor group evaluation to keep failover while another scoped monitor is offline, got %d provider calls", provider.calls)
+	}
+}
+
 func TestRecordMonitorHealthResultsUsesCustomHealthActionExecutor(t *testing.T) {
 	store := &healthDNSTestStore{
 		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
@@ -623,372 +714,4 @@ func TestHealthCheckPayloadOmitsEmptyTargetGroupBinding(t *testing.T) {
 	if len(payload.Targets) != 1 || payload.Targets[0].TargetID != "target_1" {
 		t.Fatalf("expected placeholder target-group binding to stay internal, got %#v", payload.Targets)
 	}
-}
-
-type healthDNSTestProvider struct {
-	input dns.ApplyRecordInput
-	calls int
-}
-
-func (provider *healthDNSTestProvider) ApplyRecord(_ context.Context, input dns.ApplyRecordInput) error {
-	provider.input = input
-	provider.calls++
-	return nil
-}
-
-type recordingHealthActionExecutor struct {
-	executed []recordingHealthEventAction
-}
-
-type recordingHealthEventAction struct {
-	EventID         string
-	RuleID          string
-	HealthCheckName string
-	Status          string
-	ConfigJSON      string
-}
-
-func (executor *recordingHealthActionExecutor) Supports(eventType string) bool {
-	return eventType == "WEBHOOK"
-}
-
-func (executor *recordingHealthActionExecutor) BuildAction(_ context.Context, _ repo.Repositories, input HealthActionExecutionInput) (any, bool, error) {
-	return recordingHealthEventAction{EventID: input.Event.ID, RuleID: input.Rule.ID, HealthCheckName: input.HealthCheck.Name, Status: input.Result.Status, ConfigJSON: input.Event.ConfigJSON}, true, nil
-}
-
-func (executor *recordingHealthActionExecutor) Execute(_ context.Context, action any) error {
-	executor.executed = append(executor.executed, action.(recordingHealthEventAction))
-	return nil
-}
-
-type healthDNSTestStore struct {
-	results               []repo.HealthResultRecord
-	rules                 []repo.HealthEvaluationRuleRecord
-	credential            repo.DNSCredentialRecord
-	record                repo.DNSRecordRecord
-	createdDNSRecord      repo.DNSRecordRecord
-	updatedDNSRecord      repo.DNSRecordRecord
-	monitor               repo.MonitorRecord
-	checks                []repo.HealthCheckRecord
-	monitorGroups         map[string]repo.MonitorGroupRecord
-	targetGroups          map[string]repo.TargetGroupRecord
-	targetsByID           map[string]repo.TargetRecord
-	syncedHealthTargets   bool
-	deletedCredentialID   string
-	deletedMonitorID      string
-	deletedMonitorGroupID string
-}
-
-func (store *healthDNSTestStore) WithinTx(ctx context.Context, fn func(context.Context, repo.Repositories) error) error {
-	return fn(ctx, healthDNSTestRepositories{store: store})
-}
-
-type healthDNSTestRepositories struct {
-	store *healthDNSTestStore
-}
-
-func (repositories healthDNSTestRepositories) Users() repo.UserRepository                 { return nil }
-func (repositories healthDNSTestRepositories) Organizations() repo.OrganizationRepository { return nil }
-func (repositories healthDNSTestRepositories) Members() repo.MemberRepository             { return nil }
-func (repositories healthDNSTestRepositories) Roles() repo.RoleRepository                 { return nil }
-func (repositories healthDNSTestRepositories) NodeGroups() repo.NodeGroupRepository       { return nil }
-func (repositories healthDNSTestRepositories) Nodes() repo.NodeRepository                 { return nil }
-func (repositories healthDNSTestRepositories) MonitorGroups() repo.MonitorGroupRepository {
-	return healthDNSTestMonitorGroupRepository(repositories)
-}
-func (repositories healthDNSTestRepositories) Monitors() repo.MonitorRepository {
-	return healthDNSTestMonitorRepository(repositories)
-}
-func (repositories healthDNSTestRepositories) HealthChecks() repo.HealthCheckRepository {
-	return healthDNSTestHealthRepository(repositories)
-}
-func (repositories healthDNSTestRepositories) DNSCredentials() repo.DNSCredentialRepository {
-	return healthDNSTestDNSCredentialRepository(repositories)
-}
-func (repositories healthDNSTestRepositories) DNSRecords() repo.DNSRecordRepository {
-	return healthDNSTestDNSRecordRepository(repositories)
-}
-func (repositories healthDNSTestRepositories) Targets() repo.TargetRepository { return nil }
-func (repositories healthDNSTestRepositories) TargetGroups() repo.TargetGroupRepository {
-	return healthDNSTestTargetGroupRepository(repositories)
-}
-func (repositories healthDNSTestRepositories) Rules() repo.RuleRepository   { return nil }
-func (repositories healthDNSTestRepositories) Quotas() repo.QuotaRepository { return nil }
-func (repositories healthDNSTestRepositories) AgentRegistrationTokens() repo.AgentRegistrationTokenRepository {
-	return nil
-}
-func (repositories healthDNSTestRepositories) AgentCredentials() repo.AgentCredentialRepository {
-	return nil
-}
-func (repositories healthDNSTestRepositories) AuditLogs() repo.AuditLogRepository {
-	return healthDNSTestAuditRepository{}
-}
-
-type healthDNSTestMonitorRepository struct {
-	store *healthDNSTestStore
-}
-
-type healthDNSTestMonitorGroupRepository struct {
-	store *healthDNSTestStore
-}
-
-func (repository healthDNSTestMonitorGroupRepository) ListMonitorGroupsByOrganization(_ context.Context, organizationID string) ([]repo.MonitorGroupRecord, error) {
-	result := make([]repo.MonitorGroupRecord, 0, len(repository.store.monitorGroups))
-	for _, group := range repository.store.monitorGroups {
-		if group.OrganizationID == organizationID && group.DeletedAt == "" {
-			result = append(result, group)
-		}
-	}
-	return result, nil
-}
-func (repository healthDNSTestMonitorGroupRepository) FindMonitorGroupByID(_ context.Context, organizationID string, monitorGroupID string) (repo.MonitorGroupRecord, error) {
-	group, ok := repository.store.monitorGroups[monitorGroupID]
-	if ok && group.OrganizationID == organizationID && group.DeletedAt == "" {
-		return group, nil
-	}
-	return repo.MonitorGroupRecord{}, repo.ErrNotFound
-}
-func (repository healthDNSTestMonitorGroupRepository) CreateMonitorGroup(context.Context, repo.MonitorGroupRecord) error {
-	return nil
-}
-func (repository healthDNSTestMonitorGroupRepository) UpdateMonitorGroup(context.Context, repo.MonitorGroupRecord) error {
-	return nil
-}
-func (repository healthDNSTestMonitorGroupRepository) DeleteMonitorGroup(_ context.Context, _ string, monitorGroupID string, _ string) error {
-	repository.store.deletedMonitorGroupID = monitorGroupID
-	return nil
-}
-
-func (repository healthDNSTestMonitorRepository) ListMonitorsByOrganization(context.Context, string) ([]repo.MonitorRecord, error) {
-	return []repo.MonitorRecord{repository.store.monitor}, nil
-}
-func (repository healthDNSTestMonitorRepository) FindMonitorByID(_ context.Context, organizationID string, monitorID string) (repo.MonitorRecord, error) {
-	if repository.store.monitor.OrganizationID == organizationID && repository.store.monitor.ID == monitorID {
-		return repository.store.monitor, nil
-	}
-	return repo.MonitorRecord{}, repo.ErrNotFound
-}
-func (repository healthDNSTestMonitorRepository) CreateMonitor(context.Context, repo.MonitorRecord, []string, string, func() string) error {
-	return nil
-}
-func (repository healthDNSTestMonitorRepository) UpdateMonitor(context.Context, repo.MonitorRecord, bool, []string, string, func() string) error {
-	return nil
-}
-func (repository healthDNSTestMonitorRepository) MarkMonitorAgentConnected(context.Context, string, string, string) error {
-	return nil
-}
-func (repository healthDNSTestMonitorRepository) MarkMonitorAgentDisconnected(context.Context, string, string, string) error {
-	return nil
-}
-func (repository healthDNSTestMonitorRepository) RecordMonitorConfigAck(context.Context, string, string, int, string) error {
-	return nil
-}
-func (repository healthDNSTestMonitorRepository) DeleteMonitor(_ context.Context, _ string, monitorID string, _ string) error {
-	repository.store.deletedMonitorID = monitorID
-	return nil
-}
-
-type healthDNSTestTargetGroupRepository struct {
-	store *healthDNSTestStore
-}
-
-func (repository healthDNSTestTargetGroupRepository) ListTargetGroupsByOrganization(context.Context, string) ([]repo.TargetGroupRecord, error) {
-	return nil, nil
-}
-func (repository healthDNSTestTargetGroupRepository) FindTargetGroupByID(_ context.Context, organizationID string, targetGroupID string) (repo.TargetGroupRecord, error) {
-	group, ok := repository.store.targetGroups[targetGroupID]
-	if ok && group.OrganizationID == organizationID {
-		return group, nil
-	}
-	return repo.TargetGroupRecord{}, repo.ErrNotFound
-}
-func (repository healthDNSTestTargetGroupRepository) CreateTargetGroup(context.Context, repo.TargetGroupRecord, []repo.TargetGroupMemberRecord, string, func() string) error {
-	return nil
-}
-func (repository healthDNSTestTargetGroupRepository) UpdateTargetGroup(context.Context, repo.TargetGroupRecord, []repo.TargetGroupMemberRecord, string, func() string) error {
-	return nil
-}
-func (repository healthDNSTestTargetGroupRepository) DeleteTargetGroup(context.Context, string, string, string) error {
-	return nil
-}
-
-type healthDNSTestHealthRepository struct {
-	store *healthDNSTestStore
-}
-
-func (repository healthDNSTestHealthRepository) ListHealthChecksByOrganization(context.Context, string) ([]repo.HealthCheckRecord, error) {
-	return repository.store.checks, nil
-}
-func (repository healthDNSTestHealthRepository) FindHealthCheckByID(_ context.Context, organizationID string, healthCheckID string) (repo.HealthCheckRecord, error) {
-	for _, check := range repository.store.checks {
-		if check.OrganizationID == organizationID && check.ID == healthCheckID {
-			return check, nil
-		}
-	}
-	return repo.HealthCheckRecord{}, repo.ErrNotFound
-}
-func (repository healthDNSTestHealthRepository) CreateHealthCheck(context.Context, repo.HealthCheckRecord, []repo.HealthCheckTargetRecord, []repo.HealthCheckMonitorScopeRecord, string, func() string) error {
-	return nil
-}
-func (repository healthDNSTestHealthRepository) UpdateHealthCheck(context.Context, repo.HealthCheckRecord, []repo.HealthCheckTargetRecord, []repo.HealthCheckMonitorScopeRecord, string, func() string) error {
-	return nil
-}
-func (repository healthDNSTestHealthRepository) SyncHealthCheckTargets(_ context.Context, organizationID string, healthCheckID string, targets []repo.HealthCheckTargetRecord, _ string, nextID func() string) error {
-	repository.store.syncedHealthTargets = true
-	for checkIndex := range repository.store.checks {
-		check := &repository.store.checks[checkIndex]
-		if check.OrganizationID != organizationID || check.ID != healthCheckID {
-			continue
-		}
-		existing := make(map[string]repo.HealthCheckTargetRecord)
-		updated := make([]repo.HealthCheckTargetRecord, 0)
-		for _, target := range check.Targets {
-			if target.ScopeType != "TARGET_GROUP" {
-				updated = append(updated, target)
-				continue
-			}
-			existing[target.TargetID+"\x00"+target.TargetGroupID] = target
-		}
-		for _, target := range targets {
-			if target.ScopeType != "TARGET_GROUP" {
-				continue
-			}
-			key := target.TargetID + "\x00" + target.TargetGroupID
-			merged, ok := existing[key]
-			if !ok {
-				merged = repo.HealthCheckTargetRecord{
-					ID:             nextID(),
-					OrganizationID: organizationID,
-					HealthCheckID:  healthCheckID,
-					ScopeType:      "TARGET_GROUP",
-					TargetID:       target.TargetID,
-					TargetGroupID:  target.TargetGroupID,
-				}
-			}
-			if targetRecord, ok := repository.store.targetsByID[target.TargetID]; ok {
-				merged.TargetName = targetRecord.Name
-				merged.TargetHost = targetRecord.Host
-				merged.TargetPort = targetRecord.Port
-			}
-			updated = append(updated, merged)
-		}
-		check.Targets = updated
-		return nil
-	}
-	return repo.ErrNotFound
-}
-func (repository healthDNSTestHealthRepository) DeleteHealthCheck(context.Context, string, string, string) error {
-	return nil
-}
-func (repository healthDNSTestHealthRepository) ListHealthResults(context.Context, string, string, int) ([]repo.HealthResultRecord, error) {
-	return nil, nil
-}
-func (repository healthDNSTestHealthRepository) RecordHealthResults(_ context.Context, _ string, results []repo.HealthResultRecord) error {
-	repository.store.results = append(repository.store.results, results...)
-	return nil
-}
-func (repository healthDNSTestHealthRepository) ListHealthEvaluationRulesByCheck(_ context.Context, organizationID string, healthCheckID string) ([]repo.HealthEvaluationRuleRecord, error) {
-	matches := make([]repo.HealthEvaluationRuleRecord, 0)
-	for _, rule := range repository.store.rules {
-		if rule.OrganizationID == organizationID && rule.HealthCheckID == healthCheckID {
-			matches = append(matches, rule)
-		}
-	}
-	return matches, nil
-}
-func (repository healthDNSTestHealthRepository) CreateHealthEvaluationRule(context.Context, repo.HealthEvaluationRuleRecord, []repo.HealthEventRecord) error {
-	return nil
-}
-func (repository healthDNSTestHealthRepository) DeleteHealthEvaluationRulesForDNSRecord(context.Context, string, string, string) error {
-	return nil
-}
-
-type healthDNSTestDNSCredentialRepository struct {
-	store *healthDNSTestStore
-}
-
-func (repository healthDNSTestDNSCredentialRepository) ListDNSCredentialsByOrganization(context.Context, string) ([]repo.DNSCredentialRecord, error) {
-	return nil, nil
-}
-func (repository healthDNSTestDNSCredentialRepository) FindDNSCredentialByID(_ context.Context, organizationID string, credentialID string) (repo.DNSCredentialRecord, error) {
-	if repository.store.credential.OrganizationID == organizationID && repository.store.credential.ID == credentialID {
-		return repository.store.credential, nil
-	}
-	return repo.DNSCredentialRecord{}, repo.ErrNotFound
-}
-func (repository healthDNSTestDNSCredentialRepository) CreateDNSCredential(context.Context, repo.DNSCredentialRecord) error {
-	return nil
-}
-func (repository healthDNSTestDNSCredentialRepository) UpdateDNSCredential(context.Context, repo.DNSCredentialRecord, bool) error {
-	return nil
-}
-func (repository healthDNSTestDNSCredentialRepository) DeleteDNSCredential(context.Context, string, string, string) error {
-	repository.store.deletedCredentialID = repository.store.credential.ID
-	return nil
-}
-
-type healthDNSTestDNSRecordRepository struct {
-	store *healthDNSTestStore
-}
-
-func (repository healthDNSTestDNSRecordRepository) ListDNSRecordsByOrganization(context.Context, string) ([]repo.DNSRecordRecord, error) {
-	if repository.store.record.ID == "" {
-		return nil, nil
-	}
-	return []repo.DNSRecordRecord{repository.store.record}, nil
-}
-func (repository healthDNSTestDNSRecordRepository) FindDNSRecordByID(_ context.Context, organizationID string, recordID string) (repo.DNSRecordRecord, error) {
-	if repository.store.record.OrganizationID == organizationID && repository.store.record.ID == recordID {
-		return repository.store.record, nil
-	}
-	return repo.DNSRecordRecord{}, repo.ErrNotFound
-}
-func (repository healthDNSTestDNSRecordRepository) CreateDNSRecord(_ context.Context, record repo.DNSRecordRecord) error {
-	repository.store.createdDNSRecord = record
-	repository.store.record = record
-	return nil
-}
-func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecord(_ context.Context, record repo.DNSRecordRecord) error {
-	repository.store.updatedDNSRecord = record
-	repository.store.record = record
-	return nil
-}
-func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecordLastApplied(_ context.Context, organizationID string, recordID string, values string, appliedAt string) error {
-	if repository.store.record.OrganizationID != organizationID || repository.store.record.ID != recordID {
-		return repo.ErrNotFound
-	}
-	repository.store.record.LastAppliedValuesJSON = values
-	repository.store.record.LastAppliedAt = appliedAt
-	return nil
-}
-func (repository healthDNSTestDNSRecordRepository) DeleteDNSRecord(context.Context, string, string, string) error {
-	return nil
-}
-
-func healthDNSTestIdentity(permissions ...string) InternalIdentity {
-	return InternalIdentity{
-		UserID:         "user_1",
-		OrganizationID: "org_1",
-		Permissions:    permissions,
-	}
-}
-
-type healthDNSTestAuditRepository struct{}
-
-func (repository healthDNSTestAuditRepository) CreateAuditLog(context.Context, repo.AuditLogRecord) error {
-	return nil
-}
-
-type healthDNSTestAuthorizer struct{}
-
-func (healthDNSTestAuthorizer) HasPermission(identity InternalIdentity, permission string) bool {
-	return stringSliceHas(identity.Permissions, permission)
-}
-
-func (healthDNSTestAuthorizer) AllowedNodeGroupIDs(InternalIdentity, string) map[string]bool {
-	return map[string]bool{}
-}
-
-func (healthDNSTestAuthorizer) EnsureCanDelegateRoleScopes(context.Context, repo.Repositories, InternalIdentity, []repo.ResourceScopeRecord) error {
-	return nil
 }

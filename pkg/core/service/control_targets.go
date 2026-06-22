@@ -98,6 +98,9 @@ func (service *ControlService) UpdateTarget(ctx context.Context, identity Intern
 			if err := ensureTargetNotUsedByRules(ctx, repositories, identity.OrganizationID, target.ID); err != nil {
 				return err
 			}
+			if err := ensureTargetNotUsedByHealthChecks(ctx, repositories, identity.OrganizationID, target.ID); err != nil {
+				return err
+			}
 		}
 		runtimeChanged := target.Host != input.Host || target.Port != input.Port || target.Enabled != input.Enabled
 		target.Name = input.Name

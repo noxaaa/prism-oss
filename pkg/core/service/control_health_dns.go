@@ -108,6 +108,9 @@ func (service *ControlService) DeleteHealthCheck(ctx context.Context, identity I
 		return ErrForbidden
 	}
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		if err := ensureHealthCheckHasNoActions(ctx, repositories, identity.OrganizationID, healthCheckID); err != nil {
+			return err
+		}
 		deletedAt := service.timestamp()
 		if err := repositories.HealthChecks().DeleteHealthCheck(ctx, identity.OrganizationID, healthCheckID, deletedAt); err != nil {
 			return err
@@ -115,6 +118,24 @@ func (service *ControlService) DeleteHealthCheck(ctx context.Context, identity I
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "health_checks.delete", "HEALTH_CHECK", healthCheckID, ""))
 	})
 	return mapServiceError(err)
+}
+
+func ensureHealthCheckHasNoActions(ctx context.Context, repositories repo.Repositories, organizationID string, healthCheckID string) error {
+	rules, err := repositories.HealthChecks().ListHealthEvaluationRulesByCheck(ctx, organizationID, healthCheckID)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+		for _, event := range rule.Events {
+			if event.Enabled {
+				return ErrConflict
+			}
+		}
+	}
+	return nil
 }
 
 func (service *ControlService) ListHealthResults(ctx context.Context, identity InternalIdentity, healthCheckID string) ([]HealthResultPayload, error) {
@@ -564,6 +585,7 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 		return DNSRecordPayload{}, err
 	}
 	var result DNSRecordPayload
+	var actions []pendingHealthAction
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if _, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, identity.OrganizationID, input.DNSCredentialID); err != nil {
 			return err
@@ -589,11 +611,25 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 			if err := service.createDNSHealthEvent(ctx, repositories, identity.OrganizationID, input, record, now); err != nil {
 				return err
 			}
+		} else {
+			action, ok, err := service.buildDNSRecordApplyAction(ctx, repositories, identity.OrganizationID, record, input.DesiredValues)
+			if err != nil {
+				return err
+			}
+			if ok {
+				actions = append(actions, action)
+			}
 		}
 		result = toDNSRecordPayload(record)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_records.create", "DNS_RECORD", record.ID, ""))
 	})
-	return result, mapServiceError(err)
+	if err != nil {
+		return DNSRecordPayload{}, mapServiceError(err)
+	}
+	if err := service.executeHealthActions(ctx, actions); err != nil {
+		return DNSRecordPayload{}, err
+	}
+	return result, nil
 }
 
 func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity InternalIdentity, recordID string, input DNSRecordMutationInput) (DNSRecordPayload, error) {
@@ -604,10 +640,16 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 		return DNSRecordPayload{}, err
 	}
 	var result DNSRecordPayload
+	var actions []pendingHealthAction
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		record, err := repositories.DNSRecords().FindDNSRecordByID(ctx, identity.OrganizationID, recordID)
 		if err != nil {
 			return err
+		}
+		if strings.TrimSpace(input.HealthCheckID) == "" {
+			if err := service.ensureCanRemoveDNSHealthBinding(ctx, repositories, identity, record.ID); err != nil {
+				return err
+			}
 		}
 		if _, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, identity.OrganizationID, input.DNSCredentialID); err != nil {
 			return err
@@ -629,11 +671,25 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 			if err := service.createDNSHealthEvent(ctx, repositories, identity.OrganizationID, input, record, record.UpdatedAt); err != nil {
 				return err
 			}
+		} else {
+			action, ok, err := service.buildDNSRecordApplyAction(ctx, repositories, identity.OrganizationID, record, input.DesiredValues)
+			if err != nil {
+				return err
+			}
+			if ok {
+				actions = append(actions, action)
+			}
 		}
 		result = toDNSRecordPayload(record)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_records.update", "DNS_RECORD", record.ID, ""))
 	})
-	return result, mapServiceError(err)
+	if err != nil {
+		return DNSRecordPayload{}, mapServiceError(err)
+	}
+	if err := service.executeHealthActions(ctx, actions); err != nil {
+		return DNSRecordPayload{}, err
+	}
+	return result, nil
 }
 
 func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity InternalIdentity, recordID string) error {
@@ -664,6 +720,49 @@ func (service *ControlService) ensureDNSRecordMutationAllowed(identity InternalI
 		return nil
 	}
 	return ErrForbidden
+}
+
+func (service *ControlService) ensureCanRemoveDNSHealthBinding(ctx context.Context, repositories repo.Repositories, identity InternalIdentity, dnsRecordID string) error {
+	if service.hasPermission(identity, string(domain.PermissionHealthChecksRead)) || service.hasPermission(identity, string(domain.PermissionHealthChecksManage)) {
+		return nil
+	}
+	hasRules, err := dnsRecordHasHealthActions(ctx, repositories, identity.OrganizationID, dnsRecordID)
+	if err != nil {
+		return err
+	}
+	if hasRules {
+		return ErrForbidden
+	}
+	return nil
+}
+
+func dnsRecordHasHealthActions(ctx context.Context, repositories repo.Repositories, organizationID string, dnsRecordID string) (bool, error) {
+	checks, err := repositories.HealthChecks().ListHealthChecksByOrganization(ctx, organizationID)
+	if err != nil {
+		return false, err
+	}
+	for _, check := range checks {
+		rules, err := repositories.HealthChecks().ListHealthEvaluationRulesByCheck(ctx, organizationID, check.ID)
+		if err != nil {
+			return false, err
+		}
+		for _, rule := range rules {
+			for _, event := range rule.Events {
+				if healthEventReferencesDNSRecord(event, dnsRecordID) {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
+func healthEventReferencesDNSRecord(event repo.HealthEventRecord, dnsRecordID string) bool {
+	var config dnsHealthActionConfig
+	if err := json.Unmarshal([]byte(event.ConfigJSON), &config); err != nil {
+		return false
+	}
+	return strings.TrimSpace(config.DNSRecordID) == dnsRecordID
 }
 
 func hasMultipleDistinctValues(values []string) bool {
@@ -716,88 +815,30 @@ func (service *ControlService) createDNSHealthEvent(ctx context.Context, reposit
 	return repositories.HealthChecks().CreateHealthEvaluationRule(ctx, rule, []repo.HealthEventRecord{event})
 }
 
-func (service *ControlService) buildHealthActions(ctx context.Context, repositories repo.Repositories, organizationID string, results []repo.HealthResultRecord) ([]pendingHealthAction, error) {
-	actions := make([]pendingHealthAction, 0)
-	seenRulesByCheck := map[string][]repo.HealthEvaluationRuleRecord{}
-	seenChecksByID := map[string]repo.HealthCheckRecord{}
-	for _, result := range aggregateHealthResultsByCheck(results) {
-		rules, ok := seenRulesByCheck[result.HealthCheckID]
-		if !ok {
-			var err error
-			rules, err = repositories.HealthChecks().ListHealthEvaluationRulesByCheck(ctx, organizationID, result.HealthCheckID)
-			if err != nil {
-				return nil, err
-			}
-			seenRulesByCheck[result.HealthCheckID] = rules
-		}
-		if len(rules) == 0 {
-			continue
-		}
-		check, ok := seenChecksByID[result.HealthCheckID]
-		if !ok {
-			var err error
-			check, err = repositories.HealthChecks().FindHealthCheckByID(ctx, organizationID, result.HealthCheckID)
-			if err != nil {
-				return nil, err
-			}
-			seenChecksByID[result.HealthCheckID] = check
-		}
-		for _, rule := range rules {
-			if !rule.Enabled {
-				continue
-			}
-			for _, event := range rule.Events {
-				if !event.Enabled {
-					continue
-				}
-				executor := service.healthActionExecutorForType(event.EventType)
-				if executor == nil {
-					return nil, ErrInvalidInput
-				}
-				payload, ok, err := executor.BuildAction(ctx, repositories, HealthActionExecutionInput{
-					OrganizationID: organizationID,
-					HealthCheck:    check,
-					Rule:           rule,
-					Event:          event,
-					Result:         result,
-				})
-				if err != nil {
-					return nil, err
-				}
-				if !ok {
-					continue
-				}
-				actions = append(actions, pendingHealthAction{executor: executor, payload: payload})
-			}
-		}
+func (service *ControlService) buildDNSRecordApplyAction(ctx context.Context, repositories repo.Repositories, organizationID string, record repo.DNSRecordRecord, values []string) (pendingHealthAction, bool, error) {
+	nextApplied := stringListJSON(values)
+	lastApplied := stringListJSON(parseStringListJSON(record.LastAppliedValuesJSON))
+	if nextApplied == lastApplied {
+		return pendingHealthAction{}, false, nil
 	}
-	return actions, nil
-}
-
-func aggregateHealthResultsByCheck(results []repo.HealthResultRecord) []repo.HealthResultRecord {
-	byCheck := make(map[string]repo.HealthResultRecord)
-	order := make([]string, 0)
-	for _, result := range results {
-		status := strings.ToUpper(strings.TrimSpace(result.Status))
-		if status != "ONLINE" && status != "OFFLINE" {
-			continue
-		}
-		result.Status = status
-		current, ok := byCheck[result.HealthCheckID]
-		if !ok {
-			byCheck[result.HealthCheckID] = result
-			order = append(order, result.HealthCheckID)
-			continue
-		}
-		if status == "OFFLINE" || current.Status != "OFFLINE" {
-			byCheck[result.HealthCheckID] = result
-		}
+	credential, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, organizationID, record.DNSCredentialID)
+	if err != nil {
+		return pendingHealthAction{}, false, err
 	}
-	aggregated := make([]repo.HealthResultRecord, 0, len(order))
-	for _, healthCheckID := range order {
-		aggregated = append(aggregated, byCheck[healthCheckID])
-	}
-	return aggregated
+	return pendingHealthAction{
+		executor: dnsHealthActionExecutor{service: service},
+		payload: dnsEventAction{
+			OrganizationID:    organizationID,
+			DNSRecordID:       record.ID,
+			Provider:          credential.Provider,
+			EncryptedSecret:   credential.EncryptedSecret,
+			Zone:              record.Zone,
+			RecordName:        record.RecordName,
+			RecordType:        record.RecordType,
+			Values:            values,
+			LastAppliedValues: nextApplied,
+		},
+	}, true, nil
 }
 
 func normalizedConfigJSON(value string) string {

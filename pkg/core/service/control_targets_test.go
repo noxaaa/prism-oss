@@ -228,6 +228,68 @@ func TestControlServiceRejectsDeletingTargetUsedByHealthCheckedTargetGroup(t *te
 	}
 }
 
+func TestControlServiceRejectsDisablingTargetUsedByHealthCheck(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	store.healthChecks = []repo.HealthCheckRecord{{
+		ID:             "health_1",
+		OrganizationID: "org_1",
+		Targets: []repo.HealthCheckTargetRecord{{
+			ScopeType: "TARGET",
+			TargetID:  "target_a",
+		}},
+	}}
+	control := NewControlService(store)
+
+	_, err := control.UpdateTarget(context.Background(), targetGroupServiceTestIdentity(), "target_a", TargetMutationInput{
+		Name:    "A",
+		Host:    "10.0.0.1",
+		Port:    443,
+		Enabled: false,
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	if !store.targets["target_a"].Enabled {
+		t.Fatalf("target must not be disabled while health checks reference it")
+	}
+}
+
+func TestControlServiceRejectsDisablingTargetUsedByHealthCheckedTargetGroup(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	store.targetGroups["group_health"] = repo.TargetGroupRecord{
+		ID:             "group_health",
+		OrganizationID: "org_1",
+		Name:           "Health checked pool",
+		Scheduler:      "PRIORITY_IPHASH",
+		Members: []repo.TargetGroupMemberRecord{{
+			TargetID: "target_a",
+			Enabled:  true,
+		}},
+	}
+	store.healthChecks = []repo.HealthCheckRecord{{
+		ID:             "health_1",
+		OrganizationID: "org_1",
+		Targets: []repo.HealthCheckTargetRecord{{
+			ScopeType:     "TARGET_GROUP",
+			TargetGroupID: "group_health",
+		}},
+	}}
+	control := NewControlService(store)
+
+	_, err := control.UpdateTarget(context.Background(), targetGroupServiceTestIdentity(), "target_a", TargetMutationInput{
+		Name:    "A",
+		Host:    "10.0.0.1",
+		Port:    443,
+		Enabled: false,
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	if !store.targets["target_a"].Enabled {
+		t.Fatalf("target must not be disabled while a health-checked group references it")
+	}
+}
+
 func newTargetGroupServiceTestStore() *targetGroupServiceTestStore {
 	return &targetGroupServiceTestStore{
 		targets: map[string]repo.TargetRecord{
@@ -323,7 +385,8 @@ func (targets targetGroupServiceTestTargetRepository) CreateTarget(context.Conte
 	return nil
 }
 
-func (targets targetGroupServiceTestTargetRepository) UpdateTarget(context.Context, repo.TargetRecord) error {
+func (targets targetGroupServiceTestTargetRepository) UpdateTarget(_ context.Context, target repo.TargetRecord) error {
+	targets.store.targets[target.ID] = target
 	return nil
 }
 
@@ -457,6 +520,9 @@ func (healthChecks targetGroupServiceTestHealthRepository) DeleteHealthCheck(con
 	return nil
 }
 func (healthChecks targetGroupServiceTestHealthRepository) ListHealthResults(context.Context, string, string, int) ([]repo.HealthResultRecord, error) {
+	return nil, nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) ListLatestHealthResultsByCheck(context.Context, string, string) ([]repo.HealthResultRecord, error) {
 	return nil, nil
 }
 func (healthChecks targetGroupServiceTestHealthRepository) RecordHealthResults(context.Context, string, []repo.HealthResultRecord) error {
