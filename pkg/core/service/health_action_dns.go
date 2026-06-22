@@ -66,7 +66,7 @@ func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, reposit
 		}
 	case "DNS_DELETE_OFFLINE":
 		if status == "OFFLINE" {
-			values = dnsValuesWithoutOfflineTarget(record.RecordType, desiredValues, input.HealthCheck, input.Result)
+			values = dnsValuesWithoutOfflineTargets(record.RecordType, desiredValues, input.HealthCheck, input.Results)
 		}
 	case "DNS_DELETE_ALL":
 		if status == "OFFLINE" {
@@ -152,25 +152,33 @@ func stringListJSON(values []string) string {
 	return string(data)
 }
 
-func dnsValuesWithoutOfflineTarget(recordType string, values []string, check repo.HealthCheckRecord, result repo.HealthResultRecord) []string {
+func dnsValuesWithoutOfflineTargets(recordType string, values []string, check repo.HealthCheckRecord, results []repo.HealthResultRecord) []string {
 	recordType = strings.ToUpper(strings.TrimSpace(recordType))
 	if recordType != "A" && recordType != "AAAA" {
 		return values
 	}
-	offlineValue := ""
-	for _, target := range check.Targets {
-		if target.ID != result.HealthCheckTargetID && target.TargetID != result.TargetID {
+	offlineValues := map[string]bool{}
+	offlineResults := map[string]bool{}
+	for _, result := range results {
+		if strings.ToUpper(strings.TrimSpace(result.Status)) != "OFFLINE" {
 			continue
 		}
-		offlineValue = strings.TrimSpace(target.TargetHost)
-		break
+		offlineResults[result.HealthCheckTargetID+"\x00"+result.TargetID] = true
 	}
-	if offlineValue == "" {
+	for _, target := range check.Targets {
+		if !offlineResults[target.ID+"\x00"+target.TargetID] {
+			continue
+		}
+		if value := strings.TrimSpace(target.TargetHost); value != "" {
+			offlineValues[value] = true
+		}
+	}
+	if len(offlineValues) == 0 {
 		return values
 	}
 	next := make([]string, 0, len(values))
 	for _, value := range values {
-		if strings.TrimSpace(value) == offlineValue {
+		if offlineValues[strings.TrimSpace(value)] {
 			continue
 		}
 		next = append(next, value)

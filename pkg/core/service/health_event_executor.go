@@ -17,6 +17,7 @@ type HealthActionExecutionInput struct {
 	Rule           repo.HealthEvaluationRuleRecord
 	Event          repo.HealthEventRecord
 	Result         repo.HealthResultRecord
+	Results        []repo.HealthResultRecord
 }
 
 type HealthActionExecutor interface {

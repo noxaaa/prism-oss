@@ -393,7 +393,7 @@ func TestDeleteDNSRecordDoesNotApplyProviderBeforeLocalStateCommits(t *testing.T
 			RecordType:            "A",
 			LastAppliedValuesJSON: `["192.0.2.1"]`,
 		},
-		deleteDNSRecordErr: repo.ErrConflict,
+		markDNSRecordDeletePendingErr: repo.ErrConflict,
 	}
 	provider := &healthDNSTestProvider{}
 	control := NewControlServiceWithOptions(store, ControlServiceOptions{

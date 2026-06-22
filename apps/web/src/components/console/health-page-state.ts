@@ -13,7 +13,7 @@ export function canReadHealthChecks(session: ControlSession | null): boolean {
 export function canUseHealthCheckEditor(session: ControlSession | null): boolean {
   return hasPermission(session, "health_checks.manage")
     && hasAnyPermission(session, ["targets.read", "targets.manage"])
-    && hasAnyPermission(session, ["monitors.read", "monitors.manage"]);
+    && hasPermission(session, "monitors.read");
 }
 
 export function healthPageResourceState(input: {

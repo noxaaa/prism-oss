@@ -179,12 +179,20 @@ CREATE TABLE dns_records (
   desired_values_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   last_applied_values_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   last_applied_at timestamptz,
+  pending_retire_dns_credential_id uuid,
+  pending_retire_zone text,
+  pending_retire_record_name text,
+  pending_retire_record_type text,
+  pending_retire_values_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+  pending_retire_at timestamptz,
+  provider_delete_pending_at timestamptz,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   deleted_at timestamptz,
   CHECK (record_type IN ('A', 'AAAA', 'CNAME')),
   CHECK (managed_mode = 'CUSTOMER_CREDENTIAL'),
-  FOREIGN KEY (organization_id, dns_credential_id) REFERENCES dns_credentials(organization_id, id)
+  FOREIGN KEY (organization_id, dns_credential_id) REFERENCES dns_credentials(organization_id, id),
+  FOREIGN KEY (organization_id, pending_retire_dns_credential_id) REFERENCES dns_credentials(organization_id, id)
 );
 
 CREATE UNIQUE INDEX uniq_dns_records_active_name

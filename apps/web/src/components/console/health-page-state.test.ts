@@ -19,6 +19,7 @@ describe("health page state", () => {
 
   it("requires dependent target and monitor permissions before loading create selectors", () => {
     expect(canUseHealthCheckEditor(sessionWith(["health_checks.read", "health_checks.manage"]))).toBe(false);
+    expect(canUseHealthCheckEditor(sessionWith(["health_checks.read", "health_checks.manage", "targets.read", "monitors.manage"]))).toBe(false);
     expect(canUseHealthCheckEditor(sessionWith(["health_checks.read", "health_checks.manage", "targets.read", "monitors.read"]))).toBe(true);
   });
 

@@ -72,27 +72,28 @@ func (executor *recordingHealthActionExecutor) Execute(_ context.Context, action
 }
 
 type healthDNSTestStore struct {
-	results               []repo.HealthResultRecord
-	rules                 []repo.HealthEvaluationRuleRecord
-	credential            repo.DNSCredentialRecord
-	record                repo.DNSRecordRecord
-	createdDNSRecord      repo.DNSRecordRecord
-	updatedDNSRecord      repo.DNSRecordRecord
-	updateDNSRecordErr    error
-	deleteDNSRecordErr    error
-	monitor               repo.MonitorRecord
-	monitors              []repo.MonitorRecord
-	checks                []repo.HealthCheckRecord
-	monitorGroups         map[string]repo.MonitorGroupRecord
-	targetGroups          map[string]repo.TargetGroupRecord
-	targetsByID           map[string]repo.TargetRecord
-	syncedHealthTargets   bool
-	deletedHealthCheckID  string
-	deletedRulesRecordID  string
-	deletedDNSRecordID    string
-	deletedCredentialID   string
-	deletedMonitorID      string
-	deletedMonitorGroupID string
+	results                       []repo.HealthResultRecord
+	rules                         []repo.HealthEvaluationRuleRecord
+	credential                    repo.DNSCredentialRecord
+	record                        repo.DNSRecordRecord
+	createdDNSRecord              repo.DNSRecordRecord
+	updatedDNSRecord              repo.DNSRecordRecord
+	updateDNSRecordErr            error
+	deleteDNSRecordErr            error
+	markDNSRecordDeletePendingErr error
+	monitor                       repo.MonitorRecord
+	monitors                      []repo.MonitorRecord
+	checks                        []repo.HealthCheckRecord
+	monitorGroups                 map[string]repo.MonitorGroupRecord
+	targetGroups                  map[string]repo.TargetGroupRecord
+	targetsByID                   map[string]repo.TargetRecord
+	syncedHealthTargets           bool
+	deletedHealthCheckID          string
+	deletedRulesRecordID          string
+	deletedDNSRecordID            string
+	deletedCredentialID           string
+	deletedMonitorID              string
+	deletedMonitorGroupID         string
 }
 
 func (store *healthDNSTestStore) WithinTx(ctx context.Context, fn func(context.Context, repo.Repositories) error) error {
@@ -491,6 +492,32 @@ func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecordLastApplied(_ 
 	}
 	repository.store.record.LastAppliedValuesJSON = values
 	repository.store.record.LastAppliedAt = appliedAt
+	return nil
+}
+
+func (repository healthDNSTestDNSRecordRepository) ClearDNSRecordPendingRetire(_ context.Context, organizationID string, recordID string, updatedAt string) error {
+	if repository.store.record.OrganizationID != organizationID || repository.store.record.ID != recordID {
+		return repo.ErrNotFound
+	}
+	repository.store.record.PendingRetireDNSCredentialID = ""
+	repository.store.record.PendingRetireZone = ""
+	repository.store.record.PendingRetireRecordName = ""
+	repository.store.record.PendingRetireRecordType = ""
+	repository.store.record.PendingRetireValuesJSON = "[]"
+	repository.store.record.PendingRetireAt = ""
+	repository.store.record.UpdatedAt = updatedAt
+	return nil
+}
+
+func (repository healthDNSTestDNSRecordRepository) MarkDNSRecordProviderDeletePending(_ context.Context, organizationID string, recordID string, pendingAt string) error {
+	if repository.store.markDNSRecordDeletePendingErr != nil {
+		return repository.store.markDNSRecordDeletePendingErr
+	}
+	if repository.store.record.OrganizationID != organizationID || repository.store.record.ID != recordID {
+		return repo.ErrNotFound
+	}
+	repository.store.record.ProviderDeletePendingAt = pendingAt
+	repository.store.record.UpdatedAt = pendingAt
 	return nil
 }
 

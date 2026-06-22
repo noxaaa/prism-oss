@@ -605,7 +605,13 @@ func scanDNSCredentialRows(rows *sql.Rows) (DNSCredentialRecord, error) {
 
 func (store *PostgresStore) ListDNSRecordsByOrganization(ctx context.Context, organizationID string) ([]DNSRecordRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, dns_credential_id, zone, record_name, record_type, managed_mode, desired_values_json::text, last_applied_values_json::text, COALESCE(last_applied_at::text, ''), created_at, updated_at, COALESCE(deleted_at::text, '')
+		SELECT id, organization_id, dns_credential_id, zone, record_name, record_type, managed_mode,
+		       desired_values_json::text, last_applied_values_json::text, COALESCE(last_applied_at::text, ''),
+		       COALESCE(pending_retire_dns_credential_id::text, ''), COALESCE(pending_retire_zone, ''),
+		       COALESCE(pending_retire_record_name, ''), COALESCE(pending_retire_record_type, ''),
+		       pending_retire_values_json::text, COALESCE(pending_retire_at::text, ''),
+		       COALESCE(provider_delete_pending_at::text, ''),
+		       created_at, updated_at, COALESCE(deleted_at::text, '')
 		FROM dns_records
 		WHERE organization_id = ? AND deleted_at IS NULL
 		ORDER BY zone, record_name, record_type
@@ -627,7 +633,13 @@ func (store *PostgresStore) ListDNSRecordsByOrganization(ctx context.Context, or
 
 func (store *PostgresStore) FindDNSRecordByID(ctx context.Context, organizationID string, recordID string) (DNSRecordRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
-		SELECT id, organization_id, dns_credential_id, zone, record_name, record_type, managed_mode, desired_values_json::text, last_applied_values_json::text, COALESCE(last_applied_at::text, ''), created_at, updated_at, COALESCE(deleted_at::text, '')
+		SELECT id, organization_id, dns_credential_id, zone, record_name, record_type, managed_mode,
+		       desired_values_json::text, last_applied_values_json::text, COALESCE(last_applied_at::text, ''),
+		       COALESCE(pending_retire_dns_credential_id::text, ''), COALESCE(pending_retire_zone, ''),
+		       COALESCE(pending_retire_record_name, ''), COALESCE(pending_retire_record_type, ''),
+		       pending_retire_values_json::text, COALESCE(pending_retire_at::text, ''),
+		       COALESCE(provider_delete_pending_at::text, ''),
+		       created_at, updated_at, COALESCE(deleted_at::text, '')
 		FROM dns_records
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, organizationID, recordID)
@@ -652,9 +664,17 @@ func (store *PostgresStore) UpdateDNSRecord(ctx context.Context, record DNSRecor
 		    desired_values_json = ?::jsonb,
 		    last_applied_values_json = ?::jsonb,
 		    last_applied_at = NULLIF(?, '')::timestamptz,
+		    pending_retire_dns_credential_id = NULLIF(?, '')::uuid,
+		    pending_retire_zone = NULLIF(?, ''),
+		    pending_retire_record_name = NULLIF(?, ''),
+		    pending_retire_record_type = NULLIF(?, ''),
+		    pending_retire_values_json = ?::jsonb,
+		    pending_retire_at = NULLIF(?, '')::timestamptz,
 		    updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, record.DNSCredentialID, record.Zone, record.RecordName, record.RecordType, record.ManagedMode, record.DesiredValuesJSON, record.LastAppliedValuesJSON, record.LastAppliedAt, record.UpdatedAt, record.OrganizationID, record.ID)
+	`, record.DNSCredentialID, record.Zone, record.RecordName, record.RecordType, record.ManagedMode, record.DesiredValuesJSON, record.LastAppliedValuesJSON, record.LastAppliedAt,
+		record.PendingRetireDNSCredentialID, record.PendingRetireZone, record.PendingRetireRecordName, record.PendingRetireRecordType, nonEmptyJSONList(record.PendingRetireValuesJSON), record.PendingRetireAt,
+		record.UpdatedAt, record.OrganizationID, record.ID)
 	if err != nil {
 		return mapWriteError(err)
 	}
@@ -667,6 +687,36 @@ func (store *PostgresStore) UpdateDNSRecordLastApplied(ctx context.Context, orga
 		SET last_applied_values_json = ?::jsonb, last_applied_at = ?, updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, lastAppliedValuesJSON, lastAppliedAt, lastAppliedAt, organizationID, recordID)
+	if err != nil {
+		return err
+	}
+	return requireAffected(result)
+}
+
+func (store *PostgresStore) ClearDNSRecordPendingRetire(ctx context.Context, organizationID string, recordID string, updatedAt string) error {
+	result, err := store.db.ExecContext(ctx, `
+		UPDATE dns_records
+		SET pending_retire_dns_credential_id = NULL,
+		    pending_retire_zone = NULL,
+		    pending_retire_record_name = NULL,
+		    pending_retire_record_type = NULL,
+		    pending_retire_values_json = '[]'::jsonb,
+		    pending_retire_at = NULL,
+		    updated_at = ?
+		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
+	`, updatedAt, organizationID, recordID)
+	if err != nil {
+		return err
+	}
+	return requireAffected(result)
+}
+
+func (store *PostgresStore) MarkDNSRecordProviderDeletePending(ctx context.Context, organizationID string, recordID string, pendingAt string) error {
+	result, err := store.db.ExecContext(ctx, `
+		UPDATE dns_records
+		SET provider_delete_pending_at = ?, updated_at = ?
+		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
+	`, pendingAt, pendingAt, organizationID, recordID)
 	if err != nil {
 		return err
 	}
@@ -690,7 +740,28 @@ func (store *PostgresStore) DeleteDNSRecord(ctx context.Context, organizationID 
 
 func scanDNSRecord(row rowScanner) (DNSRecordRecord, error) {
 	var record DNSRecordRecord
-	if err := row.Scan(&record.ID, &record.OrganizationID, &record.DNSCredentialID, &record.Zone, &record.RecordName, &record.RecordType, &record.ManagedMode, &record.DesiredValuesJSON, &record.LastAppliedValuesJSON, &record.LastAppliedAt, &record.CreatedAt, &record.UpdatedAt, &record.DeletedAt); err != nil {
+	if err := row.Scan(
+		&record.ID,
+		&record.OrganizationID,
+		&record.DNSCredentialID,
+		&record.Zone,
+		&record.RecordName,
+		&record.RecordType,
+		&record.ManagedMode,
+		&record.DesiredValuesJSON,
+		&record.LastAppliedValuesJSON,
+		&record.LastAppliedAt,
+		&record.PendingRetireDNSCredentialID,
+		&record.PendingRetireZone,
+		&record.PendingRetireRecordName,
+		&record.PendingRetireRecordType,
+		&record.PendingRetireValuesJSON,
+		&record.PendingRetireAt,
+		&record.ProviderDeletePendingAt,
+		&record.CreatedAt,
+		&record.UpdatedAt,
+		&record.DeletedAt,
+	); err != nil {
 		return DNSRecordRecord{}, mapReadError(err)
 	}
 	return record, nil
@@ -698,4 +769,11 @@ func scanDNSRecord(row rowScanner) (DNSRecordRecord, error) {
 
 func scanDNSRecordRows(rows *sql.Rows) (DNSRecordRecord, error) {
 	return scanDNSRecord(rows)
+}
+
+func nonEmptyJSONList(value string) string {
+	if value == "" {
+		return "[]"
+	}
+	return value
 }

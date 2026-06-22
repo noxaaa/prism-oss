@@ -142,6 +142,8 @@ type DNSRecordRepository interface {
 	CreateDNSRecord(ctx context.Context, record DNSRecordRecord) error
 	UpdateDNSRecord(ctx context.Context, record DNSRecordRecord) error
 	UpdateDNSRecordLastApplied(ctx context.Context, organizationID string, recordID string, lastAppliedValuesJSON string, lastAppliedAt string) error
+	ClearDNSRecordPendingRetire(ctx context.Context, organizationID string, recordID string, updatedAt string) error
+	MarkDNSRecordProviderDeletePending(ctx context.Context, organizationID string, recordID string, pendingAt string) error
 	DeleteDNSRecord(ctx context.Context, organizationID string, recordID string, deletedAt string) error
 }
 
@@ -440,19 +442,26 @@ type DNSCredentialRecord struct {
 }
 
 type DNSRecordRecord struct {
-	ID                    string
-	OrganizationID        string
-	DNSCredentialID       string
-	Zone                  string
-	RecordName            string
-	RecordType            string
-	ManagedMode           string
-	DesiredValuesJSON     string
-	LastAppliedValuesJSON string
-	LastAppliedAt         string
-	CreatedAt             string
-	UpdatedAt             string
-	DeletedAt             string
+	ID                           string
+	OrganizationID               string
+	DNSCredentialID              string
+	Zone                         string
+	RecordName                   string
+	RecordType                   string
+	ManagedMode                  string
+	DesiredValuesJSON            string
+	LastAppliedValuesJSON        string
+	LastAppliedAt                string
+	PendingRetireDNSCredentialID string
+	PendingRetireZone            string
+	PendingRetireRecordName      string
+	PendingRetireRecordType      string
+	PendingRetireValuesJSON      string
+	PendingRetireAt              string
+	ProviderDeletePendingAt      string
+	CreatedAt                    string
+	UpdatedAt                    string
+	DeletedAt                    string
 }
 
 type TargetRecord struct {

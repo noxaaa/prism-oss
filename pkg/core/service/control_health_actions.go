@@ -33,7 +33,7 @@ func (service *ControlService) buildHealthActions(ctx context.Context, repositor
 			}
 			seenChecksByID[result.HealthCheckID] = check
 		}
-		evaluationResult, err := service.latestHealthEvaluationResult(ctx, repositories, organizationID, check, result)
+		evaluation, err := service.latestHealthEvaluation(ctx, repositories, organizationID, check, result)
 		if err != nil {
 			return nil, err
 		}
@@ -54,7 +54,8 @@ func (service *ControlService) buildHealthActions(ctx context.Context, repositor
 					HealthCheck:    check,
 					Rule:           rule,
 					Event:          event,
-					Result:         evaluationResult,
+					Result:         evaluation.Result,
+					Results:        evaluation.Results,
 				})
 				if err != nil {
 					return nil, err
@@ -69,18 +70,23 @@ func (service *ControlService) buildHealthActions(ctx context.Context, repositor
 	return actions, nil
 }
 
-func (service *ControlService) latestHealthEvaluationResult(ctx context.Context, repositories repo.Repositories, organizationID string, check repo.HealthCheckRecord, fallback repo.HealthResultRecord) (repo.HealthResultRecord, error) {
+type latestHealthEvaluation struct {
+	Result  repo.HealthResultRecord
+	Results []repo.HealthResultRecord
+}
+
+func (service *ControlService) latestHealthEvaluation(ctx context.Context, repositories repo.Repositories, organizationID string, check repo.HealthCheckRecord, fallback repo.HealthResultRecord) (latestHealthEvaluation, error) {
 	latest, err := repositories.HealthChecks().ListLatestHealthResultsByCheck(ctx, organizationID, check.ID)
 	if err != nil {
-		return repo.HealthResultRecord{}, err
+		return latestHealthEvaluation{}, err
 	}
 	activeMonitorGroupIDs, err := activeMonitorGroupIDSet(ctx, repositories, organizationID)
 	if err != nil {
-		return repo.HealthResultRecord{}, err
+		return latestHealthEvaluation{}, err
 	}
 	monitors, err := repositories.Monitors().ListMonitorsByOrganization(ctx, organizationID)
 	if err != nil {
-		return repo.HealthResultRecord{}, err
+		return latestHealthEvaluation{}, err
 	}
 	scopedMonitors := make(map[string]bool, len(monitors))
 	for _, monitor := range monitors {
@@ -112,7 +118,7 @@ func (service *ControlService) latestHealthEvaluationResult(ctx context.Context,
 	}
 	if len(candidates) == 0 {
 		fallback.Status = strings.ToUpper(strings.TrimSpace(fallback.Status))
-		return fallback, nil
+		return latestHealthEvaluation{Result: fallback, Results: []repo.HealthResultRecord{fallback}}, nil
 	}
 	selected := candidates[0]
 	for _, result := range candidates {
@@ -124,7 +130,7 @@ func (service *ControlService) latestHealthEvaluationResult(ctx context.Context,
 	if selected.Status != "OFFLINE" {
 		selected.Status = "ONLINE"
 	}
-	return selected, nil
+	return latestHealthEvaluation{Result: selected, Results: candidates}, nil
 }
 
 func aggregateHealthResultsByCheck(results []repo.HealthResultRecord) []repo.HealthResultRecord {
