@@ -155,6 +155,20 @@ type HealthResultInput struct {
 	ObservedAt          string
 }
 
+type HealthEvaluationRuleMutationInput struct {
+	HealthCheckID  string
+	Name           string
+	Enabled        bool
+	ExpressionJSON string
+	Events         []HealthEventMutationInput
+}
+
+type HealthEventMutationInput struct {
+	EventType  string
+	ConfigJSON string
+	Enabled    bool
+}
+
 type DNSCredentialMutationInput struct {
 	Name     string
 	Provider string
@@ -400,6 +414,26 @@ type HealthResultPayload struct {
 	ErrorMessage        string `json:"error_message,omitempty"`
 	ObservedAt          string `json:"observed_at"`
 	CreatedAt           string `json:"created_at"`
+}
+
+type HealthEvaluationRulePayload struct {
+	ID             string               `json:"id"`
+	HealthCheckID  string               `json:"health_check_id"`
+	Name           string               `json:"name"`
+	Enabled        bool                 `json:"enabled"`
+	ExpressionJSON string               `json:"expression_json"`
+	Events         []HealthEventPayload `json:"events"`
+	CreatedAt      string               `json:"created_at"`
+	UpdatedAt      string               `json:"updated_at"`
+}
+
+type HealthEventPayload struct {
+	ID         string `json:"id"`
+	EventType  string `json:"event_type"`
+	ConfigJSON string `json:"config_json"`
+	Enabled    bool   `json:"enabled"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
 }
 
 type DNSCredentialPayload struct {

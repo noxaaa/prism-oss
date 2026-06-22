@@ -901,9 +901,6 @@ func hasMultipleDistinctValues(values []string) bool {
 }
 
 func (service *ControlService) createDNSHealthEvent(ctx context.Context, repositories repo.Repositories, organizationID string, input DNSRecordMutationInput, record repo.DNSRecordRecord, now string) error {
-	if _, err := repositories.HealthChecks().FindHealthCheckByID(ctx, organizationID, input.HealthCheckID); err != nil {
-		return err
-	}
 	configJSON, err := json.Marshal(dnsHealthActionConfig{DNSRecordID: record.ID, FailoverValues: input.FailoverValues})
 	if err != nil {
 		return err
@@ -912,27 +909,18 @@ func (service *ControlService) createDNSHealthEvent(ctx context.Context, reposit
 	if eventType == "" {
 		eventType = "DNS_FAILOVER"
 	}
-	rule := repo.HealthEvaluationRuleRecord{
-		ID:             service.newID(),
-		OrganizationID: organizationID,
+	_, err = service.createHealthEvaluationRule(ctx, repositories, organizationID, HealthEvaluationRuleMutationInput{
 		HealthCheckID:  input.HealthCheckID,
 		Name:           record.RecordName + " DNS failover",
 		Enabled:        true,
 		ExpressionJSON: `{"mode":"latest_result"}`,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}
-	event := repo.HealthEventRecord{
-		ID:                     service.newID(),
-		OrganizationID:         organizationID,
-		HealthEvaluationRuleID: rule.ID,
-		EventType:              eventType,
-		ConfigJSON:             string(configJSON),
-		Enabled:                true,
-		CreatedAt:              now,
-		UpdatedAt:              now,
-	}
-	return repositories.HealthChecks().CreateHealthEvaluationRule(ctx, rule, []repo.HealthEventRecord{event})
+		Events: []HealthEventMutationInput{{
+			EventType:  eventType,
+			ConfigJSON: string(configJSON),
+			Enabled:    true,
+		}},
+	}, now)
+	return err
 }
 
 func (service *ControlService) buildDNSRecordProviderAction(ctx context.Context, repositories repo.Repositories, organizationID string, record repo.DNSRecordRecord, values []string, force bool) (dnsEventAction, bool, error) {

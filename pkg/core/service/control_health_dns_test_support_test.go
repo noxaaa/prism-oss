@@ -74,6 +74,8 @@ func (executor *recordingHealthActionExecutor) Execute(_ context.Context, action
 type healthDNSTestStore struct {
 	results                       []repo.HealthResultRecord
 	rules                         []repo.HealthEvaluationRuleRecord
+	createdHealthRule             repo.HealthEvaluationRuleRecord
+	createdHealthEvents           []repo.HealthEventRecord
 	credential                    repo.DNSCredentialRecord
 	record                        repo.DNSRecordRecord
 	createdDNSRecord              repo.DNSRecordRecord
@@ -416,7 +418,11 @@ func (repository healthDNSTestHealthRepository) ListHealthEvaluationRulesByCheck
 	return matches, nil
 }
 
-func (repository healthDNSTestHealthRepository) CreateHealthEvaluationRule(context.Context, repo.HealthEvaluationRuleRecord, []repo.HealthEventRecord) error {
+func (repository healthDNSTestHealthRepository) CreateHealthEvaluationRule(_ context.Context, rule repo.HealthEvaluationRuleRecord, events []repo.HealthEventRecord) error {
+	rule.Events = append([]repo.HealthEventRecord(nil), events...)
+	repository.store.createdHealthRule = rule
+	repository.store.createdHealthEvents = append([]repo.HealthEventRecord(nil), events...)
+	repository.store.rules = append(repository.store.rules, rule)
 	return nil
 }
 

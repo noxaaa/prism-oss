@@ -423,6 +423,67 @@ func TestControlServiceReportsRegisteredHealthActionTypes(t *testing.T) {
 	}
 }
 
+func TestCreateHealthEvaluationRuleUsesRegisteredActionExecutor(t *testing.T) {
+	store := &healthDNSTestStore{
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+		}},
+	}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		HealthActionExecutors: []HealthActionExecutor{&recordingHealthActionExecutor{}},
+	})
+
+	result, err := control.CreateHealthEvaluationRule(context.Background(), healthDNSTestIdentity(string(domain.PermissionHealthChecksManage)), HealthEvaluationRuleMutationInput{
+		HealthCheckID: "health_1",
+		Name:          "notify offline",
+		Enabled:       true,
+		Events: []HealthEventMutationInput{{
+			EventType:  "webhook",
+			ConfigJSON: `{"url":"https://hooks.example.test/health"}`,
+			Enabled:    true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create health evaluation rule: %v", err)
+	}
+	if result.Name != "notify offline" || result.ExpressionJSON != `{"mode":"latest_result"}` || len(result.Events) != 1 {
+		t.Fatalf("unexpected rule payload: %#v", result)
+	}
+	if result.Events[0].EventType != "WEBHOOK" || result.Events[0].ConfigJSON != `{"url":"https://hooks.example.test/health"}` {
+		t.Fatalf("unexpected event payload: %#v", result.Events[0])
+	}
+	if store.createdHealthRule.ID == "" || store.createdHealthRule.HealthCheckID != "health_1" || len(store.createdHealthEvents) != 1 {
+		t.Fatalf("expected generic health action rule to be persisted, rule=%#v events=%#v", store.createdHealthRule, store.createdHealthEvents)
+	}
+}
+
+func TestCreateHealthEvaluationRuleRejectsUnsupportedActionType(t *testing.T) {
+	store := &healthDNSTestStore{
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+		}},
+	}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{})
+
+	_, err := control.CreateHealthEvaluationRule(context.Background(), healthDNSTestIdentity(string(domain.PermissionHealthChecksManage)), HealthEvaluationRuleMutationInput{
+		HealthCheckID: "health_1",
+		Name:          "notify offline",
+		Enabled:       true,
+		Events: []HealthEventMutationInput{{
+			EventType:  "WEBHOOK",
+			ConfigJSON: `{"url":"https://hooks.example.test/health"}`,
+			Enabled:    true,
+		}},
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
 func TestRecordMonitorHealthResultsRejectsOutOfScopeMonitor(t *testing.T) {
 	store := &healthDNSTestStore{
 		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},

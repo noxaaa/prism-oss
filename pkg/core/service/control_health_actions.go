@@ -2,10 +2,79 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
+	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
+
+func (service *ControlService) CreateHealthEvaluationRule(ctx context.Context, identity InternalIdentity, input HealthEvaluationRuleMutationInput) (HealthEvaluationRulePayload, error) {
+	if !service.hasPermission(identity, string(domain.PermissionHealthChecksManage)) {
+		return HealthEvaluationRulePayload{}, ErrForbidden
+	}
+	var result HealthEvaluationRulePayload
+	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		rule, err := service.createHealthEvaluationRule(ctx, repositories, identity.OrganizationID, input, service.timestamp())
+		if err != nil {
+			return err
+		}
+		result = toHealthEvaluationRulePayload(rule)
+		return nil
+	})
+	return result, mapServiceError(err)
+}
+
+func (service *ControlService) createHealthEvaluationRule(ctx context.Context, repositories repo.Repositories, organizationID string, input HealthEvaluationRuleMutationInput, now string) (repo.HealthEvaluationRuleRecord, error) {
+	healthCheckID := strings.TrimSpace(input.HealthCheckID)
+	name := strings.TrimSpace(input.Name)
+	if healthCheckID == "" || name == "" || len(name) > 120 || len(input.Events) == 0 {
+		return repo.HealthEvaluationRuleRecord{}, ErrInvalidInput
+	}
+	if _, err := repositories.HealthChecks().FindHealthCheckByID(ctx, organizationID, healthCheckID); err != nil {
+		return repo.HealthEvaluationRuleRecord{}, err
+	}
+	expressionJSON, err := normalizeHealthActionConfigJSON(input.ExpressionJSON, `{"mode":"latest_result"}`)
+	if err != nil {
+		return repo.HealthEvaluationRuleRecord{}, err
+	}
+	rule := repo.HealthEvaluationRuleRecord{
+		ID:             service.newID(),
+		OrganizationID: organizationID,
+		HealthCheckID:  healthCheckID,
+		Name:           name,
+		Enabled:        input.Enabled,
+		ExpressionJSON: expressionJSON,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	events := make([]repo.HealthEventRecord, 0, len(input.Events))
+	for _, eventInput := range input.Events {
+		eventType := normalizeHealthActionType(eventInput.EventType)
+		if eventType == "" || service.healthActionExecutorForType(eventType) == nil {
+			return repo.HealthEvaluationRuleRecord{}, ErrInvalidInput
+		}
+		configJSON, err := normalizeHealthActionConfigJSON(eventInput.ConfigJSON, `{}`)
+		if err != nil {
+			return repo.HealthEvaluationRuleRecord{}, err
+		}
+		events = append(events, repo.HealthEventRecord{
+			ID:                     service.newID(),
+			OrganizationID:         organizationID,
+			HealthEvaluationRuleID: rule.ID,
+			EventType:              eventType,
+			ConfigJSON:             configJSON,
+			Enabled:                eventInput.Enabled,
+			CreatedAt:              now,
+			UpdatedAt:              now,
+		})
+	}
+	if err := repositories.HealthChecks().CreateHealthEvaluationRule(ctx, rule, events); err != nil {
+		return repo.HealthEvaluationRuleRecord{}, err
+	}
+	rule.Events = events
+	return rule, nil
+}
 
 func (service *ControlService) buildHealthActions(ctx context.Context, repositories repo.Repositories, organizationID string, results []repo.HealthResultRecord) ([]pendingHealthAction, error) {
 	actions := make([]pendingHealthAction, 0)
@@ -157,4 +226,43 @@ func aggregateHealthResultsByCheck(results []repo.HealthResultRecord) []repo.Hea
 		aggregated = append(aggregated, byCheck[healthCheckID])
 	}
 	return aggregated
+}
+
+func normalizeHealthActionConfigJSON(raw string, fallback string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = fallback
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return "", ErrInvalidInput
+	}
+	if decoded == nil {
+		return "", ErrInvalidInput
+	}
+	return raw, nil
+}
+
+func toHealthEvaluationRulePayload(rule repo.HealthEvaluationRuleRecord) HealthEvaluationRulePayload {
+	events := make([]HealthEventPayload, 0, len(rule.Events))
+	for _, event := range rule.Events {
+		events = append(events, HealthEventPayload{
+			ID:         event.ID,
+			EventType:  event.EventType,
+			ConfigJSON: event.ConfigJSON,
+			Enabled:    event.Enabled,
+			CreatedAt:  event.CreatedAt,
+			UpdatedAt:  event.UpdatedAt,
+		})
+	}
+	return HealthEvaluationRulePayload{
+		ID:             rule.ID,
+		HealthCheckID:  rule.HealthCheckID,
+		Name:           rule.Name,
+		Enabled:        rule.Enabled,
+		ExpressionJSON: rule.ExpressionJSON,
+		Events:         events,
+		CreatedAt:      rule.CreatedAt,
+		UpdatedAt:      rule.UpdatedAt,
+	}
 }
