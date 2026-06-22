@@ -145,7 +145,7 @@ func (nodes trafficReportTestNodeRepository) RecordNodeAgentUpdateResult(context
 func (nodes trafficReportTestNodeRepository) MarkNodeAgentDisconnected(context.Context, string, string, string) error {
 	return nil
 }
-func (nodes trafficReportTestNodeRepository) RecordNodeConfigAck(context.Context, string, string, int, string, string, string) error {
+func (nodes trafficReportTestNodeRepository) RecordNodeConfigAck(context.Context, string, string, repo.NodeConfigAckRecord, string) error {
 	return nil
 }
 func (nodes trafficReportTestNodeRepository) EnsureDesiredConfigVersionAtLeast(context.Context, string, string, int, string) error {
@@ -200,4 +200,25 @@ func (rules trafficReportTestRuleRepository) RecordRuleTrafficReport(_ context.C
 	rules.store.ruleReport = report
 	rules.store.ruleDeltas = append([]repo.RuleTrafficDeltaRecord(nil), deltas...)
 	return !rules.store.duplicate, nil
+}
+func (rules trafficReportTestRuleRepository) ListRuleDeploymentsByOrganization(context.Context, string) ([]repo.RuleDeploymentRecord, error) {
+	return nil, nil
+}
+func (rules trafficReportTestRuleRepository) ReplaceRuleDeploymentPending(context.Context, string, repo.RuleRecord, []repo.RuleDeploymentPendingRecord, string, func() string) error {
+	return nil
+}
+func (rules trafficReportTestRuleRepository) UpsertRuleDeploymentPending(context.Context, string, repo.RuleRecord, repo.RuleDeploymentPendingRecord, string, func() string) error {
+	return nil
+}
+func (rules trafficReportTestRuleRepository) RecordRuleDeploymentApplied(context.Context, string, string, int, []repo.RuleDeploymentAppliedRecord, string, func() string) error {
+	return nil
+}
+func (rules trafficReportTestRuleRepository) RecordRuleDeploymentFailures(context.Context, string, string, int, []repo.RuleDeploymentFailureRecord, string, func() string) error {
+	return nil
+}
+func (rules trafficReportTestRuleRepository) DeleteRuleDeploymentForNode(context.Context, string, string, string) error {
+	return nil
+}
+func (rules trafficReportTestRuleRepository) DeleteRuleDeployments(context.Context, string, string) error {
+	return nil
 }

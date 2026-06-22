@@ -497,7 +497,7 @@ func (nodes agentHelloTestNodeRepository) MarkNodeAgentDisconnected(context.Cont
 	return nil
 }
 
-func (nodes agentHelloTestNodeRepository) RecordNodeConfigAck(context.Context, string, string, int, string, string, string) error {
+func (nodes agentHelloTestNodeRepository) RecordNodeConfigAck(context.Context, string, string, repo.NodeConfigAckRecord, string) error {
 	return nil
 }
 

@@ -1,6 +1,9 @@
 package service
 
-import "github.com/noxaaa/prism-oss/pkg/core/agent"
+import (
+	"github.com/noxaaa/prism-oss/pkg/core/agent"
+	"github.com/noxaaa/prism-oss/pkg/core/domain"
+)
 
 type BootstrapInput struct {
 	OrganizationName string
@@ -228,6 +231,7 @@ type RuleMutationInput struct {
 	Tags           []string
 	NodeGroupID    string
 	ListenIP       string
+	FailurePolicy  string
 	ForwardingType string
 	Protocol       string
 	Port           int
@@ -505,6 +509,7 @@ type RulePayload struct {
 	Tags           []string               `json:"tags"`
 	NodeGroupID    string                 `json:"node_group_id"`
 	ListenIP       string                 `json:"listen_ip"`
+	FailurePolicy  string                 `json:"failure_policy"`
 	ForwardingType string                 `json:"forwarding_type"`
 	Protocol       string                 `json:"protocol"`
 	Port           int                    `json:"port"`
@@ -514,6 +519,28 @@ type RulePayload struct {
 	OwnerUserID    string                 `json:"owner_user_id"`
 	ConfigVersion  int                    `json:"config_version"`
 	ConnectInfo    RuleConnectInfoPayload `json:"connect_info"`
+	Deployment     RuleDeploymentPayload  `json:"deployment"`
+}
+
+type RuleDeploymentPayload struct {
+	Status  string                      `json:"status"`
+	Total   int                         `json:"total"`
+	Applied int                         `json:"applied"`
+	Failed  int                         `json:"failed"`
+	Pending int                         `json:"pending"`
+	Nodes   []RuleDeploymentNodePayload `json:"nodes"`
+}
+
+type RuleDeploymentNodePayload struct {
+	NodeID       string `json:"node_id"`
+	NodeName     string `json:"node_name"`
+	Status       string `json:"status"`
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
+	Protocol     string `json:"protocol,omitempty"`
+	ListenIP     string `json:"listen_ip,omitempty"`
+	Port         int    `json:"port,omitempty"`
+	UpdatedAt    string `json:"updated_at,omitempty"`
 }
 
 type RuleMatchPayload struct {
@@ -547,6 +574,15 @@ type AgentRuntimeMetricsInput struct {
 type AgentTrafficReportInput struct {
 	ReportID string
 	Deltas   []agent.RuleTrafficDelta
+}
+
+type ConfigApplyErrorInput struct {
+	Code     string
+	RuleIDs  []string
+	Protocol domain.Protocol
+	ListenIP string
+	Port     int
+	Message  string
 }
 
 type RuleDiagnosticsPayload struct {
@@ -583,6 +619,7 @@ type RulesExportPayload struct {
 type PortableRulePayload struct {
 	Name           string                      `json:"name"`
 	Tags           []string                    `json:"tags"`
+	FailurePolicy  string                      `json:"failure_policy,omitempty"`
 	ForwardingType string                      `json:"forwarding_type"`
 	Protocol       string                      `json:"protocol"`
 	Port           int                         `json:"port"`

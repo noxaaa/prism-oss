@@ -163,10 +163,12 @@ func (runtime *NodeRuntime) runOnce(ctx context.Context) error {
 			}
 			status := "APPLIED"
 			errorMessage := ""
+			applyErrors := []ConfigApplyErrorDetail{}
 			if runtime.applier != nil {
 				if err := runtime.applier.Apply(ctx, snapshot); err != nil {
 					status = "FAILED"
 					errorMessage = err.Error()
+					applyErrors = StructuredApplyErrors(err)
 				}
 			}
 			if status == "APPLIED" {
@@ -176,6 +178,7 @@ func (runtime *NodeRuntime) runOnce(ctx context.Context) error {
 				"config_version": snapshot.ConfigVersion,
 				"status":         status,
 				"error_message":  nullableString(errorMessage),
+				"errors":         applyErrors,
 			}); err != nil {
 				return err
 			}

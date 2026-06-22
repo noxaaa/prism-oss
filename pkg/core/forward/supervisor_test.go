@@ -2,6 +2,7 @@ package forward
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strconv"
@@ -273,6 +274,75 @@ func TestSupervisorRejectsUnsupportedForwardingType(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected unsupported forwarding type to be rejected")
+	}
+}
+
+func TestSupervisorReportsStructuredListenerBindFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	target, closeTarget := startTCPPrefixServer(t, "target:")
+	defer closeTarget()
+	blockedPort := reserveLocalTCPPort(t)
+	blocker, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(blockedPort)))
+	if err != nil {
+		t.Fatalf("bind blocker: %v", err)
+	}
+	defer func() { _ = blocker.Close() }()
+
+	supervisor := NewSupervisor()
+	defer supervisor.Close()
+	err = supervisor.Apply(ctx, agent.ConfigSnapshot{
+		NodeID:        "node_1",
+		ConfigVersion: 1,
+		Rules: []agent.RuleConfig{
+			{
+				ID:          "rule_a",
+				Enabled:     true,
+				Protocol:    domain.ProtocolTCP,
+				ListenIP:    "127.0.0.1",
+				Port:        blockedPort,
+				MatchType:   "TLS_SNI",
+				SNIHostname: "a.example.com",
+				Upstream: agent.RuleUpstreamConfig{
+					Type:   "TARGET",
+					Target: &agent.TargetEndpoint{ID: "target", Host: "127.0.0.1", Port: mustPort(t, target), Enabled: true},
+				},
+			},
+			{
+				ID:          "rule_b",
+				Enabled:     true,
+				Protocol:    domain.ProtocolTCP,
+				ListenIP:    "127.0.0.1",
+				Port:        blockedPort,
+				MatchType:   "TLS_SNI",
+				SNIHostname: "b.example.com",
+				Upstream: agent.RuleUpstreamConfig{
+					Type:   "TARGET",
+					Target: &agent.TargetEndpoint{ID: "target", Host: "127.0.0.1", Port: mustPort(t, target), Enabled: true},
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected bind failure")
+	}
+	var applyErr agent.ConfigApplyError
+	if !errors.As(err, &applyErr) {
+		t.Fatalf("expected structured ConfigApplyError, got %T: %v", err, err)
+	}
+	if len(applyErr.Errors) != 1 {
+		t.Fatalf("expected one listener error, got %#v", applyErr.Errors)
+	}
+	detail := applyErr.Errors[0]
+	if detail.Code != "LISTENER_BIND_FAILED" || detail.Protocol != domain.ProtocolTCP || detail.ListenIP != "127.0.0.1" || detail.Port != blockedPort {
+		t.Fatalf("unexpected listener error detail: %#v", detail)
+	}
+	if strings.Join(detail.RuleIDs, ",") != "rule_a,rule_b" {
+		t.Fatalf("expected both rule ids in listener error, got %#v", detail.RuleIDs)
+	}
+	if !strings.Contains(detail.Message, "address already in use") && !strings.Contains(detail.Message, "bind") {
+		t.Fatalf("expected bind error message, got %q", detail.Message)
 	}
 }
 

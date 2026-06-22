@@ -324,6 +324,13 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 			if err := repositories.Nodes().IncrementDesiredConfigForNode(ctx, identity.OrganizationID, node.ID, node.UpdatedAt); err != nil {
 				return err
 			}
+			node, err = repositories.Nodes().FindNodeByID(ctx, identity.OrganizationID, node.ID)
+			if err != nil {
+				return err
+			}
+			if err := syncRuleDeploymentsForNodeMembershipChange(ctx, repositories, identity.OrganizationID, node, previousGroupIDs, targetGroupIDs, node.UpdatedAt, service.newID); err != nil {
+				return err
+			}
 		}
 		node, err = repositories.Nodes().FindNodeByID(ctx, identity.OrganizationID, node.ID)
 		if err != nil {

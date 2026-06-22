@@ -23,6 +23,7 @@ func simulatedEnabledRule(identity InternalIdentity, input RuleMutationInput, ru
 		Name:             input.Name,
 		Enabled:          true,
 		Status:           "ENABLED",
+		FailurePolicy:    defaultFailurePolicy(input.FailurePolicy),
 		ForwardingType:   defaultForwardingType(input.ForwardingType),
 		Protocol:         input.Protocol,
 		MatchType:        input.Match.Type,
@@ -257,6 +258,7 @@ func inputFromRule(rule repo.RuleRecord) RuleMutationInput {
 		Tags:           rule.Tags,
 		NodeGroupID:    rule.Binding.NodeGroupID,
 		ListenIP:       rule.Binding.ListenIP,
+		FailurePolicy:  defaultFailurePolicy(rule.FailurePolicy),
 		ForwardingType: defaultForwardingType(rule.ForwardingType),
 		Protocol:       rule.Protocol,
 		Port:           rule.Binding.Port,
@@ -305,6 +307,7 @@ func ruleInputFromPortablePayload(rule PortableRulePayload, entry RuleImportEntr
 		Tags:           append([]string{}, rule.Tags...),
 		NodeGroupID:    entry.NodeGroupID,
 		ListenIP:       entry.ListenIP,
+		FailurePolicy:  rule.FailurePolicy,
 		ForwardingType: rule.ForwardingType,
 		Protocol:       rule.Protocol,
 		Port:           rule.Port,
@@ -323,6 +326,7 @@ func validateRuleMutationInput(input RuleMutationInput) (RuleMutationInput, erro
 	input.Name = strings.TrimSpace(input.Name)
 	input.NodeGroupID = strings.TrimSpace(input.NodeGroupID)
 	input.ListenIP = strings.TrimSpace(input.ListenIP)
+	input.FailurePolicy = defaultFailurePolicy(input.FailurePolicy)
 	input.ForwardingType = defaultForwardingType(input.ForwardingType)
 	input.Protocol = strings.ToUpper(strings.TrimSpace(input.Protocol))
 	input.Match.Type = strings.ToUpper(strings.TrimSpace(input.Match.Type))
@@ -355,6 +359,9 @@ func validateRuleMutationInput(input RuleMutationInput) (RuleMutationInput, erro
 		})
 	}
 	if err := validateRuleForwardingType(input.ForwardingType); err != nil {
+		return RuleMutationInput{}, err
+	}
+	if err := validateFailurePolicy(input.FailurePolicy); err != nil {
 		return RuleMutationInput{}, err
 	}
 	if input.Protocol != "TCP" && input.Protocol != "UDP" && input.Protocol != "TCP_UDP" {
@@ -426,6 +433,7 @@ func toPortableRulePayload(rule repo.RuleRecord, targetRefsByID map[string]strin
 	return PortableRulePayload{
 		Name:           rule.Name,
 		Tags:           append([]string{}, rule.Tags...),
+		FailurePolicy:  defaultFailurePolicy(rule.FailurePolicy),
 		ForwardingType: defaultForwardingType(rule.ForwardingType),
 		Protocol:       rule.Protocol,
 		Port:           rule.Binding.Port,
@@ -512,21 +520,35 @@ func bumpDesiredConfigForRulesUsingTarget(ctx context.Context, repositories repo
 		}
 	}
 	nodeGroups := make(map[string]struct{})
+	affectedRules := make([]repo.RuleRecord, 0)
 	for _, rule := range rules {
 		if !rule.Enabled {
 			continue
 		}
+		affected := false
 		if rule.TargetType == "TARGET" && rule.TargetID == targetID {
-			nodeGroups[rule.Binding.NodeGroupID] = struct{}{}
-			continue
+			affected = true
 		}
 		if rule.TargetType == "TARGET_GROUP" {
 			if _, ok := groupsUsingTarget[rule.TargetGroupID]; ok {
-				nodeGroups[rule.Binding.NodeGroupID] = struct{}{}
+				affected = true
 			}
 		}
+		if !affected {
+			continue
+		}
+		nodeGroups[rule.Binding.NodeGroupID] = struct{}{}
+		affectedRules = append(affectedRules, rule)
 	}
-	return bumpDesiredConfigForNodeGroups(ctx, repositories, organizationID, nodeGroups, now)
+	if err := bumpDesiredConfigForNodeGroups(ctx, repositories, organizationID, nodeGroups, now); err != nil {
+		return err
+	}
+	for _, rule := range affectedRules {
+		if err := syncRuleDeploymentPending(ctx, repositories, organizationID, rule, now, uuid.NewString); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func bumpDesiredConfigForRulesUsingTargetGroup(ctx context.Context, repositories repo.Repositories, organizationID string, targetGroupID string, now string) error {
@@ -535,12 +557,22 @@ func bumpDesiredConfigForRulesUsingTargetGroup(ctx context.Context, repositories
 		return err
 	}
 	nodeGroups := make(map[string]struct{})
+	affectedRules := make([]repo.RuleRecord, 0)
 	for _, rule := range rules {
 		if rule.Enabled && rule.TargetType == "TARGET_GROUP" && rule.TargetGroupID == targetGroupID {
 			nodeGroups[rule.Binding.NodeGroupID] = struct{}{}
+			affectedRules = append(affectedRules, rule)
 		}
 	}
-	return bumpDesiredConfigForNodeGroups(ctx, repositories, organizationID, nodeGroups, now)
+	if err := bumpDesiredConfigForNodeGroups(ctx, repositories, organizationID, nodeGroups, now); err != nil {
+		return err
+	}
+	for _, rule := range affectedRules {
+		if err := syncRuleDeploymentPending(ctx, repositories, organizationID, rule, now, uuid.NewString); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func bumpDesiredConfigForNodeGroups(ctx context.Context, repositories repo.Repositories, organizationID string, nodeGroups map[string]struct{}, now string) error {
@@ -570,7 +602,19 @@ func defaultRuleCopyName(sourceName string) string {
 	return sourceName + suffix
 }
 
-func toRulePayload(rule repo.RuleRecord, nodes []repo.NodeRecord) RulePayload {
+func (service *ControlService) toRulePayloadForIdentity(identity InternalIdentity, rule repo.RuleRecord, nodes []repo.NodeRecord, deployments []repo.RuleDeploymentRecord) RulePayload {
+	return toRulePayloadWithDeploymentDetails(rule, nodes, deployments, service.canReadRuleDeploymentNodes(identity, rule.Binding.NodeGroupID))
+}
+
+func (service *ControlService) canReadRuleDeploymentNodes(identity InternalIdentity, nodeGroupID string) bool {
+	if !service.canUseNodeGroup(identity, nodeGroupID) {
+		return false
+	}
+	return service.hasPermission(identity, string(domain.PermissionNodesRead)) ||
+		service.hasPermission(identity, string(domain.PermissionNodesManage))
+}
+
+func toRulePayloadWithDeploymentDetails(rule repo.RuleRecord, nodes []repo.NodeRecord, deployments []repo.RuleDeploymentRecord, includeDeploymentNodeDetails bool) RulePayload {
 	descriptions := make([]string, 0)
 	for _, node := range nodes {
 		if strings.TrimSpace(node.PublicDescription) != "" {
@@ -586,6 +630,7 @@ func toRulePayload(rule repo.RuleRecord, nodes []repo.NodeRecord) RulePayload {
 		Tags:           append([]string{}, rule.Tags...),
 		NodeGroupID:    rule.Binding.NodeGroupID,
 		ListenIP:       rule.Binding.ListenIP,
+		FailurePolicy:  defaultFailurePolicy(rule.FailurePolicy),
 		ForwardingType: defaultForwardingType(rule.ForwardingType),
 		Protocol:       rule.Protocol,
 		Port:           rule.Binding.Port,
@@ -598,6 +643,7 @@ func toRulePayload(rule repo.RuleRecord, nodes []repo.NodeRecord) RulePayload {
 		OwnerUserID:   rule.OwnerUserID,
 		ConfigVersion: rule.ConfigVersion,
 		ConnectInfo:   RuleConnectInfoPayload{Protocol: rule.Protocol, ListenPort: rule.Binding.Port, ListenIP: rule.Binding.ListenIP, NodeDescriptions: descriptions},
+		Deployment:    ruleDeploymentPayload(rule, nodes, deployments, includeDeploymentNodeDetails),
 	}
 }
 

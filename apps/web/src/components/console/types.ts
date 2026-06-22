@@ -233,6 +233,7 @@ export type Rule = {
   tags: string[] | null;
   node_group_id: string;
   listen_ip: string;
+  failure_policy: "KEEP_ENABLED" | "DISABLE_WHEN_ALL_NODES_FAILED" | string;
   forwarding_type: "DIRECT" | "TUNNEL" | string;
   protocol: "TCP" | "UDP" | "TCP_UDP" | string;
   port: number;
@@ -257,6 +258,28 @@ export type Rule = {
     listen_ip: string;
     node_descriptions: string[] | null;
   };
+  deployment?: RuleDeployment;
+};
+
+export type RuleDeployment = {
+  status: "NO_NODES" | "PENDING" | "APPLIED" | "DEPLOY_FAILED" | string;
+  total: number;
+  applied: number;
+  failed: number;
+  pending: number;
+  nodes: RuleDeploymentNode[] | null;
+};
+
+export type RuleDeploymentNode = {
+  node_id: string;
+  node_name: string;
+  status: "PENDING" | "APPLIED" | "FAILED" | string;
+  error_code?: string;
+  error_message?: string;
+  protocol?: string;
+  listen_ip?: string;
+  port?: number;
+  updated_at?: string;
 };
 
 export type RuleTraffic = {

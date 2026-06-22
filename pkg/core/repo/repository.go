@@ -87,7 +87,7 @@ type NodeRepository interface {
 	MarkNodeAgentUpdateSatisfied(ctx context.Context, organizationID string, nodeID string, targetVersion string, now string) error
 	RecordNodeAgentUpdateResult(ctx context.Context, organizationID string, nodeID string, status string, errorMessage string, now string) error
 	MarkNodeAgentDisconnected(ctx context.Context, organizationID string, nodeID string, now string) error
-	RecordNodeConfigAck(ctx context.Context, organizationID string, nodeID string, configVersion int, status string, errorMessage string, now string) error
+	RecordNodeConfigAck(ctx context.Context, organizationID string, nodeID string, ack NodeConfigAckRecord, now string) error
 	EnsureDesiredConfigVersionAtLeast(ctx context.Context, organizationID string, nodeID string, configVersion int, now string) error
 	IncrementDesiredConfigForNode(ctx context.Context, organizationID string, nodeID string, now string) error
 	IncrementDesiredConfigForNodeGroup(ctx context.Context, organizationID string, nodeGroupID string, now string) error
@@ -175,6 +175,13 @@ type RuleRepository interface {
 	SumRuleTraffic(ctx context.Context, organizationID string, ruleID string) (RuleTrafficRecord, error)
 	RecordNodeRuleTrafficAssignments(ctx context.Context, organizationID string, nodeID string, ruleIDs []string, now string) error
 	RecordRuleTrafficReport(ctx context.Context, organizationID string, agentID string, report RuleTrafficReportRecord, deltas []RuleTrafficDeltaRecord, now string, nextID func() string) (bool, error)
+	ListRuleDeploymentsByOrganization(ctx context.Context, organizationID string) ([]RuleDeploymentRecord, error)
+	ReplaceRuleDeploymentPending(ctx context.Context, organizationID string, rule RuleRecord, deployments []RuleDeploymentPendingRecord, now string, nextID func() string) error
+	UpsertRuleDeploymentPending(ctx context.Context, organizationID string, rule RuleRecord, deployment RuleDeploymentPendingRecord, now string, nextID func() string) error
+	RecordRuleDeploymentApplied(ctx context.Context, organizationID string, nodeID string, configVersion int, deployments []RuleDeploymentAppliedRecord, now string, nextID func() string) error
+	RecordRuleDeploymentFailures(ctx context.Context, organizationID string, nodeID string, configVersion int, failures []RuleDeploymentFailureRecord, now string, nextID func() string) error
+	DeleteRuleDeploymentForNode(ctx context.Context, organizationID string, ruleID string, nodeID string) error
+	DeleteRuleDeployments(ctx context.Context, organizationID string, ruleID string) error
 }
 
 type QuotaRepository interface {
@@ -269,33 +276,44 @@ type NodeGroupRecord struct {
 }
 
 type NodeRecord struct {
-	ID                     string
-	OrganizationID         string
-	Name                   string
-	Status                 string
-	PublicDescription      string
-	DesiredConfigVersion   int
-	AppliedConfigVersion   int
-	ConfigStatus           string
-	ConfigErrorMessage     string
-	ConfigStatusUpdatedAt  string
-	LastSeenAt             string
-	RegisteredAt           string
-	AgentVersion           string
-	AgentCommit            string
-	AgentBuildTime         string
-	AgentAutoUpdateEnabled bool
-	DesiredAgentVersion    string
-	AgentUpdateStatus      string
-	AgentUpdateError       string
-	AgentUpdateStartedAt   string
-	AgentUpdateFinishedAt  string
-	CreatedAt              string
-	UpdatedAt              string
-	DeletedAt              string
-	GroupIDs               []string
-	ListenIPs              []NodeListenIPRecord
-	PortRanges             []NodePortRangeRecord
+	ID                        string
+	OrganizationID            string
+	Name                      string
+	Status                    string
+	PublicDescription         string
+	DesiredConfigVersion      int
+	AppliedConfigVersion      int
+	ConfigStatus              string
+	ConfigErrorMessage        string
+	ConfigStatusConfigVersion int
+	ConfigRetryCount          int
+	ConfigNextRetryAt         string
+	ConfigStatusUpdatedAt     string
+	LastSeenAt                string
+	RegisteredAt              string
+	AgentVersion              string
+	AgentCommit               string
+	AgentBuildTime            string
+	AgentAutoUpdateEnabled    bool
+	DesiredAgentVersion       string
+	AgentUpdateStatus         string
+	AgentUpdateError          string
+	AgentUpdateStartedAt      string
+	AgentUpdateFinishedAt     string
+	CreatedAt                 string
+	UpdatedAt                 string
+	DeletedAt                 string
+	GroupIDs                  []string
+	ListenIPs                 []NodeListenIPRecord
+	PortRanges                []NodePortRangeRecord
+}
+
+type NodeConfigAckRecord struct {
+	ConfigVersion int
+	Status        string
+	ErrorMessage  string
+	RetryCount    int
+	NextRetryAt   string
 }
 
 type NodeAgentVersionRecord struct {
@@ -527,6 +545,7 @@ type RuleRecord struct {
 	TargetGroupID    string
 	ProxyProtocolIn  string
 	ProxyProtocolOut string
+	FailurePolicy    string
 	ConfigVersion    int
 	CreatedAt        string
 	UpdatedAt        string
@@ -556,6 +575,42 @@ type RuleTrafficDeltaRecord struct {
 	DownloadBytes  int64
 	TCPConnections int64
 	UDPPackets     int64
+}
+
+type RuleDeploymentRecord struct {
+	ID                string
+	OrganizationID    string
+	RuleID            string
+	NodeID            string
+	ConfigVersion     int
+	RuleConfigVersion int
+	Status            string
+	ErrorCode         string
+	ErrorMessage      string
+	Protocol          string
+	ListenIP          string
+	Port              int
+	UpdatedAt         string
+}
+
+type RuleDeploymentPendingRecord struct {
+	NodeID        string
+	ConfigVersion int
+}
+
+type RuleDeploymentAppliedRecord struct {
+	RuleID            string
+	RuleConfigVersion int
+}
+
+type RuleDeploymentFailureRecord struct {
+	RuleID            string
+	RuleConfigVersion int
+	ErrorCode         string
+	ErrorMessage      string
+	Protocol          string
+	ListenIP          string
+	Port              int
 }
 
 type QuotaRecord struct {

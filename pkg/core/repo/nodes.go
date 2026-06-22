@@ -69,7 +69,8 @@ func (store *PostgresStore) DeleteNodeGroup(ctx context.Context, organizationID 
 func (store *PostgresStore) ListNodesByOrganization(ctx context.Context, organizationID string) ([]NodeRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT id, organization_id, name, status, public_description, desired_config_version, applied_config_version,
-		       config_status, config_error_message, coalesce(config_status_updated_at::text, ''),
+		       config_status, config_error_message, config_status_config_version, config_retry_count, coalesce(to_char(config_next_retry_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), ''),
+		       coalesce(config_status_updated_at::text, ''),
 		       coalesce(last_seen_at::text, ''), coalesce(registered_at::text, ''),
 		       agent_version, agent_commit, agent_build_time, agent_auto_update_enabled, desired_agent_version,
 		       agent_update_status, agent_update_error, coalesce(agent_update_started_at::text, ''), coalesce(agent_update_finished_at::text, ''),
@@ -108,7 +109,8 @@ func (store *PostgresStore) ListNodesByOrganization(ctx context.Context, organiz
 func (store *PostgresStore) FindNodeByID(ctx context.Context, organizationID string, nodeID string) (NodeRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, name, status, public_description, desired_config_version, applied_config_version,
-		       config_status, config_error_message, coalesce(config_status_updated_at::text, ''),
+		       config_status, config_error_message, config_status_config_version, config_retry_count, coalesce(to_char(config_next_retry_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), ''),
+		       coalesce(config_status_updated_at::text, ''),
 		       coalesce(last_seen_at::text, ''), coalesce(registered_at::text, ''),
 		       agent_version, agent_commit, agent_build_time, agent_auto_update_enabled, desired_agent_version,
 		       agent_update_status, agent_update_error, coalesce(agent_update_started_at::text, ''), coalesce(agent_update_finished_at::text, ''),
@@ -286,8 +288,8 @@ func (store *PostgresStore) MarkNodeAgentDisconnected(ctx context.Context, organ
 	return requireAffected(result)
 }
 
-func (store *PostgresStore) RecordNodeConfigAck(ctx context.Context, organizationID string, nodeID string, configVersion int, status string, errorMessage string, now string) error {
-	if status == "APPLIED" {
+func (store *PostgresStore) RecordNodeConfigAck(ctx context.Context, organizationID string, nodeID string, ack NodeConfigAckRecord, now string) error {
+	if ack.Status == "APPLIED" {
 		_, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
 		SET applied_config_version = ?,
@@ -296,12 +298,15 @@ func (store *PostgresStore) RecordNodeConfigAck(ctx context.Context, organizatio
 		      ELSE 'PENDING'
 		    END,
 		    config_error_message = '',
+		    config_status_config_version = ?,
+		    config_retry_count = 0,
+		    config_next_retry_at = NULL,
 		    config_status_updated_at = ?,
 		    last_seen_at = ?,
 		    updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL AND applied_config_version <= ?
 		  AND ? <= desired_config_version
-	`, configVersion, configVersion, now, now, now, organizationID, nodeID, configVersion, configVersion)
+	`, ack.ConfigVersion, ack.ConfigVersion, ack.ConfigVersion, now, now, now, organizationID, nodeID, ack.ConfigVersion, ack.ConfigVersion)
 		if err != nil {
 			return mapWriteError(err)
 		}
@@ -317,12 +322,15 @@ func (store *PostgresStore) RecordNodeConfigAck(ctx context.Context, organizatio
 		      WHEN desired_config_version <= ? THEN ?
 		      ELSE ''
 		    END,
+		    config_status_config_version = ?,
+		    config_retry_count = ?,
+		    config_next_retry_at = ?,
 		    config_status_updated_at = ?,
 		    last_seen_at = ?,
 		    updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL AND applied_config_version <= ?
 		  AND ? <= desired_config_version
-	`, configVersion, configVersion, errorMessage, now, now, now, organizationID, nodeID, configVersion, configVersion)
+	`, ack.ConfigVersion, ack.ConfigVersion, ack.ErrorMessage, ack.ConfigVersion, ack.RetryCount, nullable(ack.NextRetryAt), now, now, now, organizationID, nodeID, ack.ConfigVersion, ack.ConfigVersion)
 	return mapWriteError(err)
 }
 
@@ -332,13 +340,16 @@ func (store *PostgresStore) EnsureDesiredConfigVersionAtLeast(ctx context.Contex
 		SET desired_config_version = ?,
 		    config_status = 'PENDING',
 		    config_error_message = '',
+		    config_status_config_version = ?,
+		    config_retry_count = 0,
+		    config_next_retry_at = NULL,
 		    config_status_updated_at = ?,
 		    updated_at = ?
 		WHERE organization_id = ?
 		  AND id = ?
 		  AND deleted_at IS NULL
 		  AND desired_config_version < ?
-	`, configVersion, now, now, organizationID, nodeID, configVersion)
+	`, configVersion, configVersion, now, now, organizationID, nodeID, configVersion)
 	return mapWriteError(err)
 }
 
@@ -352,6 +363,13 @@ func (store *PostgresStore) IncrementDesiredConfigForNode(ctx context.Context, o
 		      END,
 		    config_status = 'PENDING',
 		    config_error_message = '',
+		    config_status_config_version =
+		      CASE
+		        WHEN desired_config_version >= applied_config_version THEN desired_config_version + 1
+		        ELSE applied_config_version + 1
+		      END,
+		    config_retry_count = 0,
+		    config_next_retry_at = NULL,
 		    config_status_updated_at = ?,
 		    updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
@@ -372,6 +390,13 @@ func (store *PostgresStore) IncrementDesiredConfigForNodeGroup(ctx context.Conte
 		      END,
 		    config_status = 'PENDING',
 		    config_error_message = '',
+		    config_status_config_version =
+		      CASE
+		        WHEN desired_config_version >= applied_config_version THEN desired_config_version + 1
+		        ELSE applied_config_version + 1
+		      END,
+		    config_retry_count = 0,
+		    config_next_retry_at = NULL,
 		    config_status_updated_at = ?,
 		    updated_at = ?
 		WHERE organization_id = ?

@@ -1,6 +1,11 @@
 package agent
 
-import "github.com/noxaaa/prism-oss/pkg/core/domain"
+import (
+	"errors"
+	"strings"
+
+	"github.com/noxaaa/prism-oss/pkg/core/domain"
+)
 
 type ConfigSnapshot struct {
 	AgentProtocolVersion ProtocolVersion `json:"agent_protocol_version"`
@@ -113,4 +118,39 @@ type RuleTrafficDelta struct {
 	DownloadBytes  int64  `json:"download_bytes"`
 	TCPConnections int64  `json:"tcp_connections"`
 	UDPPackets     int64  `json:"udp_packets"`
+}
+
+type ConfigApplyErrorDetail struct {
+	Code     string          `json:"code"`
+	RuleIDs  []string        `json:"rule_ids"`
+	Protocol domain.Protocol `json:"protocol"`
+	ListenIP string          `json:"listen_ip"`
+	Port     int             `json:"port"`
+	Message  string          `json:"message"`
+}
+
+type ConfigApplyError struct {
+	Message string
+	Errors  []ConfigApplyErrorDetail
+}
+
+func (err ConfigApplyError) Error() string {
+	if strings.TrimSpace(err.Message) != "" {
+		return err.Message
+	}
+	if len(err.Errors) > 0 {
+		return err.Errors[0].Message
+	}
+	return "config apply failed"
+}
+
+func StructuredApplyErrors(err error) []ConfigApplyErrorDetail {
+	if err == nil {
+		return nil
+	}
+	var applyErr ConfigApplyError
+	if !errors.As(err, &applyErr) {
+		return nil
+	}
+	return append([]ConfigApplyErrorDetail(nil), applyErr.Errors...)
 }

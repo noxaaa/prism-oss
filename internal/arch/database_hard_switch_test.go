@@ -121,6 +121,57 @@ func TestOSSRepoFilesDoNotUseDatabaseAdapterPrefixes(t *testing.T) {
 	}
 }
 
+func TestOSSMigrationsUseUniqueGooseVersions(t *testing.T) {
+	root := repoRoot(t)
+	versionPattern := regexp.MustCompile(`^(\d+)_.*\.sql$`)
+	for _, relative := range []string{"migrations/auth", "migrations/core"} {
+		dir := filepath.Join(root, filepath.FromSlash(relative))
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read migration dir %s: %v", relative, err)
+		}
+		seen := make(map[string]string)
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			matches := versionPattern.FindStringSubmatch(entry.Name())
+			if matches == nil {
+				continue
+			}
+			version := matches[1]
+			if previous, ok := seen[version]; ok {
+				t.Fatalf("%s has duplicate goose version %s: %s and %s", relative, version, previous, entry.Name())
+			}
+			seen[version] = entry.Name()
+		}
+	}
+}
+
+func TestRuleDeploymentDiagnosticsUsePostgresSafeState(t *testing.T) {
+	root := repoRoot(t)
+	nodesRepo := readText(t, filepath.Join(root, "pkg", "core", "repo", "nodes.go"))
+	if strings.Contains(nodesRepo, "config_next_retry_at::text") {
+		t.Fatalf("nodes repository must not read config_next_retry_at through PostgreSQL timestamptz::text")
+	}
+	if !strings.Contains(nodesRepo, "to_char(config_next_retry_at AT TIME ZONE 'UTC'") {
+		t.Fatalf("nodes repository must expose config_next_retry_at in an RFC3339-compatible UTC form")
+	}
+
+	deploymentMigration := readText(t, filepath.Join(root, "migrations", "core", "00004_rule_deployments.sql"))
+	for _, required := range []string{
+		"WITH eligible_rule_deployments AS",
+		"INSERT INTO rule_deployment_statuses",
+		"JOIN node_group_members",
+		"forwarding_rules.match_type IN ('ANY_INBOUND', 'TLS_SNI')",
+		"target_groups.scheduler = 'PRIORITY_IPHASH'",
+	} {
+		if !strings.Contains(deploymentMigration, required) {
+			t.Fatalf("rule deployment migration must backfill current OSS deployments; missing %q", required)
+		}
+	}
+}
+
 func readPathText(t *testing.T, path string) string {
 	t.Helper()
 	stat, err := os.Stat(path)

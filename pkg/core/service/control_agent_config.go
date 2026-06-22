@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/noxaaa/prism-oss/pkg/core/buildinfo"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
@@ -404,13 +405,17 @@ func (service *ControlService) NodeAgentConfigBehind(ctx context.Context, organi
 		if err != nil {
 			return err
 		}
+		if nodeConfigBackoffActive(node, service.now()) {
+			result = false
+			return nil
+		}
 		result = node.DesiredConfigVersion > appliedConfigVersion || node.ConfigStatus == "FAILED"
 		return nil
 	})
 	return result, mapServiceError(err)
 }
 
-func (service *ControlService) AcknowledgeNodeAgentConfig(ctx context.Context, organizationID string, nodeID string, configVersion int, status string, errorMessage string) error {
+func (service *ControlService) AcknowledgeNodeAgentConfig(ctx context.Context, organizationID string, nodeID string, configVersion int, status string, errorMessage string, applyErrors []ConfigApplyErrorInput) error {
 	status = strings.ToUpper(strings.TrimSpace(status))
 	if status != "APPLIED" && status != "FAILED" {
 		return ErrInvalidInput
@@ -420,7 +425,56 @@ func (service *ControlService) AcknowledgeNodeAgentConfig(ctx context.Context, o
 		errorMessage = errorMessage[:1000]
 	}
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
-		return repositories.Nodes().RecordNodeConfigAck(ctx, organizationID, nodeID, configVersion, status, errorMessage, service.timestamp())
+		node, err := repositories.Nodes().FindNodeByID(ctx, organizationID, nodeID)
+		if err != nil {
+			return err
+		}
+		nowTime := service.now()
+		now := nowTime.UTC().Format(time.RFC3339Nano)
+		ack := repo.NodeConfigAckRecord{
+			ConfigVersion: configVersion,
+			Status:        status,
+			ErrorMessage:  errorMessage,
+		}
+		if status == "FAILED" {
+			ack = nodeConfigFailedAck(node, configVersion, errorMessage, nowTime)
+		}
+		if err := repositories.Nodes().RecordNodeConfigAck(ctx, organizationID, nodeID, ack, now); err != nil {
+			return err
+		}
+		if configVersion != node.DesiredConfigVersion {
+			return nil
+		}
+		if status == "APPLIED" {
+			rules, err := repositories.Rules().ListRulesByOrganization(ctx, organizationID)
+			if err != nil {
+				return err
+			}
+			applied, err := ruleDeploymentAppliedRecordsForNode(ctx, repositories, organizationID, node, rules)
+			if err != nil {
+				return err
+			}
+			return repositories.Rules().RecordRuleDeploymentApplied(ctx, organizationID, nodeID, configVersion, applied, now, service.newID)
+		}
+		rules, err := repositories.Rules().ListRulesByOrganization(ctx, organizationID)
+		if err != nil {
+			return err
+		}
+		rulesByID := make(map[string]repo.RuleRecord, len(rules))
+		for _, rule := range rules {
+			rulesByID[rule.ID] = rule
+		}
+		failures := ruleDeploymentFailuresFromApplyErrors(rulesByID, applyErrors)
+		if len(failures) > 0 {
+			if err := repositories.Rules().RecordRuleDeploymentFailures(ctx, organizationID, nodeID, configVersion, failures, now, service.newID); err != nil {
+				return err
+			}
+		}
+		failedRuleIDs := make([]string, 0, len(failures))
+		for _, failure := range failures {
+			failedRuleIDs = append(failedRuleIDs, failure.RuleID)
+		}
+		return service.applyRuleFailurePolicies(ctx, repositories, organizationID, failedRuleIDs, now)
 	})
 	return mapServiceError(err)
 }

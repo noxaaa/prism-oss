@@ -134,14 +134,15 @@ func (supervisor *Supervisor) Apply(ctx context.Context, snapshot agent.ConfigSn
 		}
 		runtime, err := supervisor.startListener(ctx, key, rules)
 		if err != nil {
+			applyErr := listenerBindApplyError(key, rules, err)
 			for _, runtime := range started {
 				runtime.stop()
 			}
 			if restoreErr := supervisor.restoreStoppedListenersLocked(ctx, preStopped); restoreErr != nil {
-				err = fmt.Errorf("%w; restore previous listeners: %v", err, restoreErr)
+				applyErr.Message = fmt.Sprintf("%s; restore previous listeners: %v", applyErr.Error(), restoreErr)
 			}
 			supervisor.mu.Unlock()
-			return err
+			return applyErr
 		}
 		next[key] = runtime
 		started[key] = runtime

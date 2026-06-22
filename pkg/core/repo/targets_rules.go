@@ -162,7 +162,7 @@ func (store *PostgresStore) ListRulesByOrganization(ctx context.Context, organiz
 		SELECT forwarding_rules.id, forwarding_rules.organization_id, owner_user_id, name, enabled, status,
 		       forwarding_type, forwarding_rules.protocol, forwarding_rules.match_type, inbound_binding_id, coalesce(sni_hostname, ''),
 		       target_type, coalesce(target_id::text, ''), coalesce(target_group_id::text, ''), proxy_protocol_in, proxy_protocol_out,
-		       config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
+		       failure_policy, config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
 		       inbound_bindings.id, inbound_bindings.organization_id, inbound_bindings.node_group_id, inbound_bindings.listen_ip,
 		       inbound_bindings.protocol, inbound_bindings.port, inbound_bindings.match_type, inbound_bindings.created_at
 		FROM forwarding_rules
@@ -204,7 +204,7 @@ func (store *PostgresStore) FindRuleByID(ctx context.Context, organizationID str
 		SELECT forwarding_rules.id, forwarding_rules.organization_id, owner_user_id, name, enabled, status,
 		       forwarding_type, forwarding_rules.protocol, forwarding_rules.match_type, inbound_binding_id, coalesce(sni_hostname, ''),
 		       target_type, coalesce(target_id::text, ''), coalesce(target_group_id::text, ''), proxy_protocol_in, proxy_protocol_out,
-		       config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
+		       failure_policy, config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
 		       inbound_bindings.id, inbound_bindings.organization_id, inbound_bindings.node_group_id, inbound_bindings.listen_ip,
 		       inbound_bindings.protocol, inbound_bindings.port, inbound_bindings.match_type, inbound_bindings.created_at
 		FROM forwarding_rules
@@ -231,11 +231,11 @@ func (store *PostgresStore) CreateRule(ctx context.Context, rule RuleRecord, bin
 		INSERT INTO forwarding_rules (
 			id, organization_id, owner_user_id, name, enabled, status, forwarding_type, protocol, match_type,
 			inbound_binding_id, sni_hostname, target_type, target_id, target_group_id,
-			proxy_protocol_in, proxy_protocol_out, config_version, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nullif(?, '')::uuid, nullif(?, '')::uuid, ?, ?, ?, ?, ?)
+			proxy_protocol_in, proxy_protocol_out, failure_policy, config_version, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nullif(?, '')::uuid, nullif(?, '')::uuid, ?, ?, ?, ?, ?, ?)
 	`, rule.ID, rule.OrganizationID, rule.OwnerUserID, rule.Name, boolToDB(rule.Enabled), rule.Status, rule.ForwardingType, rule.Protocol, rule.MatchType,
 		binding.ID, nullIfEmpty(rule.SNIHostname), rule.TargetType, rule.TargetID, rule.TargetGroupID,
-		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.ConfigVersion, rule.CreatedAt, rule.UpdatedAt)
+		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.FailurePolicy, rule.ConfigVersion, rule.CreatedAt, rule.UpdatedAt)
 	if err != nil {
 		return mapWriteError(err)
 	}
@@ -250,11 +250,11 @@ func (store *PostgresStore) UpdateRule(ctx context.Context, rule RuleRecord, bin
 		UPDATE forwarding_rules
 		SET name = ?, enabled = ?, status = ?, forwarding_type = ?, protocol = ?, match_type = ?, inbound_binding_id = ?,
 		    sni_hostname = ?, target_type = ?, target_id = nullif(?, '')::uuid, target_group_id = nullif(?, '')::uuid,
-		    proxy_protocol_in = ?, proxy_protocol_out = ?, config_version = ?, updated_at = ?
+		    proxy_protocol_in = ?, proxy_protocol_out = ?, failure_policy = ?, config_version = ?, updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, rule.Name, boolToDB(rule.Enabled), rule.Status, rule.ForwardingType, rule.Protocol, rule.MatchType, binding.ID,
 		nullIfEmpty(rule.SNIHostname), rule.TargetType, rule.TargetID, rule.TargetGroupID,
-		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.ConfigVersion, rule.UpdatedAt, rule.OrganizationID, rule.ID)
+		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.FailurePolicy, rule.ConfigVersion, rule.UpdatedAt, rule.OrganizationID, rule.ID)
 	if err != nil {
 		return mapWriteError(err)
 	}
@@ -407,6 +407,178 @@ func (store *PostgresStore) RecordRuleTrafficReport(ctx context.Context, organiz
 		}
 	}
 	return true, nil
+}
+
+func (store *PostgresStore) ListRuleDeploymentsByOrganization(ctx context.Context, organizationID string) ([]RuleDeploymentRecord, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
+		       error_code, error_message, protocol, listen_ip, port, updated_at
+		FROM rule_deployment_statuses
+		WHERE organization_id = ?
+		ORDER BY rule_id, node_id
+	`, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	deployments := make([]RuleDeploymentRecord, 0)
+	for rows.Next() {
+		var deployment RuleDeploymentRecord
+		if err := rows.Scan(
+			&deployment.ID,
+			&deployment.OrganizationID,
+			&deployment.RuleID,
+			&deployment.NodeID,
+			&deployment.ConfigVersion,
+			&deployment.RuleConfigVersion,
+			&deployment.Status,
+			&deployment.ErrorCode,
+			&deployment.ErrorMessage,
+			&deployment.Protocol,
+			&deployment.ListenIP,
+			&deployment.Port,
+			&deployment.UpdatedAt,
+		); err != nil {
+			return nil, mapReadError(err)
+		}
+		deployments = append(deployments, deployment)
+	}
+	return deployments, rows.Err()
+}
+
+func (store *PostgresStore) ReplaceRuleDeploymentPending(ctx context.Context, organizationID string, rule RuleRecord, deployments []RuleDeploymentPendingRecord, now string, nextID func() string) error {
+	if err := store.DeleteRuleDeployments(ctx, organizationID, rule.ID); err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(deployments))
+	for _, deployment := range deployments {
+		nodeID := strings.TrimSpace(deployment.NodeID)
+		if nodeID == "" {
+			continue
+		}
+		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		if _, err := store.db.ExecContext(ctx, `
+			INSERT INTO rule_deployment_statuses (
+				id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
+				error_code, error_message, protocol, listen_ip, port, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', '', '', '', '', 0, ?)
+		`, nextID(), organizationID, rule.ID, nodeID, deployment.ConfigVersion, rule.ConfigVersion, now); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	return nil
+}
+
+func (store *PostgresStore) UpsertRuleDeploymentPending(ctx context.Context, organizationID string, rule RuleRecord, deployment RuleDeploymentPendingRecord, now string, nextID func() string) error {
+	nodeID := strings.TrimSpace(deployment.NodeID)
+	if nodeID == "" {
+		return nil
+	}
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO rule_deployment_statuses (
+			id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
+			error_code, error_message, protocol, listen_ip, port, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', '', '', '', '', 0, ?)
+		ON CONFLICT (organization_id, rule_id, node_id)
+		DO UPDATE SET
+			config_version = EXCLUDED.config_version,
+			rule_config_version = EXCLUDED.rule_config_version,
+			status = 'PENDING',
+			error_code = '',
+			error_message = '',
+			protocol = '',
+			listen_ip = '',
+			port = 0,
+			updated_at = EXCLUDED.updated_at
+	`, nextID(), organizationID, rule.ID, nodeID, deployment.ConfigVersion, rule.ConfigVersion, now)
+	return mapWriteError(err)
+}
+
+func (store *PostgresStore) RecordRuleDeploymentApplied(ctx context.Context, organizationID string, nodeID string, configVersion int, deployments []RuleDeploymentAppliedRecord, now string, nextID func() string) error {
+	seen := make(map[string]struct{}, len(deployments))
+	for _, deployment := range deployments {
+		ruleID := strings.TrimSpace(deployment.RuleID)
+		if ruleID == "" {
+			continue
+		}
+		if _, ok := seen[ruleID]; ok {
+			continue
+		}
+		seen[ruleID] = struct{}{}
+		if _, err := store.db.ExecContext(ctx, `
+			INSERT INTO rule_deployment_statuses (
+				id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
+				error_code, error_message, protocol, listen_ip, port, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, 'APPLIED', '', '', '', '', 0, ?)
+			ON CONFLICT (organization_id, rule_id, node_id)
+			DO UPDATE SET
+				config_version = EXCLUDED.config_version,
+				rule_config_version = EXCLUDED.rule_config_version,
+				status = 'APPLIED',
+				error_code = '',
+				error_message = '',
+				protocol = '',
+				listen_ip = '',
+				port = 0,
+				updated_at = EXCLUDED.updated_at
+			WHERE rule_deployment_statuses.config_version <= EXCLUDED.config_version
+		`, nextID(), organizationID, ruleID, nodeID, configVersion, deployment.RuleConfigVersion, now); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	return nil
+}
+
+func (store *PostgresStore) RecordRuleDeploymentFailures(ctx context.Context, organizationID string, nodeID string, configVersion int, failures []RuleDeploymentFailureRecord, now string, nextID func() string) error {
+	for _, failure := range failures {
+		ruleID := strings.TrimSpace(failure.RuleID)
+		if ruleID == "" {
+			continue
+		}
+		if _, err := store.db.ExecContext(ctx, `
+			INSERT INTO rule_deployment_statuses (
+				id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
+				error_code, error_message, protocol, listen_ip, port, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, 'FAILED', ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (organization_id, rule_id, node_id)
+			DO UPDATE SET
+				config_version = EXCLUDED.config_version,
+				rule_config_version = EXCLUDED.rule_config_version,
+				status = 'FAILED',
+				error_code = EXCLUDED.error_code,
+				error_message = EXCLUDED.error_message,
+				protocol = EXCLUDED.protocol,
+				listen_ip = EXCLUDED.listen_ip,
+				port = EXCLUDED.port,
+				updated_at = EXCLUDED.updated_at
+			WHERE rule_deployment_statuses.config_version = EXCLUDED.config_version
+			  AND rule_deployment_statuses.rule_config_version = EXCLUDED.rule_config_version
+		`, nextID(), organizationID, ruleID, nodeID, configVersion, failure.RuleConfigVersion,
+			failure.ErrorCode, failure.ErrorMessage, failure.Protocol, failure.ListenIP, failure.Port, now); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	return nil
+}
+
+func (store *PostgresStore) DeleteRuleDeploymentForNode(ctx context.Context, organizationID string, ruleID string, nodeID string) error {
+	_, err := store.db.ExecContext(ctx, `
+		DELETE FROM rule_deployment_statuses
+		WHERE organization_id = ? AND rule_id = ? AND node_id = ?
+	`, organizationID, ruleID, nodeID)
+	return mapWriteError(err)
+}
+
+func (store *PostgresStore) DeleteRuleDeployments(ctx context.Context, organizationID string, ruleID string) error {
+	_, err := store.db.ExecContext(ctx, `
+		DELETE FROM rule_deployment_statuses
+		WHERE organization_id = ? AND rule_id = ?
+	`, organizationID, ruleID)
+	return mapWriteError(err)
 }
 
 func mergeRuleTrafficDeltas(deltas []RuleTrafficDeltaRecord) []RuleTrafficDeltaRecord {

@@ -155,6 +155,7 @@ func decodeRuleInput(response http.ResponseWriter, request *http.Request) (servi
 		Tags:           normalized.Tags,
 		NodeGroupID:    normalized.NodeGroupID,
 		ListenIP:       normalized.ListenIP,
+		FailurePolicy:  normalized.FailurePolicy,
 		ForwardingType: normalized.ForwardingType,
 		Protocol:       normalized.Protocol,
 		Port:           normalized.Port,

@@ -191,6 +191,7 @@ type RuleRequest struct {
 	Tags           []string             `json:"tags"`
 	NodeGroupID    string               `json:"node_group_id"`
 	ListenIP       string               `json:"listen_ip"`
+	FailurePolicy  string               `json:"failure_policy"`
 	ForwardingType string               `json:"forwarding_type"`
 	Protocol       string               `json:"protocol"`
 	Port           int                  `json:"port"`
@@ -584,6 +585,7 @@ func ValidateRuleRequest(request RuleRequest) (RuleRequest, error) {
 	request.Name = strings.TrimSpace(request.Name)
 	request.NodeGroupID = strings.TrimSpace(request.NodeGroupID)
 	request.ListenIP = strings.TrimSpace(request.ListenIP)
+	request.FailurePolicy = strings.ToUpper(strings.TrimSpace(request.FailurePolicy))
 	request.ForwardingType = strings.ToUpper(strings.TrimSpace(request.ForwardingType))
 	request.Protocol = strings.ToUpper(strings.TrimSpace(request.Protocol))
 	request.Match.Type = strings.ToUpper(strings.TrimSpace(request.Match.Type))
@@ -617,6 +619,12 @@ func ValidateRuleRequest(request RuleRequest) (RuleRequest, error) {
 	}
 	if request.ForwardingType != "DIRECT" {
 		return RuleRequest{}, invalidFieldError("forwarding_type", "Only DIRECT forwarding is supported by the current runtime.", map[string]any{"actual": request.ForwardingType})
+	}
+	if request.FailurePolicy == "" {
+		request.FailurePolicy = "KEEP_ENABLED"
+	}
+	if request.FailurePolicy != "KEEP_ENABLED" && request.FailurePolicy != "DISABLE_WHEN_ALL_NODES_FAILED" {
+		return RuleRequest{}, invalidFieldError("failure_policy", "Unsupported rule failure policy.", map[string]any{"actual": request.FailurePolicy})
 	}
 	if request.Match.Type != "ANY_INBOUND" && request.Match.Type != "TLS_SNI" {
 		return RuleRequest{}, invalidFieldError("match.type", "Rule match type must be ANY_INBOUND or TLS_SNI.", map[string]any{"actual": request.Match.Type})

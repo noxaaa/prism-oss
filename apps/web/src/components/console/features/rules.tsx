@@ -55,6 +55,7 @@ import { bytes, controlDelete, controlGet, controlPatch, controlPost, formatBitr
 import { localizeControlError, localizeEnum, localizeImportIssue, useI18n } from "@/components/console/i18n";
 import { hasAnyPermission, hasPermission } from "@/components/console/permissions";
 import { ResourceSelect } from "@/components/console/resource-select";
+import { RuleDeploymentCell, RuleDeploymentSummary } from "@/components/console/rule-deployment-ui";
 import { RuleUpstreamCell } from "@/components/console/rule-upstream-cell";
 import { useConsoleSession } from "@/components/console/shell";
 import {
@@ -82,6 +83,11 @@ const ruleProtocolOptions = [
 
 const forwardingTypeOptions = [
   { value: "DIRECT", label: "Direct forwarding" },
+];
+
+const ruleFailurePolicyOptions = [
+  { value: "KEEP_ENABLED", labelKey: "rules.failurePolicyKeepEnabled" },
+  { value: "DISABLE_WHEN_ALL_NODES_FAILED", labelKey: "rules.failurePolicyDisableAllFailed" },
 ];
 
 const proxyProtocolOptions = [
@@ -347,6 +353,7 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
                 </TableHead>
                 <TableHead>{t("rules.name")}</TableHead>
                 <TableHead>{t("rules.status")}</TableHead>
+                <TableHead>{t("rules.deployment")}</TableHead>
                 <TableHead>{t("rules.listener")}</TableHead>
                 <TableHead>{t("rules.match")}</TableHead>
                 <TableHead>{t("rules.upstream")}</TableHead>
@@ -371,6 +378,7 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
                     </div>
                   </TableCell>
                   <TableCell><StatusBadge value={rule.status} /></TableCell>
+                  <TableCell><RuleDeploymentCell rule={rule} /></TableCell>
                   <TableCell>{localizeEnum(rule.protocol, locale)} {rule.listen_ip}:{rule.port}</TableCell>
                   <TableCell>{localizeEnum(rule.match.type, locale)}{rule.match.sni_hostname ? ` ${rule.match.sni_hostname}` : ""}</TableCell>
                   <TableCell><RuleUpstreamCell rule={rule} targetGroupOptionLabelsByID={targetGroupOptionLabelsByID} targetGroupsByID={targetGroupsByID} targetOptionLabelsByID={targetOptionLabelsByID} targetsByID={targetsByID} /></TableCell>
@@ -578,10 +586,11 @@ function RuleDiagnosticsDialog({ onOpenChange, rule }: { onOpenChange: (open: bo
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
+        <RuleDeploymentSummary rule={rule} />
         {diagnostics ? (
           <div className="space-y-4">
             <SummaryGrid>
-              <SummaryCard icon={<ActivityIcon />} label={t("rules.currentBandwidth")} value={formatBandwidthBps(diagnostics.bandwidth_bps)} />
+              <SummaryCard icon={<ActivityIcon />} label={t("rules.currentBandwidth")} value={formatBitrateBps(diagnostics.bandwidth_bps)} />
               <SummaryCard icon={<UploadIcon />} label={t("usage.upload")} value={bytes(diagnostics.upload_bytes)} />
               <SummaryCard icon={<DownloadIcon />} label={t("usage.download")} value={bytes(diagnostics.download_bytes)} />
             </SummaryGrid>
@@ -603,7 +612,7 @@ function RuleDiagnosticsDialog({ onOpenChange, rule }: { onOpenChange: (open: bo
                     <TableCell>{target.address}</TableCell>
                     <TableCell><StatusBadge value={target.status} /></TableCell>
                     <TableCell>{target.latency_ms == null ? t("common.notLoaded") : t("rules.latencyValue", { value: target.latency_ms })}</TableCell>
-                    <TableCell>{target.bandwidth_bps == null ? t("common.notLoaded") : formatBandwidthBps(target.bandwidth_bps)}</TableCell>
+                    <TableCell>{target.bandwidth_bps == null ? t("common.notLoaded") : formatBitrateBps(target.bandwidth_bps)}</TableCell>
                     <TableCell>{t("rules.trafficValue", { upload: bytes(target.upload_bytes), download: bytes(target.download_bytes) })}</TableCell>
                   </TableRow>
                 ))}
@@ -622,10 +631,6 @@ function RuleDiagnosticsDialog({ onOpenChange, rule }: { onOpenChange: (open: bo
       </DialogContent>
     </Dialog>
   );
-}
-
-function formatBandwidthBps(value: number): string {
-  return formatBitrateBps(value);
 }
 
 function RuleCreateDrawer({ onCreated, onOpenChange, open }: { onCreated: () => Promise<void>; onOpenChange: (open: boolean) => void; open: boolean }) {
@@ -704,6 +709,7 @@ function RuleMutationForm({ onSaved, rule, submitLabel }: { onSaved: () => Promi
   const [matchType, setMatchType] = useState(rule?.match.type ?? "ANY_INBOUND");
   const [proxyIn, setProxyIn] = useState(rule?.proxy_protocol.in ?? "NONE");
   const [proxyOut, setProxyOut] = useState(rule?.proxy_protocol.out ?? "NONE");
+  const [failurePolicy, setFailurePolicy] = useState(rule?.failure_policy ?? "KEEP_ENABLED");
   const [ruleEnabled, setRuleEnabled] = useState(rule?.enabled ?? false);
   const nodeGroups = useControlList<ResourceOption>("/api/control/resource-options/node-groups?access=USE");
   const targets = useControlList<ResourceOption>("/api/control/resource-options/targets");
@@ -714,6 +720,7 @@ function RuleMutationForm({ onSaved, rule, submitLabel }: { onSaved: () => Promi
   const localizedProtocolOptions = ruleProtocolOptions.map((option) => ({ ...option, label: localizeEnum(option.value, locale) }));
   const localizedForwardingTypeOptions = forwardingTypeOptions.map((option) => ({ ...option, label: localizeEnum(option.value, locale) }));
   const localizedProxyProtocolOptions = proxyProtocolOptions.map((option) => ({ ...option, label: localizeEnum(option.value, locale) }));
+  const localizedFailurePolicyOptions = ruleFailurePolicyOptions.map((option) => ({ value: option.value, label: t(option.labelKey) }));
   const localizedMatchOptions = protocol !== "TCP"
     ? [{ value: "ANY_INBOUND", label: localizeEnum("ANY_INBOUND", locale) }]
     : [{ value: "ANY_INBOUND", label: localizeEnum("ANY_INBOUND", locale) }, { value: "TLS_SNI", label: localizeEnum("TLS_SNI", locale) }];
@@ -751,6 +758,7 @@ function RuleMutationForm({ onSaved, rule, submitLabel }: { onSaved: () => Promi
       tags: String(form.get("tags") ?? "").split(",").map((tag) => tag.trim()).filter(Boolean),
       node_group_id: nodeGroupID,
       listen_ip: listenIP,
+      failure_policy: failurePolicy,
       forwarding_type: "DIRECT",
       protocol,
       port: Number(port),
@@ -792,6 +800,8 @@ function RuleMutationForm({ onSaved, rule, submitLabel }: { onSaved: () => Promi
           <ControlledTextField label={t("rules.port")} onValueChange={(value) => { setPort(value); setListenIP(""); }} placeholder="443" type="number" value={port} />
         </div>
         <ResourceSelect label={t("rules.listenIP")} onValueChange={setListenIP} options={listenIPs.data} value={listenIP} />
+        <EnumSelect label={t("rules.failurePolicy")} onValueChange={setFailurePolicy} options={localizedFailurePolicyOptions} value={failurePolicy} />
+        <FieldDescription>{t("rules.failurePolicyDescription")}</FieldDescription>
         <div className={cn("grid gap-3", matchType === "TLS_SNI" ? "md:grid-cols-2" : "")}>
           <EnumSelect label={t("rules.matchType")} onValueChange={setMatchType} options={localizedMatchOptions} value={matchType} />
           {matchType === "TLS_SNI" ? <TextField defaultValue={rule?.match.sni_hostname ?? ""} label={t("rules.sniHostname")} name="sni_hostname" placeholder="app.customer.example" /> : null}

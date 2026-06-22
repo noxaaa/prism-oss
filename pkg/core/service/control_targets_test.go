@@ -490,6 +490,27 @@ func (rules targetGroupServiceTestRuleRepository) RecordNodeRuleTrafficAssignmen
 func (rules targetGroupServiceTestRuleRepository) RecordRuleTrafficReport(context.Context, string, string, repo.RuleTrafficReportRecord, []repo.RuleTrafficDeltaRecord, string, func() string) (bool, error) {
 	return false, nil
 }
+func (rules targetGroupServiceTestRuleRepository) ListRuleDeploymentsByOrganization(context.Context, string) ([]repo.RuleDeploymentRecord, error) {
+	return nil, nil
+}
+func (rules targetGroupServiceTestRuleRepository) ReplaceRuleDeploymentPending(context.Context, string, repo.RuleRecord, []repo.RuleDeploymentPendingRecord, string, func() string) error {
+	return nil
+}
+func (rules targetGroupServiceTestRuleRepository) UpsertRuleDeploymentPending(context.Context, string, repo.RuleRecord, repo.RuleDeploymentPendingRecord, string, func() string) error {
+	return nil
+}
+func (rules targetGroupServiceTestRuleRepository) RecordRuleDeploymentApplied(context.Context, string, string, int, []repo.RuleDeploymentAppliedRecord, string, func() string) error {
+	return nil
+}
+func (rules targetGroupServiceTestRuleRepository) RecordRuleDeploymentFailures(context.Context, string, string, int, []repo.RuleDeploymentFailureRecord, string, func() string) error {
+	return nil
+}
+func (rules targetGroupServiceTestRuleRepository) DeleteRuleDeploymentForNode(context.Context, string, string, string) error {
+	return nil
+}
+func (rules targetGroupServiceTestRuleRepository) DeleteRuleDeployments(context.Context, string, string) error {
+	return nil
+}
 
 type targetGroupServiceTestHealthRepository struct {
 	store *targetGroupServiceTestStore

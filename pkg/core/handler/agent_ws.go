@@ -294,16 +294,28 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 			}
 		case "config_ack":
 			var payload struct {
-				ConfigVersion int    `json:"config_version"`
-				Status        string `json:"status"`
-				ErrorMessage  string `json:"error_message"`
+				ConfigVersion int                            `json:"config_version"`
+				Status        string                         `json:"status"`
+				ErrorMessage  string                         `json:"error_message"`
+				Errors        []agent.ConfigApplyErrorDetail `json:"errors"`
 			}
 			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_CONFIG_ACK"})
 				continue
 			}
 			if authResult.AgentType == "NODE" {
-				if err := server.controlService.AcknowledgeNodeAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID, payload.ConfigVersion, payload.Status, payload.ErrorMessage); err != nil {
+				applyErrors := make([]service.ConfigApplyErrorInput, 0, len(payload.Errors))
+				for _, applyErr := range payload.Errors {
+					applyErrors = append(applyErrors, service.ConfigApplyErrorInput{
+						Code:     applyErr.Code,
+						RuleIDs:  applyErr.RuleIDs,
+						Protocol: applyErr.Protocol,
+						ListenIP: applyErr.ListenIP,
+						Port:     applyErr.Port,
+						Message:  applyErr.Message,
+					})
+				}
+				if err := server.controlService.AcknowledgeNodeAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID, payload.ConfigVersion, payload.Status, payload.ErrorMessage, applyErrors); err != nil {
 					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "CONFIG_ACK_FAILED"})
 				}
 			}

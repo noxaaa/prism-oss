@@ -159,6 +159,90 @@ func TestNodeRuntimeReportsRestartFailure(t *testing.T) {
 	}
 }
 
+func TestNodeRuntimeIncludesStructuredApplyErrorsInConfigAck(t *testing.T) {
+	applier := &recordingApplier{err: ConfigApplyError{
+		Message: "listen tcp 127.0.0.1:443: bind: address already in use",
+		Errors: []ConfigApplyErrorDetail{
+			{
+				Code:     "LISTENER_BIND_FAILED",
+				RuleIDs:  []string{"rule_https"},
+				Protocol: domain.ProtocolTCP,
+				ListenIP: "127.0.0.1",
+				Port:     443,
+				Message:  "bind: address already in use",
+			},
+		},
+	}}
+	ackReceived := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		conn, err := websocket.Accept(response, request, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+		writeRuntimeTestEnvelope(t, request.Context(), conn, "auth_success", map[string]any{
+			"agent_id": "node_1",
+		})
+		hello := readRuntimeTestEnvelope(t, request.Context(), conn)
+		if hello.Type != "hello" {
+			t.Errorf("expected hello, got %#v", hello)
+			return
+		}
+		writeRuntimeTestEnvelope(t, request.Context(), conn, "config_snapshot", ConfigSnapshot{
+			NodeID:        "node_1",
+			ConfigVersion: 7,
+			Rules: []RuleConfig{
+				{ID: "rule_https", Enabled: true, Protocol: domain.ProtocolTCP, ListenIP: "127.0.0.1", Port: 443, MatchType: "ANY_INBOUND"},
+			},
+		})
+		configAck := readRuntimeTestEnvelope(t, request.Context(), conn)
+		if configAck.Type != "config_ack" {
+			t.Errorf("expected config_ack, got %#v", configAck)
+			return
+		}
+		var payload struct {
+			ConfigVersion int                      `json:"config_version"`
+			Status        string                   `json:"status"`
+			ErrorMessage  string                   `json:"error_message"`
+			Errors        []ConfigApplyErrorDetail `json:"errors"`
+		}
+		if err := json.Unmarshal(configAck.Payload, &payload); err != nil {
+			t.Errorf("decode config ack: %v", err)
+			return
+		}
+		if payload.ConfigVersion != 7 || payload.Status != "FAILED" || payload.ErrorMessage == "" {
+			t.Errorf("unexpected failed ack payload: %#v", payload)
+			return
+		}
+		if len(payload.Errors) != 1 || payload.Errors[0].Code != "LISTENER_BIND_FAILED" || payload.Errors[0].RuleIDs[0] != "rule_https" {
+			t.Errorf("expected structured listener bind error in ack, got %#v", payload.Errors)
+			return
+		}
+		ackReceived <- struct{}{}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := NewNodeRuntime(RuntimeConfig{
+		AppName:         "Runtime App",
+		ControlPlaneURL: server.URL,
+		AgentCredential: "credential-token",
+	}, applier)
+	runtime.metricsInterval = time.Hour
+	runtime.heartbeatInterval = time.Hour
+	go func() {
+		_ = runtime.Run(ctx)
+	}()
+
+	select {
+	case <-ackReceived:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for failed config ack")
+	}
+}
+
 func TestNodeRuntimeSendsHeartbeatWithAppliedConfigVersion(t *testing.T) {
 	type heartbeatPayload struct {
 		AgentID              string `json:"agent_id"`
@@ -812,13 +896,14 @@ func TestNodeRuntimeReturnsPermanentConfigurationErrors(t *testing.T) {
 type recordingApplier struct {
 	mu      sync.Mutex
 	applied ConfigSnapshot
+	err     error
 }
 
 func (applier *recordingApplier) Apply(ctx context.Context, snapshot ConfigSnapshot) error {
 	applier.mu.Lock()
 	defer applier.mu.Unlock()
 	applier.applied = snapshot
-	return nil
+	return applier.err
 }
 
 func (applier *recordingApplier) snapshot() ConfigSnapshot {
