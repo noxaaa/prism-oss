@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+var runMonitorProbeCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
 func (runtime *NodeRuntime) setMonitorSnapshot(snapshot MonitorConfigSnapshot) {
 	runtime.monitorMu.Lock()
 	defer runtime.monitorMu.Unlock()
@@ -54,7 +58,7 @@ func (runtime *NodeRuntime) probeHealthTarget(ctx context.Context, check Monitor
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	startedAt := time.Now()
-	status, err := runHealthProbe(probeCtx, check, target)
+	status, err := runHealthProbe(probeCtx, check, target, timeout)
 	latency := int(time.Since(startedAt).Milliseconds())
 	errorMessage := ""
 	if err != nil {
@@ -72,14 +76,14 @@ func (runtime *NodeRuntime) probeHealthTarget(ctx context.Context, check Monitor
 	}
 }
 
-func runHealthProbe(ctx context.Context, check MonitorHealthCheck, target MonitorHealthTarget) (string, error) {
+func runHealthProbe(ctx context.Context, check MonitorHealthCheck, target MonitorHealthTarget, timeout time.Duration) (string, error) {
 	switch strings.ToUpper(strings.TrimSpace(check.ProbeType)) {
 	case "TCP_PORT":
 		return runTCPHealthProbe(ctx, target.Host, effectiveProbePort(check, target.Port))
 	case "HTTP":
 		return runHTTPHealthProbe(ctx, check, target)
 	case "ICMP":
-		return runICMPHealthProbe(ctx, target.Host)
+		return runICMPHealthProbe(ctx, target.Host, timeout)
 	default:
 		return "UNKNOWN", fmt.Errorf("unsupported probe type %s", check.ProbeType)
 	}
@@ -118,12 +122,25 @@ func runHTTPHealthProbe(ctx context.Context, check MonitorHealthCheck, target Mo
 	return "ONLINE", nil
 }
 
-func runICMPHealthProbe(ctx context.Context, host string) (string, error) {
-	cmd := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "1", host)
-	if output, err := cmd.CombinedOutput(); err != nil {
+func runICMPHealthProbe(ctx context.Context, host string, timeout time.Duration) (string, error) {
+	if output, err := runMonitorProbeCommand(ctx, "ping", "-c", "1", "-W", strconv.Itoa(pingTimeoutSeconds(timeout)), host); err != nil {
 		return "OFFLINE", fmt.Errorf("ping failed: %s", strings.TrimSpace(string(output)))
 	}
 	return "ONLINE", nil
+}
+
+func pingTimeoutSeconds(timeout time.Duration) int {
+	if timeout <= 0 {
+		return 1
+	}
+	seconds := int(timeout / time.Second)
+	if timeout%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
 }
 
 func effectiveProbePort(check MonitorHealthCheck, fallback int) int {

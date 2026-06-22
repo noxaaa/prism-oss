@@ -8,7 +8,18 @@ import (
 
 func TestOSSMigrationsIncludeMonitorHealthAndDNSTables(t *testing.T) {
 	root := repoRoot(t)
-	source := readText(t, filepath.Join(root, "migrations", "core", "00001_core.sql"))
+	initial := readText(t, filepath.Join(root, "migrations", "core", "00001_core.sql"))
+	for _, forbidden := range []string{
+		"CREATE TABLE monitor_groups",
+		"CREATE TABLE health_checks",
+		"CREATE TABLE dns_records",
+	} {
+		if strings.Contains(initial, forbidden) {
+			t.Fatalf("new monitor/health/DNS schema must live in a forward migration, not 00001_core.sql; found %q", forbidden)
+		}
+	}
+
+	source := readText(t, filepath.Join(root, "migrations", "core", "00003_monitor_health_dns.sql"))
 	for _, required := range []string{
 		"CREATE TABLE monitor_groups",
 		"CREATE TABLE monitors",
@@ -64,7 +75,7 @@ func TestHealthCheckTargetQueriesExcludeDeletedTargets(t *testing.T) {
 
 func TestHealthCheckTargetsSupportEmptyTargetGroupBindings(t *testing.T) {
 	root := repoRoot(t)
-	migration := readText(t, filepath.Join(root, "migrations", "core", "00001_core.sql"))
+	migration := readText(t, filepath.Join(root, "migrations", "core", "00003_monitor_health_dns.sql"))
 	for _, required := range []string{
 		"target_id uuid",
 		"CREATE UNIQUE INDEX uniq_health_check_targets_group_binding",
