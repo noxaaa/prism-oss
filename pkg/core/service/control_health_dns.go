@@ -10,11 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"sort"
 	"strings"
 
 	"github.com/noxaaa/prism-oss/pkg/core/agent"
-	"github.com/noxaaa/prism-oss/pkg/core/dns"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
@@ -649,36 +647,6 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 	return mapServiceError(err)
 }
 
-type dnsHealthActionConfig struct {
-	DNSRecordID    string   `json:"dns_record_id"`
-	FailoverValues []string `json:"failover_values,omitempty"`
-}
-
-type dnsEventAction struct {
-	OrganizationID    string
-	DNSRecordID       string
-	Provider          string
-	EncryptedSecret   string
-	Zone              string
-	RecordName        string
-	RecordType        string
-	Values            []string
-	LastAppliedValues string
-}
-
-type dnsHealthActionExecutor struct {
-	service *ControlService
-}
-
-func (executor dnsHealthActionExecutor) Supports(eventType string) bool {
-	switch strings.ToUpper(strings.TrimSpace(eventType)) {
-	case "DNS_FAILOVER", "DNS_DELETE_OFFLINE", "DNS_DELETE_ALL", "DNS_RESTORE":
-		return true
-	default:
-		return false
-	}
-}
-
 func (service *ControlService) createDNSHealthEvent(ctx context.Context, repositories repo.Repositories, organizationID string, input DNSRecordMutationInput, record repo.DNSRecordRecord, now string) error {
 	if _, err := repositories.HealthChecks().FindHealthCheckByID(ctx, organizationID, input.HealthCheckID); err != nil {
 		return err
@@ -717,6 +685,7 @@ func (service *ControlService) createDNSHealthEvent(ctx context.Context, reposit
 func (service *ControlService) buildHealthActions(ctx context.Context, repositories repo.Repositories, organizationID string, results []repo.HealthResultRecord) ([]pendingHealthAction, error) {
 	actions := make([]pendingHealthAction, 0)
 	seenRulesByCheck := map[string][]repo.HealthEvaluationRuleRecord{}
+	seenChecksByID := map[string]repo.HealthCheckRecord{}
 	for _, result := range aggregateHealthResultsByCheck(results) {
 		rules, ok := seenRulesByCheck[result.HealthCheckID]
 		if !ok {
@@ -726,6 +695,18 @@ func (service *ControlService) buildHealthActions(ctx context.Context, repositor
 				return nil, err
 			}
 			seenRulesByCheck[result.HealthCheckID] = rules
+		}
+		if len(rules) == 0 {
+			continue
+		}
+		check, ok := seenChecksByID[result.HealthCheckID]
+		if !ok {
+			var err error
+			check, err = repositories.HealthChecks().FindHealthCheckByID(ctx, organizationID, result.HealthCheckID)
+			if err != nil {
+				return nil, err
+			}
+			seenChecksByID[result.HealthCheckID] = check
 		}
 		for _, rule := range rules {
 			if !rule.Enabled {
@@ -741,6 +722,8 @@ func (service *ControlService) buildHealthActions(ctx context.Context, repositor
 				}
 				payload, ok, err := executor.BuildAction(ctx, repositories, HealthActionExecutionInput{
 					OrganizationID: organizationID,
+					HealthCheck:    check,
+					Rule:           rule,
 					Event:          event,
 					Result:         result,
 				})
@@ -783,106 +766,12 @@ func aggregateHealthResultsByCheck(results []repo.HealthResultRecord) []repo.Hea
 	return aggregated
 }
 
-func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, repositories repo.Repositories, input HealthActionExecutionInput) (any, bool, error) {
-	var config dnsHealthActionConfig
-	if err := json.Unmarshal([]byte(input.Event.ConfigJSON), &config); err != nil {
-		return dnsEventAction{}, false, err
-	}
-	if strings.TrimSpace(config.DNSRecordID) == "" {
-		return dnsEventAction{}, false, ErrInvalidInput
-	}
-	record, err := repositories.DNSRecords().FindDNSRecordByID(ctx, input.OrganizationID, config.DNSRecordID)
-	if err != nil {
-		return dnsEventAction{}, false, err
-	}
-	credential, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, input.OrganizationID, record.DNSCredentialID)
-	if err != nil {
-		return dnsEventAction{}, false, err
-	}
-	desiredValues := parseStringListJSON(record.DesiredValuesJSON)
-	values := desiredValues
-	status := strings.ToUpper(strings.TrimSpace(input.Result.Status))
-	switch strings.ToUpper(strings.TrimSpace(input.Event.EventType)) {
-	case "DNS_FAILOVER":
-		if status == "OFFLINE" {
-			values = config.FailoverValues
-		}
-	case "DNS_DELETE_OFFLINE":
-		if status == "OFFLINE" {
-			values = nil
-		}
-	case "DNS_DELETE_ALL":
-		values = nil
-	case "DNS_RESTORE":
-		if status != "ONLINE" {
-			return dnsEventAction{}, false, nil
-		}
-	default:
-		return dnsEventAction{}, false, ErrInvalidInput
-	}
-	return dnsEventAction{
-		OrganizationID:    input.OrganizationID,
-		DNSRecordID:       record.ID,
-		Provider:          credential.Provider,
-		EncryptedSecret:   credential.EncryptedSecret,
-		Zone:              record.Zone,
-		RecordName:        record.RecordName,
-		RecordType:        record.RecordType,
-		Values:            values,
-		LastAppliedValues: stringListJSON(values),
-	}, true, nil
-}
-
-func (executor dnsHealthActionExecutor) Execute(ctx context.Context, rawAction any) error {
-	action, ok := rawAction.(dnsEventAction)
-	if !ok {
-		return ErrInvalidInput
-	}
-	secret, err := executor.service.decryptDNSSecret(action.EncryptedSecret)
-	if err != nil {
-		return err
-	}
-	provider, ok := executor.service.dnsProviders.ProviderForKey(action.Provider)
-	if !ok {
-		return ErrInvalidInput
-	}
-	if err := provider.ApplyRecord(ctx, dns.ApplyRecordInput{
-		ProviderSecret: secret,
-		Zone:           action.Zone,
-		RecordName:     action.RecordName,
-		RecordType:     action.RecordType,
-		Values:         action.Values,
-	}); err != nil {
-		return err
-	}
-	err = executor.service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
-		return repositories.DNSRecords().UpdateDNSRecordLastApplied(ctx, action.OrganizationID, action.DNSRecordID, action.LastAppliedValues, executor.service.timestamp())
-	})
-	return mapServiceError(err)
-}
-
 func normalizedConfigJSON(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "{}"
 	}
 	return value
-}
-
-func stringListJSON(values []string) string {
-	normalized := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			normalized = append(normalized, value)
-		}
-	}
-	sort.Strings(normalized)
-	data, err := json.Marshal(normalized)
-	if err != nil {
-		return "[]"
-	}
-	return string(data)
 }
 
 func toHealthCheckPayloads(checks []repo.HealthCheckRecord) []HealthCheckPayload {

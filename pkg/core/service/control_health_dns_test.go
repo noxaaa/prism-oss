@@ -172,6 +172,7 @@ func TestRecordMonitorHealthResultsUsesCustomHealthActionExecutor(t *testing.T) 
 		checks: []repo.HealthCheckRecord{{
 			ID:             "health_1",
 			OrganizationID: "org_1",
+			Name:           "edge probe",
 			Enabled:        true,
 			Targets: []repo.HealthCheckTargetRecord{{
 				ID:            "health_target_1",
@@ -214,7 +215,7 @@ func TestRecordMonitorHealthResultsUsesCustomHealthActionExecutor(t *testing.T) 
 		t.Fatalf("expected custom executor to run once, got %#v", executor.executed)
 	}
 	action := executor.executed[0]
-	if action.EventID != "event_1" || action.Status != "OFFLINE" || action.ConfigJSON != `{"url":"https://hooks.example.test/health"}` {
+	if action.EventID != "event_1" || action.RuleID != "rule_1" || action.HealthCheckName != "edge probe" || action.Status != "OFFLINE" || action.ConfigJSON != `{"url":"https://hooks.example.test/health"}` {
 		t.Fatalf("unexpected custom action: %#v", action)
 	}
 }
@@ -640,9 +641,11 @@ type recordingHealthActionExecutor struct {
 }
 
 type recordingHealthEventAction struct {
-	EventID    string
-	Status     string
-	ConfigJSON string
+	EventID         string
+	RuleID          string
+	HealthCheckName string
+	Status          string
+	ConfigJSON      string
 }
 
 func (executor *recordingHealthActionExecutor) Supports(eventType string) bool {
@@ -650,7 +653,7 @@ func (executor *recordingHealthActionExecutor) Supports(eventType string) bool {
 }
 
 func (executor *recordingHealthActionExecutor) BuildAction(_ context.Context, _ repo.Repositories, input HealthActionExecutionInput) (any, bool, error) {
-	return recordingHealthEventAction{EventID: input.Event.ID, Status: input.Result.Status, ConfigJSON: input.Event.ConfigJSON}, true, nil
+	return recordingHealthEventAction{EventID: input.Event.ID, RuleID: input.Rule.ID, HealthCheckName: input.HealthCheck.Name, Status: input.Result.Status, ConfigJSON: input.Event.ConfigJSON}, true, nil
 }
 
 func (executor *recordingHealthActionExecutor) Execute(_ context.Context, action any) error {

@@ -12,6 +12,8 @@ import (
 // without changing monitor result ingestion.
 type HealthActionExecutionInput struct {
 	OrganizationID string
+	HealthCheck    repo.HealthCheckRecord
+	Rule           repo.HealthEvaluationRuleRecord
 	Event          repo.HealthEventRecord
 	Result         repo.HealthResultRecord
 }
