@@ -135,7 +135,7 @@ func (service *ControlService) ListHealthResults(ctx context.Context, identity I
 }
 
 func (service *ControlService) RecordMonitorHealthResults(ctx context.Context, organizationID string, monitorID string, results []HealthResultInput) error {
-	var actions []healthEventAction
+	var actions []pendingHealthAction
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		now := service.timestamp()
 		records := make([]repo.HealthResultRecord, 0, len(results))
@@ -161,7 +161,7 @@ func (service *ControlService) RecordMonitorHealthResults(ctx context.Context, o
 			return err
 		}
 		var err error
-		actions, err = service.buildHealthEventActions(ctx, repositories, organizationID, records)
+		actions, err = service.buildHealthActions(ctx, repositories, organizationID, records)
 		return err
 	})
 	if err != nil {
@@ -625,7 +625,7 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 	return mapServiceError(err)
 }
 
-type dnsHealthEventConfig struct {
+type dnsHealthActionConfig struct {
 	DNSRecordID    string   `json:"dns_record_id"`
 	FailoverValues []string `json:"failover_values,omitempty"`
 }
@@ -642,11 +642,11 @@ type dnsEventAction struct {
 	LastAppliedValues string
 }
 
-type dnsHealthEventExecutor struct {
+type dnsHealthActionExecutor struct {
 	service *ControlService
 }
 
-func (executor dnsHealthEventExecutor) Supports(eventType string) bool {
+func (executor dnsHealthActionExecutor) Supports(eventType string) bool {
 	switch strings.ToUpper(strings.TrimSpace(eventType)) {
 	case "DNS_FAILOVER", "DNS_DELETE_OFFLINE", "DNS_DELETE_ALL", "DNS_RESTORE":
 		return true
@@ -659,7 +659,7 @@ func (service *ControlService) createDNSHealthEvent(ctx context.Context, reposit
 	if _, err := repositories.HealthChecks().FindHealthCheckByID(ctx, organizationID, input.HealthCheckID); err != nil {
 		return err
 	}
-	configJSON, err := json.Marshal(dnsHealthEventConfig{DNSRecordID: record.ID, FailoverValues: input.FailoverValues})
+	configJSON, err := json.Marshal(dnsHealthActionConfig{DNSRecordID: record.ID, FailoverValues: input.FailoverValues})
 	if err != nil {
 		return err
 	}
@@ -690,8 +690,8 @@ func (service *ControlService) createDNSHealthEvent(ctx context.Context, reposit
 	return repositories.HealthChecks().CreateHealthEvaluationRule(ctx, rule, []repo.HealthEventRecord{event})
 }
 
-func (service *ControlService) buildHealthEventActions(ctx context.Context, repositories repo.Repositories, organizationID string, results []repo.HealthResultRecord) ([]healthEventAction, error) {
-	actions := make([]healthEventAction, 0)
+func (service *ControlService) buildHealthActions(ctx context.Context, repositories repo.Repositories, organizationID string, results []repo.HealthResultRecord) ([]pendingHealthAction, error) {
+	actions := make([]pendingHealthAction, 0)
 	seenRulesByCheck := map[string][]repo.HealthEvaluationRuleRecord{}
 	for _, result := range results {
 		status := strings.ToUpper(strings.TrimSpace(result.Status))
@@ -715,11 +715,11 @@ func (service *ControlService) buildHealthEventActions(ctx context.Context, repo
 				if !event.Enabled {
 					continue
 				}
-				executor := service.healthEventExecutorForType(event.EventType)
+				executor := service.healthActionExecutorForType(event.EventType)
 				if executor == nil {
 					return nil, ErrInvalidInput
 				}
-				payload, ok, err := executor.BuildAction(ctx, repositories, HealthEventExecutionInput{
+				payload, ok, err := executor.BuildAction(ctx, repositories, HealthActionExecutionInput{
 					OrganizationID: organizationID,
 					Event:          event,
 					Result:         result,
@@ -730,15 +730,15 @@ func (service *ControlService) buildHealthEventActions(ctx context.Context, repo
 				if !ok {
 					continue
 				}
-				actions = append(actions, healthEventAction{executor: executor, payload: payload})
+				actions = append(actions, pendingHealthAction{executor: executor, payload: payload})
 			}
 		}
 	}
 	return actions, nil
 }
 
-func (executor dnsHealthEventExecutor) BuildAction(ctx context.Context, repositories repo.Repositories, input HealthEventExecutionInput) (any, bool, error) {
-	var config dnsHealthEventConfig
+func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, repositories repo.Repositories, input HealthActionExecutionInput) (any, bool, error) {
+	var config dnsHealthActionConfig
 	if err := json.Unmarshal([]byte(input.Event.ConfigJSON), &config); err != nil {
 		return dnsEventAction{}, false, err
 	}
@@ -787,7 +787,7 @@ func (executor dnsHealthEventExecutor) BuildAction(ctx context.Context, reposito
 	}, true, nil
 }
 
-func (executor dnsHealthEventExecutor) Execute(ctx context.Context, rawAction any) error {
+func (executor dnsHealthActionExecutor) Execute(ctx context.Context, rawAction any) error {
 	action, ok := rawAction.(dnsEventAction)
 	if !ok {
 		return ErrInvalidInput

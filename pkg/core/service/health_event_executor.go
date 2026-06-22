@@ -7,26 +7,32 @@ import (
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
 
-type HealthEventExecutionInput struct {
+// HealthActionExecutor is the extension point for side effects triggered by health evaluation rules.
+// DNS failover is the OSS default action; webhook, email, and other action types can register here
+// without changing monitor result ingestion.
+type HealthActionExecutionInput struct {
 	OrganizationID string
 	Event          repo.HealthEventRecord
 	Result         repo.HealthResultRecord
 }
 
-type HealthEventExecutor interface {
+type HealthActionExecutor interface {
 	Supports(eventType string) bool
-	BuildAction(ctx context.Context, repositories repo.Repositories, input HealthEventExecutionInput) (any, bool, error)
+	BuildAction(ctx context.Context, repositories repo.Repositories, input HealthActionExecutionInput) (any, bool, error)
 	Execute(ctx context.Context, action any) error
 }
 
-type healthEventAction struct {
-	executor HealthEventExecutor
+type HealthEventExecutionInput = HealthActionExecutionInput
+type HealthEventExecutor = HealthActionExecutor
+
+type pendingHealthAction struct {
+	executor HealthActionExecutor
 	payload  any
 }
 
-func (service *ControlService) healthEventExecutorForType(eventType string) HealthEventExecutor {
+func (service *ControlService) healthActionExecutorForType(eventType string) HealthActionExecutor {
 	eventType = strings.ToUpper(strings.TrimSpace(eventType))
-	for _, executor := range service.healthEventExecutors {
+	for _, executor := range service.healthActionExecutors {
 		if executor != nil && executor.Supports(eventType) {
 			return executor
 		}

@@ -40,7 +40,7 @@ type ControlService struct {
 	targetGroupSchedulers   TargetGroupSchedulerSupportFunc
 	dnsSecretEncryptionKey  string
 	dnsProviders            dns.ProviderRegistry
-	healthEventExecutors    []HealthEventExecutor
+	healthActionExecutors   []HealthActionExecutor
 }
 
 func NewControlService(store repo.UnitOfWork) *ControlService {
@@ -59,6 +59,7 @@ type ControlServiceOptions struct {
 	TargetGroupSchedulers   TargetGroupSchedulerSupportFunc
 	DNSSecretEncryptionKey  string
 	DNSProviders            dns.ProviderRegistry
+	HealthActionExecutors   []HealthActionExecutor
 	HealthEventExecutors    []HealthEventExecutor
 }
 
@@ -84,7 +85,7 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 		targetGroupSchedulers:   options.TargetGroupSchedulers,
 		dnsSecretEncryptionKey:  options.DNSSecretEncryptionKey,
 		dnsProviders:            options.DNSProviders,
-		healthEventExecutors:    append([]HealthEventExecutor(nil), options.HealthEventExecutors...),
+		healthActionExecutors:   append([]HealthActionExecutor(nil), options.HealthActionExecutors...),
 	}
 	if service.authorizer == nil {
 		service.authorizer = defaultControlAuthorizer()
@@ -92,7 +93,8 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 	if service.dnsProviders == nil {
 		service.dnsProviders = dns.DefaultProviderRegistry()
 	}
-	service.healthEventExecutors = append(service.healthEventExecutors, dnsHealthEventExecutor{service: service})
+	service.healthActionExecutors = append(service.healthActionExecutors, options.HealthEventExecutors...)
+	service.healthActionExecutors = append(service.healthActionExecutors, dnsHealthActionExecutor{service: service})
 	return service
 }
 
