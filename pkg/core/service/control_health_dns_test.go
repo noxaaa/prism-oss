@@ -111,6 +111,84 @@ func TestRecordMonitorHealthResultsUsesCustomHealthEventExecutor(t *testing.T) {
 	}
 }
 
+func TestCompileMonitorAgentConfigRefreshesTargetGroupMembers(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{
+			ID:                   "monitor_1",
+			OrganizationID:       "org_1",
+			DesiredConfigVersion: 7,
+		},
+		checks: []repo.HealthCheckRecord{{
+			ID:              "health_1",
+			OrganizationID:  "org_1",
+			ProbeType:       "TCP_PORT",
+			IntervalSeconds: 30,
+			TimeoutSeconds:  3,
+			ConfigJSON:      "{}",
+			Enabled:         true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:             "health_target_stale",
+				OrganizationID: "org_1",
+				HealthCheckID:  "health_1",
+				ScopeType:      "TARGET_GROUP",
+				TargetID:       "target_stale",
+				TargetGroupID:  "target_group_1",
+				TargetName:     "stale",
+				TargetHost:     "192.0.2.10",
+				TargetPort:     443,
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType: "MONITOR",
+				MonitorID: "monitor_1",
+			}},
+		}},
+		targetGroups: map[string]repo.TargetGroupRecord{
+			"target_group_1": {
+				ID:             "target_group_1",
+				OrganizationID: "org_1",
+				Members: []repo.TargetGroupMemberRecord{
+					{TargetID: "target_current", Enabled: true},
+					{TargetID: "target_disabled", Enabled: false},
+				},
+			},
+		},
+		targetsByID: map[string]repo.TargetRecord{
+			"target_current": {
+				ID:             "target_current",
+				OrganizationID: "org_1",
+				Name:           "current",
+				Host:           "198.51.100.20",
+				Port:           8443,
+				Enabled:        true,
+			},
+			"target_disabled": {
+				ID:             "target_disabled",
+				OrganizationID: "org_1",
+				Name:           "disabled",
+				Host:           "198.51.100.30",
+				Port:           443,
+				Enabled:        true,
+			},
+		},
+	}
+	control := NewControlService(store)
+
+	snapshot, err := control.CompileMonitorAgentConfig(context.Background(), "org_1", "monitor_1")
+	if err != nil {
+		t.Fatalf("compile monitor config: %v", err)
+	}
+	if !store.syncedHealthTargets {
+		t.Fatalf("expected target-group health targets to be synchronized")
+	}
+	if len(snapshot.HealthChecks) != 1 || len(snapshot.HealthChecks[0].Targets) != 1 {
+		t.Fatalf("expected one current target, got %#v", snapshot.HealthChecks)
+	}
+	target := snapshot.HealthChecks[0].Targets[0]
+	if target.TargetID != "target_current" || target.Name != "current" || target.Host != "198.51.100.20" || target.Port != 8443 {
+		t.Fatalf("expected refreshed target-group member, got %#v", target)
+	}
+}
+
 type healthDNSTestProvider struct {
 	input dns.ApplyRecordInput
 }
@@ -144,10 +222,15 @@ func (executor *recordingHealthEventExecutor) Execute(_ context.Context, action 
 }
 
 type healthDNSTestStore struct {
-	results    []repo.HealthResultRecord
-	rules      []repo.HealthEvaluationRuleRecord
-	credential repo.DNSCredentialRecord
-	record     repo.DNSRecordRecord
+	results             []repo.HealthResultRecord
+	rules               []repo.HealthEvaluationRuleRecord
+	credential          repo.DNSCredentialRecord
+	record              repo.DNSRecordRecord
+	monitor             repo.MonitorRecord
+	checks              []repo.HealthCheckRecord
+	targetGroups        map[string]repo.TargetGroupRecord
+	targetsByID         map[string]repo.TargetRecord
+	syncedHealthTargets bool
 }
 
 func (store *healthDNSTestStore) WithinTx(ctx context.Context, fn func(context.Context, repo.Repositories) error) error {
@@ -165,7 +248,9 @@ func (repositories healthDNSTestRepositories) Roles() repo.RoleRepository       
 func (repositories healthDNSTestRepositories) NodeGroups() repo.NodeGroupRepository       { return nil }
 func (repositories healthDNSTestRepositories) Nodes() repo.NodeRepository                 { return nil }
 func (repositories healthDNSTestRepositories) MonitorGroups() repo.MonitorGroupRepository { return nil }
-func (repositories healthDNSTestRepositories) Monitors() repo.MonitorRepository           { return nil }
+func (repositories healthDNSTestRepositories) Monitors() repo.MonitorRepository {
+	return healthDNSTestMonitorRepository(repositories)
+}
 func (repositories healthDNSTestRepositories) HealthChecks() repo.HealthCheckRepository {
 	return healthDNSTestHealthRepository(repositories)
 }
@@ -177,7 +262,7 @@ func (repositories healthDNSTestRepositories) DNSRecords() repo.DNSRecordReposit
 }
 func (repositories healthDNSTestRepositories) Targets() repo.TargetRepository { return nil }
 func (repositories healthDNSTestRepositories) TargetGroups() repo.TargetGroupRepository {
-	return nil
+	return healthDNSTestTargetGroupRepository(repositories)
 }
 func (repositories healthDNSTestRepositories) Rules() repo.RuleRepository   { return nil }
 func (repositories healthDNSTestRepositories) Quotas() repo.QuotaRepository { return nil }
@@ -189,14 +274,75 @@ func (repositories healthDNSTestRepositories) AgentCredentials() repo.AgentCrede
 }
 func (repositories healthDNSTestRepositories) AuditLogs() repo.AuditLogRepository { return nil }
 
+type healthDNSTestMonitorRepository struct {
+	store *healthDNSTestStore
+}
+
+func (repository healthDNSTestMonitorRepository) ListMonitorsByOrganization(context.Context, string) ([]repo.MonitorRecord, error) {
+	return []repo.MonitorRecord{repository.store.monitor}, nil
+}
+func (repository healthDNSTestMonitorRepository) FindMonitorByID(_ context.Context, organizationID string, monitorID string) (repo.MonitorRecord, error) {
+	if repository.store.monitor.OrganizationID == organizationID && repository.store.monitor.ID == monitorID {
+		return repository.store.monitor, nil
+	}
+	return repo.MonitorRecord{}, repo.ErrNotFound
+}
+func (repository healthDNSTestMonitorRepository) CreateMonitor(context.Context, repo.MonitorRecord, []string, string, func() string) error {
+	return nil
+}
+func (repository healthDNSTestMonitorRepository) UpdateMonitor(context.Context, repo.MonitorRecord, bool, []string, string, func() string) error {
+	return nil
+}
+func (repository healthDNSTestMonitorRepository) MarkMonitorAgentConnected(context.Context, string, string, string) error {
+	return nil
+}
+func (repository healthDNSTestMonitorRepository) MarkMonitorAgentDisconnected(context.Context, string, string, string) error {
+	return nil
+}
+func (repository healthDNSTestMonitorRepository) RecordMonitorConfigAck(context.Context, string, string, int, string) error {
+	return nil
+}
+func (repository healthDNSTestMonitorRepository) DeleteMonitor(context.Context, string, string, string) error {
+	return nil
+}
+
+type healthDNSTestTargetGroupRepository struct {
+	store *healthDNSTestStore
+}
+
+func (repository healthDNSTestTargetGroupRepository) ListTargetGroupsByOrganization(context.Context, string) ([]repo.TargetGroupRecord, error) {
+	return nil, nil
+}
+func (repository healthDNSTestTargetGroupRepository) FindTargetGroupByID(_ context.Context, organizationID string, targetGroupID string) (repo.TargetGroupRecord, error) {
+	group, ok := repository.store.targetGroups[targetGroupID]
+	if ok && group.OrganizationID == organizationID {
+		return group, nil
+	}
+	return repo.TargetGroupRecord{}, repo.ErrNotFound
+}
+func (repository healthDNSTestTargetGroupRepository) CreateTargetGroup(context.Context, repo.TargetGroupRecord, []repo.TargetGroupMemberRecord, string, func() string) error {
+	return nil
+}
+func (repository healthDNSTestTargetGroupRepository) UpdateTargetGroup(context.Context, repo.TargetGroupRecord, []repo.TargetGroupMemberRecord, string, func() string) error {
+	return nil
+}
+func (repository healthDNSTestTargetGroupRepository) DeleteTargetGroup(context.Context, string, string, string) error {
+	return nil
+}
+
 type healthDNSTestHealthRepository struct {
 	store *healthDNSTestStore
 }
 
 func (repository healthDNSTestHealthRepository) ListHealthChecksByOrganization(context.Context, string) ([]repo.HealthCheckRecord, error) {
-	return nil, nil
+	return repository.store.checks, nil
 }
-func (repository healthDNSTestHealthRepository) FindHealthCheckByID(context.Context, string, string) (repo.HealthCheckRecord, error) {
+func (repository healthDNSTestHealthRepository) FindHealthCheckByID(_ context.Context, organizationID string, healthCheckID string) (repo.HealthCheckRecord, error) {
+	for _, check := range repository.store.checks {
+		if check.OrganizationID == organizationID && check.ID == healthCheckID {
+			return check, nil
+		}
+	}
 	return repo.HealthCheckRecord{}, repo.ErrNotFound
 }
 func (repository healthDNSTestHealthRepository) CreateHealthCheck(context.Context, repo.HealthCheckRecord, []repo.HealthCheckTargetRecord, []repo.HealthCheckMonitorScopeRecord, string, func() string) error {
@@ -204,6 +350,50 @@ func (repository healthDNSTestHealthRepository) CreateHealthCheck(context.Contex
 }
 func (repository healthDNSTestHealthRepository) UpdateHealthCheck(context.Context, repo.HealthCheckRecord, []repo.HealthCheckTargetRecord, []repo.HealthCheckMonitorScopeRecord, string, func() string) error {
 	return nil
+}
+func (repository healthDNSTestHealthRepository) SyncHealthCheckTargets(_ context.Context, organizationID string, healthCheckID string, targets []repo.HealthCheckTargetRecord, _ string, nextID func() string) error {
+	repository.store.syncedHealthTargets = true
+	for checkIndex := range repository.store.checks {
+		check := &repository.store.checks[checkIndex]
+		if check.OrganizationID != organizationID || check.ID != healthCheckID {
+			continue
+		}
+		existing := make(map[string]repo.HealthCheckTargetRecord)
+		updated := make([]repo.HealthCheckTargetRecord, 0)
+		for _, target := range check.Targets {
+			if target.ScopeType != "TARGET_GROUP" {
+				updated = append(updated, target)
+				continue
+			}
+			existing[target.TargetID+"\x00"+target.TargetGroupID] = target
+		}
+		for _, target := range targets {
+			if target.ScopeType != "TARGET_GROUP" {
+				continue
+			}
+			key := target.TargetID + "\x00" + target.TargetGroupID
+			merged, ok := existing[key]
+			if !ok {
+				merged = repo.HealthCheckTargetRecord{
+					ID:             nextID(),
+					OrganizationID: organizationID,
+					HealthCheckID:  healthCheckID,
+					ScopeType:      "TARGET_GROUP",
+					TargetID:       target.TargetID,
+					TargetGroupID:  target.TargetGroupID,
+				}
+			}
+			if targetRecord, ok := repository.store.targetsByID[target.TargetID]; ok {
+				merged.TargetName = targetRecord.Name
+				merged.TargetHost = targetRecord.Host
+				merged.TargetPort = targetRecord.Port
+			}
+			updated = append(updated, merged)
+		}
+		check.Targets = updated
+		return nil
+	}
+	return repo.ErrNotFound
 }
 func (repository healthDNSTestHealthRepository) DeleteHealthCheck(context.Context, string, string, string) error {
 	return nil

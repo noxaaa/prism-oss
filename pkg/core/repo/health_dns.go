@@ -79,6 +79,44 @@ func (store *PostgresStore) UpdateHealthCheck(ctx context.Context, healthCheck H
 	return store.replaceHealthCheckChildren(ctx, healthCheck.OrganizationID, healthCheck.ID, targets, monitorScopes, now, nextID)
 }
 
+func (store *PostgresStore) SyncHealthCheckTargets(ctx context.Context, organizationID string, healthCheckID string, targets []HealthCheckTargetRecord, now string, nextID func() string) error {
+	current, err := store.listHealthCheckTargets(ctx, organizationID, healthCheckID)
+	if err != nil {
+		return err
+	}
+	desired := make(map[string]HealthCheckTargetRecord, len(targets))
+	for _, target := range targets {
+		if target.ScopeType != "TARGET_GROUP" {
+			continue
+		}
+		desired[healthCheckTargetGroupKey(target.TargetID, target.TargetGroupID)] = target
+	}
+	for _, target := range current {
+		if target.ScopeType != "TARGET_GROUP" {
+			continue
+		}
+		if _, ok := desired[healthCheckTargetGroupKey(target.TargetID, target.TargetGroupID)]; ok {
+			continue
+		}
+		if _, err := store.db.ExecContext(ctx, `
+			DELETE FROM health_check_targets
+			WHERE organization_id = ? AND health_check_id = ? AND scope_type = 'TARGET_GROUP' AND target_id = ? AND target_group_id = ?::uuid
+		`, organizationID, healthCheckID, target.TargetID, target.TargetGroupID); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	for _, target := range desired {
+		if _, err := store.db.ExecContext(ctx, `
+			INSERT INTO health_check_targets (id, organization_id, health_check_id, scope_type, target_id, target_group_id, created_at)
+			VALUES (?, ?, ?, 'TARGET_GROUP', ?, ?::uuid, ?)
+			ON CONFLICT (health_check_id, target_id, target_group_id) DO NOTHING
+		`, nextID(), organizationID, healthCheckID, target.TargetID, target.TargetGroupID, now); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	return nil
+}
+
 func (store *PostgresStore) DeleteHealthCheck(ctx context.Context, organizationID string, healthCheckID string, deletedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE health_checks
@@ -310,6 +348,10 @@ func (store *PostgresStore) replaceHealthCheckChildren(ctx context.Context, orga
 		}
 	}
 	return nil
+}
+
+func healthCheckTargetGroupKey(targetID string, targetGroupID string) string {
+	return targetID + "\x00" + targetGroupID
 }
 
 func scanHealthCheck(row rowScanner) (HealthCheckRecord, error) {

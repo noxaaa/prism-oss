@@ -118,6 +118,7 @@ type HealthCheckRepository interface {
 	FindHealthCheckByID(ctx context.Context, organizationID string, healthCheckID string) (HealthCheckRecord, error)
 	CreateHealthCheck(ctx context.Context, healthCheck HealthCheckRecord, targets []HealthCheckTargetRecord, monitorScopes []HealthCheckMonitorScopeRecord, now string, nextID func() string) error
 	UpdateHealthCheck(ctx context.Context, healthCheck HealthCheckRecord, targets []HealthCheckTargetRecord, monitorScopes []HealthCheckMonitorScopeRecord, now string, nextID func() string) error
+	SyncHealthCheckTargets(ctx context.Context, organizationID string, healthCheckID string, targets []HealthCheckTargetRecord, now string, nextID func() string) error
 	DeleteHealthCheck(ctx context.Context, organizationID string, healthCheckID string, deletedAt string) error
 	ListHealthResults(ctx context.Context, organizationID string, healthCheckID string, limit int) ([]HealthResultRecord, error)
 	RecordHealthResults(ctx context.Context, organizationID string, results []HealthResultRecord) error

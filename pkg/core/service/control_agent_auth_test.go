@@ -27,6 +27,30 @@ func TestNodeInstallCommandUsesSudoForServiceInstall(t *testing.T) {
 	}
 }
 
+func TestMonitorInstallCommandUsesReleaseHelper(t *testing.T) {
+	service := NewControlServiceWithOptions(nil, ControlServiceOptions{
+		AppName:             "OSS Control Console",
+		ControlPlaneURL:     "http://control.example:8080",
+		AgentReleaseVersion: "v1.2.3",
+	})
+	command := service.installCommand("MONITOR", "registration-token")
+	for _, required := range []string{
+		"https://github.com/noxaaa/prism-oss/releases/download/v1.2.3/install-monitor-agent.sh",
+		"sudo env APP_NAME='OSS Control Console' sh \"$tmp\"",
+		"--version 'v1.2.3'",
+		"--control-url 'http://control.example:8080'",
+		"--registration-token 'registration-token'",
+		"--credential-file agent-credential.json",
+	} {
+		if !strings.Contains(command, required) {
+			t.Fatalf("monitor install command missing %q: %s", required, command)
+		}
+	}
+	if strings.Contains(command, "./monitor-agent install") {
+		t.Fatalf("monitor install command must use release helper, got %s", command)
+	}
+}
+
 func TestNodeInstallCommandPinsLatestToControlPlaneBuildVersion(t *testing.T) {
 	previousVersion := buildinfo.Version
 	buildinfo.Version = "v9.9.9"

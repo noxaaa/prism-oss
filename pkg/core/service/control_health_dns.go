@@ -239,6 +239,10 @@ func (service *ControlService) CompileMonitorAgentConfig(ctx context.Context, or
 			if !check.Enabled || !healthCheckTargetsMonitor(check, monitor) {
 				continue
 			}
+			check, err = service.syncHealthCheckTargetGroupBindings(ctx, repositories, organizationID, check)
+			if err != nil {
+				return err
+			}
 			compiled := agent.MonitorHealthCheck{
 				ID:              check.ID,
 				ProbeType:       check.ProbeType,
@@ -261,6 +265,48 @@ func (service *ControlService) CompileMonitorAgentConfig(ctx context.Context, or
 		return nil
 	})
 	return snapshot, mapServiceError(err)
+}
+
+func (service *ControlService) syncHealthCheckTargetGroupBindings(ctx context.Context, repositories repo.Repositories, organizationID string, check repo.HealthCheckRecord) (repo.HealthCheckRecord, error) {
+	targetGroupIDs := healthCheckTargetGroupIDs(check)
+	if len(targetGroupIDs) == 0 {
+		return check, nil
+	}
+	targets := make([]repo.HealthCheckTargetRecord, 0)
+	for _, targetGroupID := range targetGroupIDs {
+		group, err := repositories.TargetGroups().FindTargetGroupByID(ctx, organizationID, targetGroupID)
+		if err != nil {
+			return repo.HealthCheckRecord{}, err
+		}
+		for _, member := range group.Members {
+			if !member.Enabled {
+				continue
+			}
+			targets = append(targets, repo.HealthCheckTargetRecord{
+				ScopeType:     "TARGET_GROUP",
+				TargetID:      member.TargetID,
+				TargetGroupID: group.ID,
+			})
+		}
+	}
+	now := service.timestamp()
+	if err := repositories.HealthChecks().SyncHealthCheckTargets(ctx, organizationID, check.ID, targets, now, service.newID); err != nil {
+		return repo.HealthCheckRecord{}, err
+	}
+	return repositories.HealthChecks().FindHealthCheckByID(ctx, organizationID, check.ID)
+}
+
+func healthCheckTargetGroupIDs(check repo.HealthCheckRecord) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0)
+	for _, target := range check.Targets {
+		if target.ScopeType != "TARGET_GROUP" || target.TargetGroupID == "" || seen[target.TargetGroupID] {
+			continue
+		}
+		seen[target.TargetGroupID] = true
+		result = append(result, target.TargetGroupID)
+	}
+	return result
 }
 
 func (service *ControlService) AcknowledgeMonitorAgentConfig(ctx context.Context, organizationID string, monitorID string, configVersion int) error {

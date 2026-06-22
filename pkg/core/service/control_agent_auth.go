@@ -307,10 +307,17 @@ func hmacTokenHash(secret []byte, token string) string {
 }
 
 func (service *ControlService) installCommand(agentType string, token string) string {
-	if agentType == "MONITOR" {
-		return fmt.Sprintf("APP_NAME=%s ./monitor-agent install --control-url %s --registration-token %s --credential-file agent-credential.json", shellQuote(service.appName), shellQuote(service.controlPlaneURL), shellQuote(token))
-	}
 	releaseVersion := service.nodeAgentInstallReleaseVersion()
+	if agentType == "MONITOR" {
+		return fmt.Sprintf(
+			"(tmp=$(mktemp) && curl -fsSL %s -o \"$tmp\" && sudo env APP_NAME=%s sh \"$tmp\" --version %s --control-url %s --registration-token %s --credential-file agent-credential.json; status=$?; rm -f \"${tmp:-}\"; exit \"$status\")",
+			shellQuote(monitorAgentInstallerURL(releaseVersion)),
+			shellQuote(service.appName),
+			shellQuote(releaseVersion),
+			shellQuote(service.controlPlaneURL),
+			shellQuote(token),
+		)
+	}
 	return fmt.Sprintf(
 		"(tmp=$(mktemp) && curl -fsSL %s -o \"$tmp\" && sudo env APP_NAME=%s sh \"$tmp\" --version %s --control-url %s --registration-token %s --credential-file agent-credential.json; status=$?; rm -f \"${tmp:-}\"; exit \"$status\")",
 		shellQuote(nodeAgentInstallerURL(releaseVersion)),
@@ -341,6 +348,13 @@ func nodeAgentInstallerURL(version string) string {
 		return "https://github.com/noxaaa/prism-oss/releases/latest/download/install-node-agent.sh"
 	}
 	return "https://github.com/noxaaa/prism-oss/releases/download/" + url.PathEscape(version) + "/install-node-agent.sh"
+}
+
+func monitorAgentInstallerURL(version string) string {
+	if version == "" || version == "latest" {
+		return "https://github.com/noxaaa/prism-oss/releases/latest/download/install-monitor-agent.sh"
+	}
+	return "https://github.com/noxaaa/prism-oss/releases/download/" + url.PathEscape(version) + "/install-monitor-agent.sh"
 }
 
 func shellQuote(value string) string {
