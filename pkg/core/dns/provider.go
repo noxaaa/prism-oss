@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type ApplyRecordInput struct {
@@ -37,13 +39,17 @@ func (registry StaticProviderRegistry) ProviderForKey(provider string) (Provider
 
 func DefaultProviderRegistry() ProviderRegistry {
 	return StaticProviderRegistry{
-		"CLOUDFLARE": CloudflareProvider{HTTPClient: http.DefaultClient},
+		"CLOUDFLARE": CloudflareProvider{HTTPClient: defaultCloudflareHTTPClient()},
 	}
 }
 
 type CloudflareProvider struct {
 	HTTPClient *http.Client
 	BaseURL    string
+}
+
+func defaultCloudflareHTTPClient() *http.Client {
+	return &http.Client{Timeout: 10 * time.Second}
 }
 
 func (provider CloudflareProvider) ApplyRecord(ctx context.Context, input ApplyRecordInput) error {
@@ -54,9 +60,13 @@ func (provider CloudflareProvider) ApplyRecord(ctx context.Context, input ApplyR
 	if secret == "" || zone == "" || recordName == "" || recordType == "" {
 		return errors.New("invalid dns record input")
 	}
+	desired := normalizeStringSet(input.Values)
+	if recordType == "CNAME" && len(desired) > 1 {
+		return errors.New("CNAME records support exactly one value")
+	}
 	client := provider.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = defaultCloudflareHTTPClient()
 	}
 	baseURL := strings.TrimRight(provider.BaseURL, "/")
 	if baseURL == "" {
@@ -66,7 +76,6 @@ func (provider CloudflareProvider) ApplyRecord(ctx context.Context, input ApplyR
 	if err != nil {
 		return err
 	}
-	desired := normalizeStringSet(input.Values)
 	if len(desired) == 0 {
 		for _, record := range records {
 			if err := provider.deleteCloudflareRecord(ctx, client, baseURL, secret, zone, record.ID); err != nil {
@@ -110,9 +119,15 @@ type cloudflareRecord struct {
 }
 
 type cloudflareResponse struct {
-	Success bool               `json:"success"`
-	Errors  []cloudflareError  `json:"errors"`
-	Result  []cloudflareRecord `json:"result"`
+	Success    bool                 `json:"success"`
+	Errors     []cloudflareError    `json:"errors"`
+	Result     []cloudflareRecord   `json:"result"`
+	ResultInfo cloudflareResultInfo `json:"result_info"`
+}
+
+type cloudflareResultInfo struct {
+	Page       int `json:"page"`
+	TotalPages int `json:"total_pages"`
 }
 
 type cloudflareWriteResponse struct {
@@ -125,25 +140,54 @@ type cloudflareError struct {
 }
 
 func (provider CloudflareProvider) listCloudflareRecords(ctx context.Context, client *http.Client, baseURL string, secret string, zone string, recordName string, recordType string) ([]cloudflareRecord, error) {
-	endpoint := fmt.Sprintf("%s/zones/%s/dns_records?type=%s&name=%s", baseURL, url.PathEscape(zone), url.QueryEscape(recordType), url.QueryEscape(recordName))
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
+	records := make([]cloudflareRecord, 0)
+	for page := 1; ; page++ {
+		query := url.Values{}
+		query.Set("type", recordType)
+		query.Set("name", recordName)
+		query.Set("page", fmt.Sprintf("%d", page))
+		query.Set("per_page", "100")
+		endpoint := fmt.Sprintf("%s/zones/%s/dns_records?%s", baseURL, url.PathEscape(zone), query.Encode())
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", "Bearer "+secret)
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		body, err := decodeCloudflareResponse(response)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, body.Result...)
+		totalPages := body.ResultInfo.TotalPages
+		if totalPages <= 0 {
+			totalPages = 1
+		}
+		if page >= totalPages {
+			return records, nil
+		}
 	}
-	request.Header.Set("Authorization", "Bearer "+secret)
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
+}
+
+func decodeCloudflareResponse(response *http.Response) (cloudflareResponse, error) {
 	defer func() { _ = response.Body.Close() }()
 	var body cloudflareResponse
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return nil, err
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return body, err
+	}
+	if len(data) != 0 {
+		if err := json.Unmarshal(data, &body); err != nil {
+			return body, err
+		}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 || !body.Success {
-		return nil, errors.New(cloudflareErrorMessage(body.Errors, response.StatusCode))
+		return body, errors.New(cloudflareErrorMessage(body.Errors, response.StatusCode))
 	}
-	return body.Result, nil
+	return body, nil
 }
 
 func (provider CloudflareProvider) createCloudflareRecord(ctx context.Context, client *http.Client, baseURL string, secret string, zone string, recordName string, recordType string, value string) error {

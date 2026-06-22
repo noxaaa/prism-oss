@@ -180,6 +180,33 @@ func TestValidateTargetGroupRequestDefaultsSchedulerWithoutBlockingExtensions(t 
 	}
 }
 
+func TestValidateDNSRecordRequestRejectsMultipleCNAMEValues(t *testing.T) {
+	_, err := ValidateDNSRecordRequest(DNSRecordRequest{
+		DNSCredentialID: "credential_1",
+		Zone:            "zone_1",
+		RecordName:      "alias.example.com",
+		RecordType:      "CNAME",
+		DesiredValues:   []string{"origin-a.example.com", "origin-b.example.com"},
+	})
+	if err == nil {
+		t.Fatalf("expected multiple CNAME desired values to be rejected")
+	}
+
+	_, err = ValidateDNSRecordRequest(DNSRecordRequest{
+		DNSCredentialID: "credential_1",
+		Zone:            "zone_1",
+		RecordName:      "alias.example.com",
+		RecordType:      "CNAME",
+		DesiredValues:   []string{"origin.example.com"},
+		HealthCheckID:   "health_1",
+		EventType:       "DNS_FAILOVER",
+		FailoverValues:  []string{"failover-a.example.com", "failover-b.example.com"},
+	})
+	if err == nil {
+		t.Fatalf("expected multiple CNAME failover values to be rejected")
+	}
+}
+
 func TestValidateNodeRequestDefaultsListenIPsAndPortRange(t *testing.T) {
 	node, err := ValidateNodeRequest(NodeRequest{
 		Name:     "edge-a",

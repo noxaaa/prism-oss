@@ -560,6 +560,9 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 	if !service.hasPermission(identity, string(domain.PermissionDNSManage)) {
 		return DNSRecordPayload{}, ErrForbidden
 	}
+	if err := service.ensureDNSRecordMutationAllowed(identity, input); err != nil {
+		return DNSRecordPayload{}, err
+	}
 	var result DNSRecordPayload
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if _, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, identity.OrganizationID, input.DNSCredentialID); err != nil {
@@ -596,6 +599,9 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity InternalIdentity, recordID string, input DNSRecordMutationInput) (DNSRecordPayload, error) {
 	if !service.hasPermission(identity, string(domain.PermissionDNSManage)) {
 		return DNSRecordPayload{}, ErrForbidden
+	}
+	if err := service.ensureDNSRecordMutationAllowed(identity, input); err != nil {
+		return DNSRecordPayload{}, err
 	}
 	var result DNSRecordPayload
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
@@ -645,6 +651,34 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_records.delete", "DNS_RECORD", recordID, ""))
 	})
 	return mapServiceError(err)
+}
+
+func (service *ControlService) ensureDNSRecordMutationAllowed(identity InternalIdentity, input DNSRecordMutationInput) error {
+	if strings.EqualFold(strings.TrimSpace(input.RecordType), "CNAME") && (hasMultipleDistinctValues(input.DesiredValues) || hasMultipleDistinctValues(input.FailoverValues)) {
+		return ErrInvalidInput
+	}
+	if strings.TrimSpace(input.HealthCheckID) == "" {
+		return nil
+	}
+	if service.hasPermission(identity, string(domain.PermissionHealthChecksRead)) || service.hasPermission(identity, string(domain.PermissionHealthChecksManage)) {
+		return nil
+	}
+	return ErrForbidden
+}
+
+func hasMultipleDistinctValues(values []string) bool {
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func (service *ControlService) createDNSHealthEvent(ctx context.Context, repositories repo.Repositories, organizationID string, input DNSRecordMutationInput, record repo.DNSRecordRecord, now string) error {

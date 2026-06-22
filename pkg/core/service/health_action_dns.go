@@ -52,10 +52,6 @@ func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, reposit
 	if err != nil {
 		return dnsEventAction{}, false, err
 	}
-	credential, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, input.OrganizationID, record.DNSCredentialID)
-	if err != nil {
-		return dnsEventAction{}, false, err
-	}
 	desiredValues := parseStringListJSON(record.DesiredValuesJSON)
 	values := desiredValues
 	status := strings.ToUpper(strings.TrimSpace(input.Result.Status))
@@ -77,6 +73,15 @@ func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, reposit
 	default:
 		return dnsEventAction{}, false, ErrInvalidInput
 	}
+	lastApplied := stringListJSON(parseStringListJSON(record.LastAppliedValuesJSON))
+	nextApplied := stringListJSON(values)
+	if lastApplied == nextApplied {
+		return dnsEventAction{}, false, nil
+	}
+	credential, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, input.OrganizationID, record.DNSCredentialID)
+	if err != nil {
+		return dnsEventAction{}, false, err
+	}
 	return dnsEventAction{
 		OrganizationID:    input.OrganizationID,
 		DNSRecordID:       record.ID,
@@ -86,7 +91,7 @@ func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, reposit
 		RecordName:        record.RecordName,
 		RecordType:        record.RecordType,
 		Values:            values,
-		LastAppliedValues: stringListJSON(values),
+		LastAppliedValues: nextApplied,
 	}, true, nil
 }
 

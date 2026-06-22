@@ -34,7 +34,28 @@ func TestICMPHealthProbeHonorsTimeout(t *testing.T) {
 	if commandName != "ping" {
 		t.Fatalf("expected ping command, got %q", commandName)
 	}
-	wantArgs := []string{"-c", "1", "-W", "7", "192.0.2.10"}
+	wantArgs := []string{"-c", "1", "-W", "7", "--", "192.0.2.10"}
+	if !reflect.DeepEqual(commandArgs, wantArgs) {
+		t.Fatalf("unexpected ping args %#v, want %#v", commandArgs, wantArgs)
+	}
+}
+
+func TestICMPHealthProbeTerminatesOptionsBeforeHost(t *testing.T) {
+	previousRunner := runMonitorProbeCommand
+	defer func() {
+		runMonitorProbeCommand = previousRunner
+	}()
+	var commandArgs []string
+	runMonitorProbeCommand = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		commandArgs = append([]string(nil), args...)
+		return []byte("ok"), nil
+	}
+
+	_, err := runICMPHealthProbe(context.Background(), "-f", time.Second)
+	if err != nil {
+		t.Fatalf("expected leading-dash host to be passed safely, got %v", err)
+	}
+	wantArgs := []string{"-c", "1", "-W", "1", "--", "-f"}
 	if !reflect.DeepEqual(commandArgs, wantArgs) {
 		t.Fatalf("unexpected ping args %#v, want %#v", commandArgs, wantArgs)
 	}

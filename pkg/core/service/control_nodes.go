@@ -433,6 +433,9 @@ func (service *ControlService) DeleteMonitorGroup(ctx context.Context, identity 
 		if _, err := repositories.MonitorGroups().FindMonitorGroupByID(ctx, identity.OrganizationID, monitorGroupID); err != nil {
 			return err
 		}
+		if err := ensureMonitorGroupNotUsedByHealthChecks(ctx, repositories, identity.OrganizationID, monitorGroupID); err != nil {
+			return err
+		}
 		deletedAt := service.timestamp()
 		if err := repositories.MonitorGroups().DeleteMonitorGroup(ctx, identity.OrganizationID, monitorGroupID, deletedAt); err != nil {
 			return err
@@ -547,6 +550,9 @@ func (service *ControlService) DeleteMonitor(ctx context.Context, identity Inter
 		if _, err := repositories.Monitors().FindMonitorByID(ctx, identity.OrganizationID, monitorID); err != nil {
 			return err
 		}
+		if err := ensureMonitorNotUsedByHealthChecks(ctx, repositories, identity.OrganizationID, monitorID); err != nil {
+			return err
+		}
 		deletedAt := service.timestamp()
 		if err := repositories.Monitors().DeleteMonitor(ctx, identity.OrganizationID, monitorID, deletedAt); err != nil {
 			return err
@@ -554,6 +560,54 @@ func (service *ControlService) DeleteMonitor(ctx context.Context, identity Inter
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "monitors.delete", "MONITOR", monitorID, ""))
 	})
 	return mapServiceError(err)
+}
+
+func ensureMonitorNotUsedByHealthChecks(ctx context.Context, repositories repo.Repositories, organizationID string, monitorID string) error {
+	checks, err := repositories.HealthChecks().ListHealthChecksByOrganization(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	for _, check := range checks {
+		for _, scope := range check.MonitorScopes {
+			if scope.ScopeType != "MONITOR" || scope.MonitorID != monitorID {
+				continue
+			}
+			return &controlServiceError{
+				Code:    "MONITOR_IN_USE",
+				Message: "The monitor is still assigned to one or more health checks.",
+				Details: map[string]any{
+					"monitor_id":      monitorID,
+					"health_check_id": check.ID,
+				},
+				Cause: ErrConflict,
+			}
+		}
+	}
+	return nil
+}
+
+func ensureMonitorGroupNotUsedByHealthChecks(ctx context.Context, repositories repo.Repositories, organizationID string, monitorGroupID string) error {
+	checks, err := repositories.HealthChecks().ListHealthChecksByOrganization(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	for _, check := range checks {
+		for _, scope := range check.MonitorScopes {
+			if scope.ScopeType != "MONITOR_GROUP" || scope.MonitorGroupID != monitorGroupID {
+				continue
+			}
+			return &controlServiceError{
+				Code:    "MONITOR_GROUP_IN_USE",
+				Message: "The monitor group is still assigned to one or more health checks.",
+				Details: map[string]any{
+					"monitor_group_id": monitorGroupID,
+					"health_check_id":  check.ID,
+				},
+				Cause: ErrConflict,
+			}
+		}
+	}
+	return nil
 }
 
 func ensureNodeGroupsExist(ctx context.Context, repositories repo.Repositories, organizationID string, groupIDs []string) error {

@@ -300,7 +300,7 @@ func TestRecordMonitorHealthResultsRejectsDeletedMonitorGroupScope(t *testing.T)
 			}},
 		}},
 	}
-	control := NewControlService(store)
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{Authorizer: healthDNSTestAuthorizer{}})
 
 	err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
 		HealthCheckID:       "health_1",
@@ -326,7 +326,7 @@ func TestDeleteDNSCredentialRejectsActiveRecords(t *testing.T) {
 			DNSCredentialID: "credential_1",
 		},
 	}
-	control := NewControlService(store)
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{Authorizer: healthDNSTestAuthorizer{}})
 
 	err := control.DeleteDNSCredential(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), "credential_1")
 	if !errors.Is(err, ErrConflict) {
@@ -662,17 +662,21 @@ func (executor *recordingHealthActionExecutor) Execute(_ context.Context, action
 }
 
 type healthDNSTestStore struct {
-	results             []repo.HealthResultRecord
-	rules               []repo.HealthEvaluationRuleRecord
-	credential          repo.DNSCredentialRecord
-	record              repo.DNSRecordRecord
-	monitor             repo.MonitorRecord
-	checks              []repo.HealthCheckRecord
-	monitorGroups       map[string]repo.MonitorGroupRecord
-	targetGroups        map[string]repo.TargetGroupRecord
-	targetsByID         map[string]repo.TargetRecord
-	syncedHealthTargets bool
-	deletedCredentialID string
+	results               []repo.HealthResultRecord
+	rules                 []repo.HealthEvaluationRuleRecord
+	credential            repo.DNSCredentialRecord
+	record                repo.DNSRecordRecord
+	createdDNSRecord      repo.DNSRecordRecord
+	updatedDNSRecord      repo.DNSRecordRecord
+	monitor               repo.MonitorRecord
+	checks                []repo.HealthCheckRecord
+	monitorGroups         map[string]repo.MonitorGroupRecord
+	targetGroups          map[string]repo.TargetGroupRecord
+	targetsByID           map[string]repo.TargetRecord
+	syncedHealthTargets   bool
+	deletedCredentialID   string
+	deletedMonitorID      string
+	deletedMonitorGroupID string
 }
 
 func (store *healthDNSTestStore) WithinTx(ctx context.Context, fn func(context.Context, repo.Repositories) error) error {
@@ -750,7 +754,8 @@ func (repository healthDNSTestMonitorGroupRepository) CreateMonitorGroup(context
 func (repository healthDNSTestMonitorGroupRepository) UpdateMonitorGroup(context.Context, repo.MonitorGroupRecord) error {
 	return nil
 }
-func (repository healthDNSTestMonitorGroupRepository) DeleteMonitorGroup(context.Context, string, string, string) error {
+func (repository healthDNSTestMonitorGroupRepository) DeleteMonitorGroup(_ context.Context, _ string, monitorGroupID string, _ string) error {
+	repository.store.deletedMonitorGroupID = monitorGroupID
 	return nil
 }
 
@@ -778,7 +783,8 @@ func (repository healthDNSTestMonitorRepository) MarkMonitorAgentDisconnected(co
 func (repository healthDNSTestMonitorRepository) RecordMonitorConfigAck(context.Context, string, string, int, string) error {
 	return nil
 }
-func (repository healthDNSTestMonitorRepository) DeleteMonitor(context.Context, string, string, string) error {
+func (repository healthDNSTestMonitorRepository) DeleteMonitor(_ context.Context, _ string, monitorID string, _ string) error {
+	repository.store.deletedMonitorID = monitorID
 	return nil
 }
 
@@ -937,10 +943,14 @@ func (repository healthDNSTestDNSRecordRepository) FindDNSRecordByID(_ context.C
 	}
 	return repo.DNSRecordRecord{}, repo.ErrNotFound
 }
-func (repository healthDNSTestDNSRecordRepository) CreateDNSRecord(context.Context, repo.DNSRecordRecord) error {
+func (repository healthDNSTestDNSRecordRepository) CreateDNSRecord(_ context.Context, record repo.DNSRecordRecord) error {
+	repository.store.createdDNSRecord = record
+	repository.store.record = record
 	return nil
 }
-func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecord(context.Context, repo.DNSRecordRecord) error {
+func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecord(_ context.Context, record repo.DNSRecordRecord) error {
+	repository.store.updatedDNSRecord = record
+	repository.store.record = record
 	return nil
 }
 func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecordLastApplied(_ context.Context, organizationID string, recordID string, values string, appliedAt string) error {
@@ -966,5 +976,19 @@ func healthDNSTestIdentity(permissions ...string) InternalIdentity {
 type healthDNSTestAuditRepository struct{}
 
 func (repository healthDNSTestAuditRepository) CreateAuditLog(context.Context, repo.AuditLogRecord) error {
+	return nil
+}
+
+type healthDNSTestAuthorizer struct{}
+
+func (healthDNSTestAuthorizer) HasPermission(identity InternalIdentity, permission string) bool {
+	return stringSliceHas(identity.Permissions, permission)
+}
+
+func (healthDNSTestAuthorizer) AllowedNodeGroupIDs(InternalIdentity, string) map[string]bool {
+	return map[string]bool{}
+}
+
+func (healthDNSTestAuthorizer) EnsureCanDelegateRoleScopes(context.Context, repo.Repositories, InternalIdentity, []repo.ResourceScopeRecord) error {
 	return nil
 }

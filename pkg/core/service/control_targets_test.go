@@ -197,6 +197,37 @@ func TestControlServiceRejectsDeletingTargetUsedByHealthCheck(t *testing.T) {
 	}
 }
 
+func TestControlServiceRejectsDeletingTargetUsedByHealthCheckedTargetGroup(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	store.targetGroups["group_health"] = repo.TargetGroupRecord{
+		ID:             "group_health",
+		OrganizationID: "org_1",
+		Name:           "Health checked pool",
+		Scheduler:      "PRIORITY_IPHASH",
+		Members: []repo.TargetGroupMemberRecord{{
+			TargetID: "target_a",
+			Enabled:  true,
+		}},
+	}
+	store.healthChecks = []repo.HealthCheckRecord{{
+		ID:             "health_1",
+		OrganizationID: "org_1",
+		Targets: []repo.HealthCheckTargetRecord{{
+			ScopeType:     "TARGET_GROUP",
+			TargetGroupID: "group_health",
+		}},
+	}}
+	control := NewControlService(store)
+
+	err := control.DeleteTarget(context.Background(), targetGroupServiceTestIdentity(), "target_a")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	if store.deletedTargetID != "" {
+		t.Fatalf("target must not be deleted while a health-checked target group references it")
+	}
+}
+
 func newTargetGroupServiceTestStore() *targetGroupServiceTestStore {
 	return &targetGroupServiceTestStore{
 		targets: map[string]repo.TargetRecord{

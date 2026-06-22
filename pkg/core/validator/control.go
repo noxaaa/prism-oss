@@ -493,6 +493,9 @@ func ValidateDNSRecordRequest(request DNSRecordRequest) (DNSRecordRequest, error
 	if request.RecordType != "A" && request.RecordType != "AAAA" && request.RecordType != "CNAME" {
 		return DNSRecordRequest{}, ErrInvalidRequest
 	}
+	if request.RecordType == "CNAME" && len(uniqueNonEmptyStrings(request.DesiredValues)) > 1 {
+		return DNSRecordRequest{}, ErrInvalidRequest
+	}
 	failoverValues := make([]string, 0, len(request.FailoverValues))
 	for _, value := range request.FailoverValues {
 		value = strings.TrimSpace(value)
@@ -511,8 +514,25 @@ func ValidateDNSRecordRequest(request DNSRecordRequest) (DNSRecordRequest, error
 		if request.EventType == "DNS_FAILOVER" && len(request.FailoverValues) == 0 {
 			return DNSRecordRequest{}, ErrInvalidRequest
 		}
+		if request.RecordType == "CNAME" && len(uniqueNonEmptyStrings(request.FailoverValues)) > 1 {
+			return DNSRecordRequest{}, ErrInvalidRequest
+		}
 	}
 	return request, nil
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }
 
 func ValidateRegistrationTokenRequest(request RegistrationTokenRequest) (RegistrationTokenRequest, error) {

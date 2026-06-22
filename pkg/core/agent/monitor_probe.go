@@ -138,7 +138,7 @@ func runHTTPHealthProbe(ctx context.Context, check MonitorHealthCheck, target Mo
 }
 
 func runICMPHealthProbe(ctx context.Context, host string, timeout time.Duration) (string, error) {
-	if output, err := runMonitorProbeCommand(ctx, "ping", "-c", "1", "-W", strconv.Itoa(pingTimeoutSeconds(timeout)), host); err != nil {
+	if output, err := runMonitorProbeCommand(ctx, "ping", "-c", "1", "-W", strconv.Itoa(pingTimeoutSeconds(timeout)), "--", host); err != nil {
 		return "OFFLINE", fmt.Errorf("ping failed: %s", strings.TrimSpace(string(output)))
 	}
 	return "ONLINE", nil

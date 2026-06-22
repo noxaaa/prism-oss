@@ -375,6 +375,7 @@ func ensureTargetNotUsedByHealthChecks(ctx context.Context, repositories repo.Re
 	if err != nil {
 		return err
 	}
+	healthCheckedTargetGroups := map[string]string{}
 	for _, check := range checks {
 		for _, target := range check.Targets {
 			if target.ScopeType == "TARGET" && target.TargetID == targetID {
@@ -387,6 +388,37 @@ func ensureTargetNotUsedByHealthChecks(ctx context.Context, repositories repo.Re
 					},
 					Cause: ErrConflict,
 				}
+			}
+			if target.ScopeType == "TARGET_GROUP" && target.TargetGroupID != "" {
+				healthCheckedTargetGroups[target.TargetGroupID] = check.ID
+			}
+		}
+	}
+	if len(healthCheckedTargetGroups) == 0 {
+		return nil
+	}
+	targetGroups, err := repositories.TargetGroups().ListTargetGroupsByOrganization(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	for _, group := range targetGroups {
+		healthCheckID, ok := healthCheckedTargetGroups[group.ID]
+		if !ok {
+			continue
+		}
+		for _, member := range group.Members {
+			if member.TargetID != targetID {
+				continue
+			}
+			return &controlServiceError{
+				Code:    "TARGET_IN_USE",
+				Message: "The target is still assigned to one or more health checks through a target group.",
+				Details: map[string]any{
+					"target_id":       targetID,
+					"target_group_id": group.ID,
+					"health_check_id": healthCheckID,
+				},
+				Cause: ErrConflict,
 			}
 		}
 	}
