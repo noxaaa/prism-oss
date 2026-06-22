@@ -201,18 +201,29 @@ CREATE TABLE health_check_targets (
   organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   health_check_id uuid NOT NULL,
   scope_type text NOT NULL,
-  target_id uuid NOT NULL,
+  target_id uuid,
   target_group_id uuid,
   created_at timestamptz NOT NULL,
   CHECK (scope_type IN ('TARGET', 'TARGET_GROUP')),
-  CHECK ((scope_type = 'TARGET' AND target_group_id IS NULL) OR (scope_type = 'TARGET_GROUP' AND target_group_id IS NOT NULL)),
+  CHECK ((scope_type = 'TARGET' AND target_id IS NOT NULL AND target_group_id IS NULL) OR (scope_type = 'TARGET_GROUP' AND target_group_id IS NOT NULL)),
   UNIQUE (organization_id, id),
   UNIQUE (organization_id, health_check_id, id),
-  UNIQUE (health_check_id, target_id, target_group_id),
   FOREIGN KEY (organization_id, health_check_id) REFERENCES health_checks(organization_id, id) ON DELETE CASCADE,
   FOREIGN KEY (organization_id, target_id) REFERENCES targets(organization_id, id) ON DELETE CASCADE,
   FOREIGN KEY (organization_id, target_group_id) REFERENCES target_groups(organization_id, id) ON DELETE CASCADE
 );
+
+CREATE UNIQUE INDEX uniq_health_check_targets_direct
+  ON health_check_targets(health_check_id, target_id)
+  WHERE scope_type = 'TARGET' AND target_id IS NOT NULL;
+
+CREATE UNIQUE INDEX uniq_health_check_targets_group_member
+  ON health_check_targets(health_check_id, target_group_id, target_id)
+  WHERE scope_type = 'TARGET_GROUP' AND target_id IS NOT NULL;
+
+CREATE UNIQUE INDEX uniq_health_check_targets_group_binding
+  ON health_check_targets(health_check_id, target_group_id)
+  WHERE scope_type = 'TARGET_GROUP' AND target_id IS NULL;
 
 CREATE TABLE health_check_monitor_scopes (
   id uuid PRIMARY KEY,

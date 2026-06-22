@@ -100,16 +100,17 @@ func (store *PostgresStore) SyncHealthCheckTargets(ctx context.Context, organiza
 		}
 		if _, err := store.db.ExecContext(ctx, `
 			DELETE FROM health_check_targets
-			WHERE organization_id = ? AND health_check_id = ? AND scope_type = 'TARGET_GROUP' AND target_id = ? AND target_group_id = ?::uuid
-		`, organizationID, healthCheckID, target.TargetID, target.TargetGroupID); err != nil {
+			WHERE organization_id = ? AND health_check_id = ? AND scope_type = 'TARGET_GROUP' AND target_group_id = ?::uuid
+			  AND ((target_id IS NULL AND ? = '') OR target_id = NULLIF(?, '')::uuid)
+		`, organizationID, healthCheckID, target.TargetGroupID, target.TargetID, target.TargetID); err != nil {
 			return mapWriteError(err)
 		}
 	}
 	for _, target := range desired {
 		if _, err := store.db.ExecContext(ctx, `
 			INSERT INTO health_check_targets (id, organization_id, health_check_id, scope_type, target_id, target_group_id, created_at)
-			VALUES (?, ?, ?, 'TARGET_GROUP', ?, ?::uuid, ?)
-			ON CONFLICT (health_check_id, target_id, target_group_id) DO NOTHING
+			VALUES (?, ?, ?, 'TARGET_GROUP', NULLIF(?, '')::uuid, ?::uuid, ?)
+			ON CONFLICT DO NOTHING
 		`, nextID(), organizationID, healthCheckID, target.TargetID, target.TargetGroupID, now); err != nil {
 			return mapWriteError(err)
 		}
@@ -281,11 +282,12 @@ func (store *PostgresStore) attachHealthCheckChildren(ctx context.Context, healt
 
 func (store *PostgresStore) listHealthCheckTargets(ctx context.Context, organizationID string, healthCheckID string) ([]HealthCheckTargetRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT hct.id, hct.organization_id, hct.health_check_id, hct.scope_type, hct.target_id, COALESCE(hct.target_group_id::text, ''), targets.name, targets.host, targets.port, hct.created_at
+		SELECT hct.id, hct.organization_id, hct.health_check_id, hct.scope_type, COALESCE(hct.target_id::text, ''), COALESCE(hct.target_group_id::text, ''), COALESCE(targets.name, ''), COALESCE(targets.host, ''), COALESCE(targets.port, 0), hct.created_at
 		FROM health_check_targets hct
-		JOIN targets ON targets.organization_id = hct.organization_id AND targets.id = hct.target_id AND targets.deleted_at IS NULL
+		LEFT JOIN targets ON targets.organization_id = hct.organization_id AND targets.id = hct.target_id AND targets.deleted_at IS NULL
 		WHERE hct.organization_id = ? AND hct.health_check_id = ?
-		ORDER BY targets.name, hct.target_id
+		  AND (hct.target_id IS NULL OR targets.id IS NOT NULL)
+		ORDER BY targets.name NULLS FIRST, hct.target_id
 	`, organizationID, healthCheckID)
 	if err != nil {
 		return nil, err
@@ -334,7 +336,7 @@ func (store *PostgresStore) replaceHealthCheckChildren(ctx context.Context, orga
 	for _, target := range targets {
 		if _, err := store.db.ExecContext(ctx, `
 			INSERT INTO health_check_targets (id, organization_id, health_check_id, scope_type, target_id, target_group_id, created_at)
-			VALUES (?, ?, ?, ?, ?, NULLIF(?, '')::uuid, ?)
+			VALUES (?, ?, ?, ?, NULLIF(?, '')::uuid, NULLIF(?, '')::uuid, ?)
 		`, nextID(), organizationID, healthCheckID, target.ScopeType, target.TargetID, target.TargetGroupID, now); err != nil {
 			return err
 		}

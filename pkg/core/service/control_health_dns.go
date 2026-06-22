@@ -228,6 +228,7 @@ func (service *ControlService) buildHealthBindings(ctx context.Context, reposito
 		if err != nil {
 			return nil, nil, err
 		}
+		targets = append(targets, repo.HealthCheckTargetRecord{ScopeType: "TARGET_GROUP", TargetGroupID: targetGroup.ID})
 		for _, member := range targetGroup.Members {
 			if !member.Enabled {
 				continue
@@ -293,6 +294,9 @@ func (service *ControlService) CompileMonitorAgentConfig(ctx context.Context, or
 				Targets:         make([]agent.MonitorHealthTarget, 0, len(check.Targets)),
 			}
 			for _, target := range check.Targets {
+				if target.TargetID == "" {
+					continue
+				}
 				compiled.Targets = append(compiled.Targets, agent.MonitorHealthTarget{
 					HealthCheckTargetID: target.ID,
 					TargetID:            target.TargetID,
@@ -319,6 +323,10 @@ func (service *ControlService) syncHealthCheckTargetGroupBindings(ctx context.Co
 		if err != nil {
 			return repo.HealthCheckRecord{}, err
 		}
+		targets = append(targets, repo.HealthCheckTargetRecord{
+			ScopeType:     "TARGET_GROUP",
+			TargetGroupID: group.ID,
+		})
 		for _, member := range group.Members {
 			if !member.Enabled {
 				continue
@@ -709,11 +717,7 @@ func (service *ControlService) createDNSHealthEvent(ctx context.Context, reposit
 func (service *ControlService) buildHealthActions(ctx context.Context, repositories repo.Repositories, organizationID string, results []repo.HealthResultRecord) ([]pendingHealthAction, error) {
 	actions := make([]pendingHealthAction, 0)
 	seenRulesByCheck := map[string][]repo.HealthEvaluationRuleRecord{}
-	for _, result := range results {
-		status := strings.ToUpper(strings.TrimSpace(result.Status))
-		if status != "ONLINE" && status != "OFFLINE" {
-			continue
-		}
+	for _, result := range aggregateHealthResultsByCheck(results) {
 		rules, ok := seenRulesByCheck[result.HealthCheckID]
 		if !ok {
 			var err error
@@ -751,6 +755,32 @@ func (service *ControlService) buildHealthActions(ctx context.Context, repositor
 		}
 	}
 	return actions, nil
+}
+
+func aggregateHealthResultsByCheck(results []repo.HealthResultRecord) []repo.HealthResultRecord {
+	byCheck := make(map[string]repo.HealthResultRecord)
+	order := make([]string, 0)
+	for _, result := range results {
+		status := strings.ToUpper(strings.TrimSpace(result.Status))
+		if status != "ONLINE" && status != "OFFLINE" {
+			continue
+		}
+		result.Status = status
+		current, ok := byCheck[result.HealthCheckID]
+		if !ok {
+			byCheck[result.HealthCheckID] = result
+			order = append(order, result.HealthCheckID)
+			continue
+		}
+		if status == "OFFLINE" || current.Status != "OFFLINE" {
+			byCheck[result.HealthCheckID] = result
+		}
+	}
+	aggregated := make([]repo.HealthResultRecord, 0, len(order))
+	for _, healthCheckID := range order {
+		aggregated = append(aggregated, byCheck[healthCheckID])
+	}
+	return aggregated
 }
 
 func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, repositories repo.Repositories, input HealthActionExecutionInput) (any, bool, error) {
@@ -868,6 +898,9 @@ func toHealthCheckPayload(check repo.HealthCheckRecord) HealthCheckPayload {
 	_ = json.Unmarshal([]byte(normalizedConfigJSON(check.ConfigJSON)), &config)
 	targets := make([]HealthCheckTargetPayload, 0, len(check.Targets))
 	for _, target := range check.Targets {
+		if target.TargetID == "" {
+			continue
+		}
 		targets = append(targets, HealthCheckTargetPayload{
 			ID:            target.ID,
 			ScopeType:     target.ScopeType,

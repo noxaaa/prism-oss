@@ -90,6 +90,82 @@ func TestRecordMonitorHealthResultsAppliesDNSFailover(t *testing.T) {
 	}
 }
 
+func TestRecordMonitorHealthResultsAggregatesDNSActionPerCheck(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:       "health_target_1",
+				TargetID: "target_1",
+			}, {
+				ID:       "health_target_2",
+				TargetID: "target_2",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType: "MONITOR",
+				MonitorID: "monitor_1",
+			}},
+		}},
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:                "dns_1",
+			OrganizationID:    "org_1",
+			DNSCredentialID:   "credential_1",
+			Zone:              "zone_1",
+			RecordName:        "health.example.com",
+			RecordType:        "A",
+			DesiredValuesJSON: `["192.0.2.1"]`,
+		},
+		rules: []repo.HealthEvaluationRuleRecord{{
+			ID:             "rule_1",
+			OrganizationID: "org_1",
+			HealthCheckID:  "health_1",
+			Enabled:        true,
+			Events: []repo.HealthEventRecord{{
+				ID:         "event_1",
+				EventType:  "DNS_FAILOVER",
+				Enabled:    true,
+				ConfigJSON: `{"dns_record_id":"dns_1","failover_values":["198.51.100.10"]}`,
+			}},
+		}},
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
+		HealthCheckID:       "health_1",
+		HealthCheckTargetID: "health_target_1",
+		TargetID:            "target_1",
+		Status:              "ONLINE",
+		ObservedAt:          "2026-06-20T00:00:00Z",
+	}, {
+		HealthCheckID:       "health_1",
+		HealthCheckTargetID: "health_target_2",
+		TargetID:            "target_2",
+		Status:              "OFFLINE",
+		ObservedAt:          "2026-06-20T00:00:01Z",
+	}}); err != nil {
+		t.Fatalf("record monitor health results: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("expected one DNS apply for the check evaluation, got %d", provider.calls)
+	}
+	if got := provider.input.Values; len(got) != 1 || got[0] != "198.51.100.10" {
+		t.Fatalf("expected aggregate offline status to apply failover value, got %#v", got)
+	}
+}
+
 func TestRecordMonitorHealthResultsUsesCustomHealthActionExecutor(t *testing.T) {
 	store := &healthDNSTestStore{
 		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
@@ -293,12 +369,134 @@ func TestCompileMonitorAgentConfigRefreshesTargetGroupMembers(t *testing.T) {
 	}
 }
 
+func TestCompileMonitorAgentConfigPreservesEmptyTargetGroupBinding(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+		},
+		checks: []repo.HealthCheckRecord{{
+			ID:              "health_1",
+			OrganizationID:  "org_1",
+			ProbeType:       "TCP_PORT",
+			IntervalSeconds: 30,
+			TimeoutSeconds:  3,
+			ConfigJSON:      "{}",
+			Enabled:         true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:             "health_target_stale",
+				OrganizationID: "org_1",
+				HealthCheckID:  "health_1",
+				ScopeType:      "TARGET_GROUP",
+				TargetID:       "target_stale",
+				TargetGroupID:  "target_group_1",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType: "MONITOR",
+				MonitorID: "monitor_1",
+			}},
+		}},
+		targetGroups: map[string]repo.TargetGroupRecord{
+			"target_group_1": {ID: "target_group_1", OrganizationID: "org_1"},
+		},
+		targetsByID: map[string]repo.TargetRecord{},
+	}
+	control := NewControlService(store)
+
+	snapshot, err := control.CompileMonitorAgentConfig(context.Background(), "org_1", "monitor_1")
+	if err != nil {
+		t.Fatalf("compile empty target-group monitor config: %v", err)
+	}
+	if len(snapshot.HealthChecks) != 1 || len(snapshot.HealthChecks[0].Targets) != 0 {
+		t.Fatalf("empty target group should not emit probe targets, got %#v", snapshot.HealthChecks)
+	}
+	if got := store.checks[0].Targets; len(got) != 1 || got[0].TargetGroupID != "target_group_1" || got[0].TargetID != "" {
+		t.Fatalf("expected placeholder target-group binding to be retained, got %#v", got)
+	}
+
+	store.targetGroups["target_group_1"] = repo.TargetGroupRecord{
+		ID:             "target_group_1",
+		OrganizationID: "org_1",
+		Members: []repo.TargetGroupMemberRecord{
+			{TargetID: "target_current", Enabled: true},
+		},
+	}
+	store.targetsByID["target_current"] = repo.TargetRecord{
+		ID:             "target_current",
+		OrganizationID: "org_1",
+		Name:           "current",
+		Host:           "198.51.100.20",
+		Port:           8443,
+		Enabled:        true,
+	}
+
+	snapshot, err = control.CompileMonitorAgentConfig(context.Background(), "org_1", "monitor_1")
+	if err != nil {
+		t.Fatalf("compile repopulated target-group monitor config: %v", err)
+	}
+	if len(snapshot.HealthChecks) != 1 || len(snapshot.HealthChecks[0].Targets) != 1 {
+		t.Fatalf("expected target group to repopulate after a member is added, got %#v", snapshot.HealthChecks)
+	}
+	if snapshot.HealthChecks[0].Targets[0].TargetID != "target_current" {
+		t.Fatalf("expected current target after repopulation, got %#v", snapshot.HealthChecks[0].Targets[0])
+	}
+}
+
+func TestBuildHealthBindingsPreservesEmptyTargetGroupScope(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
+		targetGroups: map[string]repo.TargetGroupRecord{
+			"target_group_1": {ID: "target_group_1", OrganizationID: "org_1"},
+		},
+	}
+	control := NewControlService(store)
+
+	targets, _, err := control.buildHealthBindings(context.Background(), healthDNSTestRepositories{store: store}, "org_1", HealthCheckMutationInput{
+		TargetScope: HealthTargetScopeInput{Type: "TARGET_GROUP", TargetGroupID: "target_group_1"},
+		MonitorScope: HealthMonitorScopeInput{
+			Type:      "MONITOR",
+			MonitorID: "monitor_1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("build empty target-group health bindings: %v", err)
+	}
+	if len(targets) != 1 || targets[0].ScopeType != "TARGET_GROUP" || targets[0].TargetGroupID != "target_group_1" || targets[0].TargetID != "" {
+		t.Fatalf("expected one placeholder target-group binding, got %#v", targets)
+	}
+}
+
+func TestHealthCheckPayloadOmitsEmptyTargetGroupBinding(t *testing.T) {
+	payload := toHealthCheckPayload(repo.HealthCheckRecord{
+		ID:             "health_1",
+		OrganizationID: "org_1",
+		Targets: []repo.HealthCheckTargetRecord{{
+			ID:            "health_target_placeholder",
+			ScopeType:     "TARGET_GROUP",
+			TargetGroupID: "target_group_1",
+		}, {
+			ID:         "health_target_1",
+			ScopeType:  "TARGET_GROUP",
+			TargetID:   "target_1",
+			TargetName: "current",
+			TargetHost: "198.51.100.20",
+			TargetPort: 443,
+		}},
+	})
+
+	if len(payload.Targets) != 1 || payload.Targets[0].TargetID != "target_1" {
+		t.Fatalf("expected placeholder target-group binding to stay internal, got %#v", payload.Targets)
+	}
+}
+
 type healthDNSTestProvider struct {
 	input dns.ApplyRecordInput
+	calls int
 }
 
 func (provider *healthDNSTestProvider) ApplyRecord(_ context.Context, input dns.ApplyRecordInput) error {
 	provider.input = input
+	provider.calls++
 	return nil
 }
 

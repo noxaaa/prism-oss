@@ -61,3 +61,27 @@ func TestHealthCheckTargetQueriesExcludeDeletedTargets(t *testing.T) {
 		t.Fatalf("health check target queries must exclude soft-deleted targets from monitor configs")
 	}
 }
+
+func TestHealthCheckTargetsSupportEmptyTargetGroupBindings(t *testing.T) {
+	root := repoRoot(t)
+	migration := readText(t, filepath.Join(root, "migrations", "core", "00001_core.sql"))
+	for _, required := range []string{
+		"target_id uuid",
+		"CREATE UNIQUE INDEX uniq_health_check_targets_group_binding",
+		"WHERE scope_type = 'TARGET_GROUP' AND target_id IS NULL",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Fatalf("health check targets must support empty target-group bindings; missing %q", required)
+		}
+	}
+	repoSource := readText(t, filepath.Join(root, "pkg", "core", "repo", "health_dns.go"))
+	for _, required := range []string{
+		"LEFT JOIN targets",
+		"COALESCE(hct.target_id::text, '')",
+		"NULLIF(?, '')::uuid",
+	} {
+		if !strings.Contains(repoSource, required) {
+			t.Fatalf("health check target repo must preserve empty target-group bindings; missing %q", required)
+		}
+	}
+}
