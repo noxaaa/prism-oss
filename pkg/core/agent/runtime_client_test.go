@@ -300,6 +300,89 @@ func TestMonitorRuntimeRegistersAndReportsMetrics(t *testing.T) {
 	}
 }
 
+func TestMonitorRuntimeReportsOneSecondHealthChecksWithDefaultTick(t *testing.T) {
+	previousRunner := runMonitorProbeCommand
+	defer func() {
+		runMonitorProbeCommand = previousRunner
+	}()
+	runMonitorProbeCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, nil
+	}
+
+	healthResultsReceived := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		conn, err := websocket.Accept(response, request, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			t.Errorf("accept websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+		writeRuntimeTestEnvelope(t, request.Context(), conn, "registration_success", map[string]any{
+			"agent_id":         "monitor_1",
+			"agent_credential": "long-lived-monitor-credential",
+		})
+		if ack := readRuntimeTestEnvelope(t, request.Context(), conn); ack.Type != "registration_ack" {
+			t.Errorf("expected registration_ack, got %#v", ack)
+			return
+		}
+		writeRuntimeTestEnvelope(t, request.Context(), conn, "registration_finalized", map[string]any{
+			"agent_id": "monitor_1",
+		})
+		if hello := readRuntimeTestEnvelope(t, request.Context(), conn); hello.Type != "hello" {
+			t.Errorf("expected hello, got %#v", hello)
+			return
+		}
+		writeRuntimeTestEnvelope(t, request.Context(), conn, "monitor_config_snapshot", MonitorConfigSnapshot{
+			MonitorID:     "monitor_1",
+			ConfigVersion: 1,
+			HealthChecks: []MonitorHealthCheck{{
+				ID:              "health_1",
+				ProbeType:       "ICMP",
+				IntervalSeconds: 1,
+				TimeoutSeconds:  1,
+				ConfigJSON:      "{}",
+				Targets: []MonitorHealthTarget{{
+					HealthCheckTargetID: "health_target_1",
+					TargetID:            "target_1",
+					Host:                "127.0.0.1",
+				}},
+			}},
+		})
+		if ack := readRuntimeTestEnvelope(t, request.Context(), conn); ack.Type != "monitor_config_ack" {
+			t.Errorf("expected monitor_config_ack, got %#v", ack)
+			return
+		}
+		for {
+			message := readRuntimeTestEnvelope(t, request.Context(), conn)
+			if message.Type != "health_results" {
+				continue
+			}
+			healthResultsReceived <- struct{}{}
+			return
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := NewMonitorRuntime(RuntimeConfig{
+		AppName:             "Runtime App",
+		ControlPlaneURL:     server.URL,
+		RegistrationToken:   "registration-token",
+		AgentCredentialFile: filepath.Join(t.TempDir(), "monitor-credential.json"),
+	})
+	runtime.heartbeatInterval = time.Hour
+	go func() {
+		_ = runtime.Run(ctx)
+	}()
+
+	select {
+	case <-healthResultsReceived:
+	case <-time.After(2500 * time.Millisecond):
+		t.Fatalf("timed out waiting for one-second health check result")
+	}
+}
+
 func TestNodeRuntimeAllowsRegistrationTokenWithoutAgentID(t *testing.T) {
 	helloReceived := make(chan struct{}, 1)
 	workDir := t.TempDir()

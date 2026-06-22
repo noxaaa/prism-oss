@@ -290,6 +290,9 @@ func (service *ControlService) DeleteTargetGroup(ctx context.Context, identity I
 		if err := ensureTargetGroupNotUsedByRules(ctx, repositories, identity.OrganizationID, targetGroupID); err != nil {
 			return err
 		}
+		if err := ensureTargetGroupNotUsedByHealthChecks(ctx, repositories, identity.OrganizationID, targetGroupID); err != nil {
+			return err
+		}
 		if err := repositories.TargetGroups().DeleteTargetGroup(ctx, identity.OrganizationID, targetGroupID, service.timestamp()); err != nil {
 			return err
 		}
@@ -336,6 +339,29 @@ func ensureTargetGroupNotUsedByRules(ctx context.Context, repositories repo.Repo
 	for _, rule := range rules {
 		if rule.TargetType == "TARGET_GROUP" && rule.TargetGroupID == targetGroupID {
 			return ErrConflict
+		}
+	}
+	return nil
+}
+
+func ensureTargetGroupNotUsedByHealthChecks(ctx context.Context, repositories repo.Repositories, organizationID string, targetGroupID string) error {
+	checks, err := repositories.HealthChecks().ListHealthChecksByOrganization(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	for _, check := range checks {
+		for _, target := range check.Targets {
+			if target.ScopeType == "TARGET_GROUP" && target.TargetGroupID == targetGroupID {
+				return &controlServiceError{
+					Code:    "TARGET_GROUP_IN_USE",
+					Message: "The target group is still assigned to one or more health checks.",
+					Details: map[string]any{
+						"target_group_id": targetGroupID,
+						"health_check_id": check.ID,
+					},
+					Cause: ErrConflict,
+				}
+			}
 		}
 	}
 	return nil

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"sort"
 	"strings"
@@ -183,6 +184,10 @@ func (service *ControlService) authorizeMonitorHealthResults(ctx context.Context
 	if err != nil {
 		return err
 	}
+	activeMonitorGroupIDs, err := activeMonitorGroupIDSet(ctx, repositories, organizationID)
+	if err != nil {
+		return err
+	}
 	checks := make(map[string]repo.HealthCheckRecord)
 	for _, result := range results {
 		check, ok := checks[result.HealthCheckID]
@@ -197,7 +202,7 @@ func (service *ControlService) authorizeMonitorHealthResults(ctx context.Context
 			}
 			checks[result.HealthCheckID] = check
 		}
-		if !check.Enabled || !healthCheckTargetsMonitor(check, monitor) || !healthCheckIncludesResultTarget(check, result) {
+		if !check.Enabled || !healthCheckTargetsMonitor(check, monitor, activeMonitorGroupIDs) || !healthCheckIncludesResultTarget(check, result) {
 			return ErrForbidden
 		}
 	}
@@ -277,8 +282,12 @@ func (service *ControlService) CompileMonitorAgentConfig(ctx context.Context, or
 			HealthChecks:   make([]agent.MonitorHealthCheck, 0),
 			GeneratedAtUTC: service.timestamp(),
 		}
+		activeMonitorGroupIDs, err := activeMonitorGroupIDSet(ctx, repositories, organizationID)
+		if err != nil {
+			return err
+		}
 		for _, check := range checks {
-			if !check.Enabled || !healthCheckTargetsMonitor(check, monitor) {
+			if !check.Enabled || !healthCheckTargetsMonitor(check, monitor, activeMonitorGroupIDs) {
 				continue
 			}
 			check, err = service.syncHealthCheckTargetGroupBindings(ctx, repositories, organizationID, check)
@@ -321,6 +330,13 @@ func (service *ControlService) syncHealthCheckTargetGroupBindings(ctx context.Co
 	for _, targetGroupID := range targetGroupIDs {
 		group, err := repositories.TargetGroups().FindTargetGroupByID(ctx, organizationID, targetGroupID)
 		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				targets = append(targets, repo.HealthCheckTargetRecord{
+					ScopeType:     "TARGET_GROUP",
+					TargetGroupID: targetGroupID,
+				})
+				continue
+			}
 			return repo.HealthCheckRecord{}, err
 		}
 		targets = append(targets, repo.HealthCheckTargetRecord{
@@ -363,22 +379,6 @@ func (service *ControlService) AcknowledgeMonitorAgentConfig(ctx context.Context
 		return repositories.Monitors().RecordMonitorConfigAck(ctx, organizationID, monitorID, configVersion, service.timestamp())
 	})
 	return mapServiceError(err)
-}
-
-func healthCheckTargetsMonitor(check repo.HealthCheckRecord, monitor repo.MonitorRecord) bool {
-	groupIDs := make(map[string]bool, len(monitor.GroupIDs))
-	for _, groupID := range monitor.GroupIDs {
-		groupIDs[groupID] = true
-	}
-	for _, scope := range check.MonitorScopes {
-		if scope.ScopeType == "MONITOR" && scope.MonitorID == monitor.ID {
-			return true
-		}
-		if scope.ScopeType == "MONITOR_GROUP" && groupIDs[scope.MonitorGroupID] {
-			return true
-		}
-	}
-	return false
 }
 
 func (service *ControlService) ListDNSCredentials(ctx context.Context, identity InternalIdentity) ([]DNSCredentialPayload, error) {

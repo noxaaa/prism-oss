@@ -748,10 +748,14 @@ func (store *PostgresStore) replaceNodePortRanges(ctx context.Context, organizat
 
 func (store *PostgresStore) listMonitorGroupIDs(ctx context.Context, organizationID string, monitorID string) ([]string, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT monitor_group_id
+		SELECT monitor_group_members.monitor_group_id
 		FROM monitor_group_members
-		WHERE organization_id = ? AND monitor_id = ?
-		ORDER BY monitor_group_id
+		JOIN monitor_groups
+		  ON monitor_groups.organization_id = monitor_group_members.organization_id
+		 AND monitor_groups.id = monitor_group_members.monitor_group_id
+		 AND monitor_groups.deleted_at IS NULL
+		WHERE monitor_group_members.organization_id = ? AND monitor_group_members.monitor_id = ?
+		ORDER BY monitor_group_members.monitor_group_id
 	`, organizationID, monitorID)
 	if err != nil {
 		return nil, err

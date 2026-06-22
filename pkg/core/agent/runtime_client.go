@@ -80,7 +80,7 @@ func NewMonitorRuntime(config RuntimeConfig) *NodeRuntime {
 		config:            config,
 		agentType:         "MONITOR",
 		bootTime:          time.Now().UTC(),
-		metricsInterval:   5 * time.Second,
+		metricsInterval:   time.Second,
 		heartbeatInterval: 5 * time.Second,
 		monitorLastProbe:  map[string]time.Time{},
 	}

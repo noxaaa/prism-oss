@@ -149,6 +149,33 @@ func TestControlServiceSyncsPolicySupportedTargetGroupMemberships(t *testing.T) 
 	}
 }
 
+func TestControlServiceRejectsDeletingTargetGroupUsedByHealthCheck(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	store.targetGroups["group_health"] = repo.TargetGroupRecord{
+		ID:             "group_health",
+		OrganizationID: "org_1",
+		Name:           "Health checked pool",
+		Scheduler:      "PRIORITY_IPHASH",
+	}
+	store.healthChecks = []repo.HealthCheckRecord{{
+		ID:             "health_1",
+		OrganizationID: "org_1",
+		Targets: []repo.HealthCheckTargetRecord{{
+			ScopeType:     "TARGET_GROUP",
+			TargetGroupID: "group_health",
+		}},
+	}}
+	control := NewControlService(store)
+
+	err := control.DeleteTargetGroup(context.Background(), targetGroupServiceTestIdentity(), "group_health")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	if _, ok := store.targetGroups["group_health"]; !ok {
+		t.Fatalf("target group must not be deleted while health checks reference it")
+	}
+}
+
 func newTargetGroupServiceTestStore() *targetGroupServiceTestStore {
 	return &targetGroupServiceTestStore{
 		targets: map[string]repo.TargetRecord{
@@ -162,6 +189,7 @@ func newTargetGroupServiceTestStore() *targetGroupServiceTestStore {
 type targetGroupServiceTestStore struct {
 	targets      map[string]repo.TargetRecord
 	targetGroups map[string]repo.TargetGroupRecord
+	healthChecks []repo.HealthCheckRecord
 	auditLogs    []repo.AuditLogRecord
 }
 
@@ -190,7 +218,7 @@ func (repositories targetGroupServiceTestRepositories) Monitors() repo.MonitorRe
 	return nil
 }
 func (repositories targetGroupServiceTestRepositories) HealthChecks() repo.HealthCheckRepository {
-	return nil
+	return targetGroupServiceTestHealthRepository(repositories)
 }
 func (repositories targetGroupServiceTestRepositories) DNSCredentials() repo.DNSCredentialRepository {
 	return nil
@@ -282,7 +310,8 @@ func (targetGroups targetGroupServiceTestTargetGroupRepository) UpdateTargetGrou
 	return nil
 }
 
-func (targetGroups targetGroupServiceTestTargetGroupRepository) DeleteTargetGroup(context.Context, string, string, string) error {
+func (targetGroups targetGroupServiceTestTargetGroupRepository) DeleteTargetGroup(_ context.Context, _ string, targetGroupID string, _ string) error {
+	delete(targetGroups.store.targetGroups, targetGroupID)
 	return nil
 }
 
@@ -343,6 +372,50 @@ func (rules targetGroupServiceTestRuleRepository) RecordNodeRuleTrafficAssignmen
 
 func (rules targetGroupServiceTestRuleRepository) RecordRuleTrafficReport(context.Context, string, string, repo.RuleTrafficReportRecord, []repo.RuleTrafficDeltaRecord, string, func() string) (bool, error) {
 	return false, nil
+}
+
+type targetGroupServiceTestHealthRepository struct {
+	store *targetGroupServiceTestStore
+}
+
+func (healthChecks targetGroupServiceTestHealthRepository) ListHealthChecksByOrganization(_ context.Context, organizationID string) ([]repo.HealthCheckRecord, error) {
+	result := make([]repo.HealthCheckRecord, 0, len(healthChecks.store.healthChecks))
+	for _, check := range healthChecks.store.healthChecks {
+		if check.OrganizationID == organizationID {
+			result = append(result, check)
+		}
+	}
+	return result, nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) FindHealthCheckByID(context.Context, string, string) (repo.HealthCheckRecord, error) {
+	return repo.HealthCheckRecord{}, repo.ErrNotFound
+}
+func (healthChecks targetGroupServiceTestHealthRepository) CreateHealthCheck(context.Context, repo.HealthCheckRecord, []repo.HealthCheckTargetRecord, []repo.HealthCheckMonitorScopeRecord, string, func() string) error {
+	return nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) UpdateHealthCheck(context.Context, repo.HealthCheckRecord, []repo.HealthCheckTargetRecord, []repo.HealthCheckMonitorScopeRecord, string, func() string) error {
+	return nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) SyncHealthCheckTargets(context.Context, string, string, []repo.HealthCheckTargetRecord, string, func() string) error {
+	return nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) DeleteHealthCheck(context.Context, string, string, string) error {
+	return nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) ListHealthResults(context.Context, string, string, int) ([]repo.HealthResultRecord, error) {
+	return nil, nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) RecordHealthResults(context.Context, string, []repo.HealthResultRecord) error {
+	return nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) ListHealthEvaluationRulesByCheck(context.Context, string, string) ([]repo.HealthEvaluationRuleRecord, error) {
+	return nil, nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) CreateHealthEvaluationRule(context.Context, repo.HealthEvaluationRuleRecord, []repo.HealthEventRecord) error {
+	return nil
+}
+func (healthChecks targetGroupServiceTestHealthRepository) DeleteHealthEvaluationRulesForDNSRecord(context.Context, string, string, string) error {
+	return nil
 }
 
 type targetGroupServiceTestAuditRepository struct {

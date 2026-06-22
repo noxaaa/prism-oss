@@ -271,6 +271,51 @@ func TestRecordMonitorHealthResultsRejectsOutOfScopeMonitor(t *testing.T) {
 	}
 }
 
+func TestRecordMonitorHealthResultsRejectsDeletedMonitorGroupScope(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+			GroupIDs:       []string{"monitor_group_1"},
+		},
+		monitorGroups: map[string]repo.MonitorGroupRecord{
+			"monitor_group_1": {
+				ID:             "monitor_group_1",
+				OrganizationID: "org_1",
+				DeletedAt:      "2026-06-20T00:00:00Z",
+			},
+		},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:       "health_target_1",
+				TargetID: "target_1",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType:      "MONITOR_GROUP",
+				MonitorGroupID: "monitor_group_1",
+			}},
+		}},
+	}
+	control := NewControlService(store)
+
+	err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
+		HealthCheckID:       "health_1",
+		HealthCheckTargetID: "health_target_1",
+		TargetID:            "target_1",
+		Status:              "ONLINE",
+		ObservedAt:          "2026-06-20T00:00:00Z",
+	}})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden for deleted monitor group scope, got %v", err)
+	}
+	if len(store.results) != 0 {
+		t.Fatalf("deleted monitor group scope must not record results, got %#v", store.results)
+	}
+}
+
 func TestDeleteDNSCredentialRejectsActiveRecords(t *testing.T) {
 	store := &healthDNSTestStore{
 		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1"},
@@ -288,6 +333,53 @@ func TestDeleteDNSCredentialRejectsActiveRecords(t *testing.T) {
 	}
 	if store.deletedCredentialID != "" {
 		t.Fatalf("credential should not be deleted while active records reference it")
+	}
+}
+
+func TestCompileMonitorAgentConfigTreatsMissingTargetGroupAsEmptyBinding(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+		},
+		checks: []repo.HealthCheckRecord{{
+			ID:              "health_1",
+			OrganizationID:  "org_1",
+			ProbeType:       "TCP_PORT",
+			IntervalSeconds: 30,
+			TimeoutSeconds:  3,
+			ConfigJSON:      "{}",
+			Enabled:         true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:             "health_target_stale",
+				OrganizationID: "org_1",
+				HealthCheckID:  "health_1",
+				ScopeType:      "TARGET_GROUP",
+				TargetID:       "target_stale",
+				TargetGroupID:  "target_group_deleted",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType: "MONITOR",
+				MonitorID: "monitor_1",
+			}},
+		}},
+		targetGroups: map[string]repo.TargetGroupRecord{},
+		targetsByID:  map[string]repo.TargetRecord{},
+	}
+	control := NewControlService(store)
+
+	snapshot, err := control.CompileMonitorAgentConfig(context.Background(), "org_1", "monitor_1")
+	if err != nil {
+		t.Fatalf("compile monitor config with missing target group: %v", err)
+	}
+	if !store.syncedHealthTargets {
+		t.Fatalf("expected missing target group binding to be synchronized")
+	}
+	if len(snapshot.HealthChecks) != 1 || len(snapshot.HealthChecks[0].Targets) != 0 {
+		t.Fatalf("missing target group should compile as an empty binding, got %#v", snapshot.HealthChecks)
+	}
+	if got := store.checks[0].Targets; len(got) != 1 || got[0].TargetGroupID != "target_group_deleted" || got[0].TargetID != "" {
+		t.Fatalf("expected deleted target group placeholder to be retained, got %#v", got)
 	}
 }
 
@@ -442,6 +534,49 @@ func TestCompileMonitorAgentConfigPreservesEmptyTargetGroupBinding(t *testing.T)
 	}
 }
 
+func TestCompileMonitorAgentConfigIgnoresDeletedMonitorGroupScope(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+			GroupIDs:       []string{"monitor_group_1"},
+		},
+		monitorGroups: map[string]repo.MonitorGroupRecord{
+			"monitor_group_1": {
+				ID:             "monitor_group_1",
+				OrganizationID: "org_1",
+				DeletedAt:      "2026-06-20T00:00:00Z",
+			},
+		},
+		checks: []repo.HealthCheckRecord{{
+			ID:              "health_1",
+			OrganizationID:  "org_1",
+			ProbeType:       "TCP_PORT",
+			IntervalSeconds: 30,
+			TimeoutSeconds:  3,
+			ConfigJSON:      "{}",
+			Enabled:         true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:       "health_target_1",
+				TargetID: "target_1",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType:      "MONITOR_GROUP",
+				MonitorGroupID: "monitor_group_1",
+			}},
+		}},
+	}
+	control := NewControlService(store)
+
+	snapshot, err := control.CompileMonitorAgentConfig(context.Background(), "org_1", "monitor_1")
+	if err != nil {
+		t.Fatalf("compile monitor config: %v", err)
+	}
+	if len(snapshot.HealthChecks) != 0 {
+		t.Fatalf("deleted monitor group scope must not match monitor config, got %#v", snapshot.HealthChecks)
+	}
+}
+
 func TestBuildHealthBindingsPreservesEmptyTargetGroupScope(t *testing.T) {
 	store := &healthDNSTestStore{
 		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
@@ -530,6 +665,7 @@ type healthDNSTestStore struct {
 	record              repo.DNSRecordRecord
 	monitor             repo.MonitorRecord
 	checks              []repo.HealthCheckRecord
+	monitorGroups       map[string]repo.MonitorGroupRecord
 	targetGroups        map[string]repo.TargetGroupRecord
 	targetsByID         map[string]repo.TargetRecord
 	syncedHealthTargets bool
@@ -550,7 +686,9 @@ func (repositories healthDNSTestRepositories) Members() repo.MemberRepository   
 func (repositories healthDNSTestRepositories) Roles() repo.RoleRepository                 { return nil }
 func (repositories healthDNSTestRepositories) NodeGroups() repo.NodeGroupRepository       { return nil }
 func (repositories healthDNSTestRepositories) Nodes() repo.NodeRepository                 { return nil }
-func (repositories healthDNSTestRepositories) MonitorGroups() repo.MonitorGroupRepository { return nil }
+func (repositories healthDNSTestRepositories) MonitorGroups() repo.MonitorGroupRepository {
+	return healthDNSTestMonitorGroupRepository(repositories)
+}
 func (repositories healthDNSTestRepositories) Monitors() repo.MonitorRepository {
 	return healthDNSTestMonitorRepository(repositories)
 }
@@ -581,6 +719,36 @@ func (repositories healthDNSTestRepositories) AuditLogs() repo.AuditLogRepositor
 
 type healthDNSTestMonitorRepository struct {
 	store *healthDNSTestStore
+}
+
+type healthDNSTestMonitorGroupRepository struct {
+	store *healthDNSTestStore
+}
+
+func (repository healthDNSTestMonitorGroupRepository) ListMonitorGroupsByOrganization(_ context.Context, organizationID string) ([]repo.MonitorGroupRecord, error) {
+	result := make([]repo.MonitorGroupRecord, 0, len(repository.store.monitorGroups))
+	for _, group := range repository.store.monitorGroups {
+		if group.OrganizationID == organizationID && group.DeletedAt == "" {
+			result = append(result, group)
+		}
+	}
+	return result, nil
+}
+func (repository healthDNSTestMonitorGroupRepository) FindMonitorGroupByID(_ context.Context, organizationID string, monitorGroupID string) (repo.MonitorGroupRecord, error) {
+	group, ok := repository.store.monitorGroups[monitorGroupID]
+	if ok && group.OrganizationID == organizationID && group.DeletedAt == "" {
+		return group, nil
+	}
+	return repo.MonitorGroupRecord{}, repo.ErrNotFound
+}
+func (repository healthDNSTestMonitorGroupRepository) CreateMonitorGroup(context.Context, repo.MonitorGroupRecord) error {
+	return nil
+}
+func (repository healthDNSTestMonitorGroupRepository) UpdateMonitorGroup(context.Context, repo.MonitorGroupRecord) error {
+	return nil
+}
+func (repository healthDNSTestMonitorGroupRepository) DeleteMonitorGroup(context.Context, string, string, string) error {
+	return nil
 }
 
 func (repository healthDNSTestMonitorRepository) ListMonitorsByOrganization(context.Context, string) ([]repo.MonitorRecord, error) {
