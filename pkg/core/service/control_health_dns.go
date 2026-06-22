@@ -585,7 +585,6 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 		return DNSRecordPayload{}, err
 	}
 	var result DNSRecordPayload
-	var actions []pendingHealthAction
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if _, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, identity.OrganizationID, input.DNSCredentialID); err != nil {
 			return err
@@ -604,6 +603,17 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 			CreatedAt:             now,
 			UpdatedAt:             now,
 		}
+		action, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, input.DesiredValues, true)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := service.executeDNSProviderAction(ctx, action); err != nil {
+				return err
+			}
+			record.LastAppliedValuesJSON = action.LastAppliedValues
+			record.LastAppliedAt = now
+		}
 		if err := repositories.DNSRecords().CreateDNSRecord(ctx, record); err != nil {
 			return err
 		}
@@ -611,23 +621,12 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 			if err := service.createDNSHealthEvent(ctx, repositories, identity.OrganizationID, input, record, now); err != nil {
 				return err
 			}
-		} else {
-			action, ok, err := service.buildDNSRecordApplyAction(ctx, repositories, identity.OrganizationID, record, input.DesiredValues)
-			if err != nil {
-				return err
-			}
-			if ok {
-				actions = append(actions, action)
-			}
 		}
 		result = toDNSRecordPayload(record)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_records.create", "DNS_RECORD", record.ID, ""))
 	})
 	if err != nil {
 		return DNSRecordPayload{}, mapServiceError(err)
-	}
-	if err := service.executeHealthActions(ctx, actions); err != nil {
-		return DNSRecordPayload{}, err
 	}
 	return result, nil
 }
@@ -640,12 +639,12 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 		return DNSRecordPayload{}, err
 	}
 	var result DNSRecordPayload
-	var actions []pendingHealthAction
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		record, err := repositories.DNSRecords().FindDNSRecordByID(ctx, identity.OrganizationID, recordID)
 		if err != nil {
 			return err
 		}
+		previousRecord := record
 		if strings.TrimSpace(input.HealthCheckID) == "" {
 			if err := service.ensureCanRemoveDNSHealthBinding(ctx, repositories, identity, record.ID); err != nil {
 				return err
@@ -661,6 +660,29 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 		record.ManagedMode = "CUSTOMER_CREDENTIAL"
 		record.DesiredValuesJSON = stringListJSON(input.DesiredValues)
 		record.UpdatedAt = service.timestamp()
+		identityChanged := dnsRecordProviderIdentityChanged(previousRecord, record)
+		if identityChanged {
+			action, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, previousRecord, nil, true)
+			if err != nil {
+				return err
+			}
+			if ok {
+				if err := service.executeDNSProviderAction(ctx, action); err != nil {
+					return err
+				}
+			}
+		}
+		action, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, input.DesiredValues, identityChanged)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := service.executeDNSProviderAction(ctx, action); err != nil {
+				return err
+			}
+			record.LastAppliedValuesJSON = action.LastAppliedValues
+			record.LastAppliedAt = record.UpdatedAt
+		}
 		if err := repositories.DNSRecords().UpdateDNSRecord(ctx, record); err != nil {
 			return err
 		}
@@ -671,23 +693,12 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 			if err := service.createDNSHealthEvent(ctx, repositories, identity.OrganizationID, input, record, record.UpdatedAt); err != nil {
 				return err
 			}
-		} else {
-			action, ok, err := service.buildDNSRecordApplyAction(ctx, repositories, identity.OrganizationID, record, input.DesiredValues)
-			if err != nil {
-				return err
-			}
-			if ok {
-				actions = append(actions, action)
-			}
 		}
 		result = toDNSRecordPayload(record)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_records.update", "DNS_RECORD", record.ID, ""))
 	})
 	if err != nil {
 		return DNSRecordPayload{}, mapServiceError(err)
-	}
-	if err := service.executeHealthActions(ctx, actions); err != nil {
-		return DNSRecordPayload{}, err
 	}
 	return result, nil
 }
@@ -698,6 +709,22 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 	}
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		deletedAt := service.timestamp()
+		record, err := repositories.DNSRecords().FindDNSRecordByID(ctx, identity.OrganizationID, recordID)
+		if err != nil {
+			return err
+		}
+		if err := service.ensureCanRemoveDNSHealthBinding(ctx, repositories, identity, recordID); err != nil {
+			return err
+		}
+		action, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, nil, true)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := service.executeDNSProviderAction(ctx, action); err != nil {
+				return err
+			}
+		}
 		if err := repositories.HealthChecks().DeleteHealthEvaluationRulesForDNSRecord(ctx, identity.OrganizationID, recordID, deletedAt); err != nil {
 			return err
 		}
@@ -815,30 +842,34 @@ func (service *ControlService) createDNSHealthEvent(ctx context.Context, reposit
 	return repositories.HealthChecks().CreateHealthEvaluationRule(ctx, rule, []repo.HealthEventRecord{event})
 }
 
-func (service *ControlService) buildDNSRecordApplyAction(ctx context.Context, repositories repo.Repositories, organizationID string, record repo.DNSRecordRecord, values []string) (pendingHealthAction, bool, error) {
+func (service *ControlService) buildDNSRecordProviderAction(ctx context.Context, repositories repo.Repositories, organizationID string, record repo.DNSRecordRecord, values []string, force bool) (dnsEventAction, bool, error) {
 	nextApplied := stringListJSON(values)
 	lastApplied := stringListJSON(parseStringListJSON(record.LastAppliedValuesJSON))
-	if nextApplied == lastApplied {
-		return pendingHealthAction{}, false, nil
+	if !force && nextApplied == lastApplied {
+		return dnsEventAction{}, false, nil
 	}
 	credential, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, organizationID, record.DNSCredentialID)
 	if err != nil {
-		return pendingHealthAction{}, false, err
+		return dnsEventAction{}, false, err
 	}
-	return pendingHealthAction{
-		executor: dnsHealthActionExecutor{service: service},
-		payload: dnsEventAction{
-			OrganizationID:    organizationID,
-			DNSRecordID:       record.ID,
-			Provider:          credential.Provider,
-			EncryptedSecret:   credential.EncryptedSecret,
-			Zone:              record.Zone,
-			RecordName:        record.RecordName,
-			RecordType:        record.RecordType,
-			Values:            values,
-			LastAppliedValues: nextApplied,
-		},
+	return dnsEventAction{
+		OrganizationID:    organizationID,
+		DNSRecordID:       record.ID,
+		Provider:          credential.Provider,
+		EncryptedSecret:   credential.EncryptedSecret,
+		Zone:              record.Zone,
+		RecordName:        record.RecordName,
+		RecordType:        record.RecordType,
+		Values:            values,
+		LastAppliedValues: nextApplied,
 	}, true, nil
+}
+
+func dnsRecordProviderIdentityChanged(previous repo.DNSRecordRecord, next repo.DNSRecordRecord) bool {
+	return strings.TrimSpace(previous.DNSCredentialID) != strings.TrimSpace(next.DNSCredentialID) ||
+		strings.TrimSpace(previous.Zone) != strings.TrimSpace(next.Zone) ||
+		strings.TrimSpace(previous.RecordName) != strings.TrimSpace(next.RecordName) ||
+		!strings.EqualFold(strings.TrimSpace(previous.RecordType), strings.TrimSpace(next.RecordType))
 }
 
 func normalizedConfigJSON(value string) string {

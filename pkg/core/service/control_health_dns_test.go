@@ -75,10 +75,10 @@ func TestRecordMonitorHealthResultsAppliesDNSFailover(t *testing.T) {
 	if len(store.results) != 1 {
 		t.Fatalf("expected health result to be recorded, got %#v", store.results)
 	}
-	if provider.input.ProviderSecret != "cloudflare-token" || provider.input.Zone != "zone_1" || provider.input.RecordName != "health.example.com" {
-		t.Fatalf("unexpected provider input: %#v", provider.input)
+	if provider.lastInput().ProviderSecret != "cloudflare-token" || provider.lastInput().Zone != "zone_1" || provider.lastInput().RecordName != "health.example.com" {
+		t.Fatalf("unexpected provider input: %#v", provider.lastInput())
 	}
-	if got := provider.input.Values; len(got) != 1 || got[0] != "198.51.100.10" {
+	if got := provider.lastInput().Values; len(got) != 1 || got[0] != "198.51.100.10" {
 		t.Fatalf("expected failover value to be applied, got %#v", got)
 	}
 	var lastApplied []string
@@ -158,10 +158,10 @@ func TestRecordMonitorHealthResultsAggregatesDNSActionPerCheck(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("record monitor health results: %v", err)
 	}
-	if provider.calls != 1 {
-		t.Fatalf("expected one DNS apply for the check evaluation, got %d", provider.calls)
+	if provider.calls() != 1 {
+		t.Fatalf("expected one DNS apply for the check evaluation, got %d", provider.calls())
 	}
-	if got := provider.input.Values; len(got) != 1 || got[0] != "198.51.100.10" {
+	if got := provider.lastInput().Values; len(got) != 1 || got[0] != "198.51.100.10" {
 		t.Fatalf("expected aggregate offline status to apply failover value, got %#v", got)
 	}
 }
@@ -252,8 +252,8 @@ func TestRecordMonitorHealthResultsEvaluatesLatestResultsAcrossMonitorGroup(t *t
 	}}); err != nil {
 		t.Fatalf("record monitor health results: %v", err)
 	}
-	if provider.calls != 0 {
-		t.Fatalf("expected monitor group evaluation to keep failover while another scoped monitor is offline, got %d provider calls", provider.calls)
+	if provider.calls() != 0 {
+		t.Fatalf("expected monitor group evaluation to keep failover while another scoped monitor is offline, got %d provider calls", provider.calls())
 	}
 }
 

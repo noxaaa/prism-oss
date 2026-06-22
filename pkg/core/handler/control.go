@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/noxaaa/prism-oss/pkg/core/auth"
+	"github.com/noxaaa/prism-oss/pkg/core/dns"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 	"github.com/noxaaa/prism-oss/pkg/core/service"
@@ -28,6 +29,7 @@ type ControlServerOptions struct {
 	AgentReleaseVersion     string
 	AgentTokenSigningSecret []byte
 	DNSSecretEncryptionKey  string
+	DNSProviders            dns.ProviderRegistry
 	AgentStateRegistry      *AgentStateRegistry
 	Edition                 edition.Provider
 	RouteExtensions         []ControlRouteExtension
@@ -56,6 +58,7 @@ func NewControlServer(options ControlServerOptions) *ControlServer {
 			AgentReleaseVersion:     options.AgentReleaseVersion,
 			AgentTokenSigningSecret: options.AgentTokenSigningSecret,
 			DNSSecretEncryptionKey:  options.DNSSecretEncryptionKey,
+			DNSProviders:            options.DNSProviders,
 			Edition:                 provider,
 		})
 	}

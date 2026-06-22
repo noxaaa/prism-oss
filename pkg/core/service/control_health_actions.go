@@ -124,15 +124,6 @@ func (service *ControlService) latestHealthEvaluationResult(ctx context.Context,
 	return selected, nil
 }
 
-func (service *ControlService) executeHealthActions(ctx context.Context, actions []pendingHealthAction) error {
-	for _, action := range actions {
-		if err := action.executor.Execute(ctx, action.payload); err != nil {
-			return mapServiceError(err)
-		}
-	}
-	return nil
-}
-
 func aggregateHealthResultsByCheck(results []repo.HealthResultRecord) []repo.HealthResultRecord {
 	byCheck := make(map[string]repo.HealthResultRecord)
 	order := make([]string, 0)

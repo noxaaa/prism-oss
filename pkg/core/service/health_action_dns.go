@@ -102,11 +102,21 @@ func (executor dnsHealthActionExecutor) Execute(ctx context.Context, rawAction a
 	if !ok {
 		return ErrInvalidInput
 	}
-	secret, err := executor.service.decryptDNSSecret(action.EncryptedSecret)
+	if err := executor.service.executeDNSProviderAction(ctx, action); err != nil {
+		return err
+	}
+	err := executor.service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		return repositories.DNSRecords().UpdateDNSRecordLastApplied(ctx, action.OrganizationID, action.DNSRecordID, action.LastAppliedValues, executor.service.timestamp())
+	})
+	return mapServiceError(err)
+}
+
+func (service *ControlService) executeDNSProviderAction(ctx context.Context, action dnsEventAction) error {
+	secret, err := service.decryptDNSSecret(action.EncryptedSecret)
 	if err != nil {
 		return err
 	}
-	provider, ok := executor.service.dnsProviders.ProviderForKey(action.Provider)
+	provider, ok := service.dnsProviders.ProviderForKey(action.Provider)
 	if !ok {
 		return ErrInvalidInput
 	}
@@ -119,10 +129,7 @@ func (executor dnsHealthActionExecutor) Execute(ctx context.Context, rawAction a
 	}); err != nil {
 		return err
 	}
-	err = executor.service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
-		return repositories.DNSRecords().UpdateDNSRecordLastApplied(ctx, action.OrganizationID, action.DNSRecordID, action.LastAppliedValues, executor.service.timestamp())
-	})
-	return mapServiceError(err)
+	return nil
 }
 
 func stringListJSON(values []string) string {

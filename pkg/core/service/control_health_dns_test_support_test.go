@@ -8,14 +8,24 @@ import (
 )
 
 type healthDNSTestProvider struct {
-	input dns.ApplyRecordInput
-	calls int
+	inputs []dns.ApplyRecordInput
+	err    error
 }
 
 func (provider *healthDNSTestProvider) ApplyRecord(_ context.Context, input dns.ApplyRecordInput) error {
-	provider.input = input
-	provider.calls++
-	return nil
+	provider.inputs = append(provider.inputs, input)
+	return provider.err
+}
+
+func (provider *healthDNSTestProvider) calls() int {
+	return len(provider.inputs)
+}
+
+func (provider *healthDNSTestProvider) lastInput() dns.ApplyRecordInput {
+	if len(provider.inputs) == 0 {
+		return dns.ApplyRecordInput{}
+	}
+	return provider.inputs[len(provider.inputs)-1]
 }
 
 type recordingHealthActionExecutor struct {
@@ -59,6 +69,7 @@ type healthDNSTestStore struct {
 	syncedHealthTargets   bool
 	deletedHealthCheckID  string
 	deletedRulesRecordID  string
+	deletedDNSRecordID    string
 	deletedCredentialID   string
 	deletedMonitorID      string
 	deletedMonitorGroupID string
@@ -410,7 +421,11 @@ func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecordLastApplied(_ 
 	return nil
 }
 
-func (repository healthDNSTestDNSRecordRepository) DeleteDNSRecord(context.Context, string, string, string) error {
+func (repository healthDNSTestDNSRecordRepository) DeleteDNSRecord(_ context.Context, organizationID string, recordID string, _ string) error {
+	if repository.store.record.OrganizationID != organizationID || repository.store.record.ID != recordID {
+		return repo.ErrNotFound
+	}
+	repository.store.deletedDNSRecordID = recordID
 	return nil
 }
 

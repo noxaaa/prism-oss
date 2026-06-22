@@ -16,11 +16,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/noxaaa/prism-oss/pkg/core/auth"
+	"github.com/noxaaa/prism-oss/pkg/core/dns"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 	"github.com/noxaaa/prism-oss/pkg/core/service"
 	"github.com/noxaaa/prism-oss/pkg/edition"
 )
+
+type ossRouteTestDNSProvider struct{}
+
+func (ossRouteTestDNSProvider) ApplyRecord(context.Context, dns.ApplyRecordInput) error {
+	return nil
+}
 
 func TestOSSControlServerDoesNotRegisterRBACRoutes(t *testing.T) {
 	signer := auth.HMACInternalTokenSigner{Secret: []byte("test-secret")}
@@ -213,6 +220,7 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 		AgentReleaseVersion:     "v0.0.0-test",
 		AgentTokenSigningSecret: []byte("agent-token-secret-32-byte-test-key"),
 		DNSSecretEncryptionKey:  "test-dns-secret-key",
+		DNSProviders:            dns.StaticProviderRegistry{"CLOUDFLARE": ossRouteTestDNSProvider{}},
 	})
 
 	bootstrap := postBootstrap(t, server, webSigner, "user_owner", "owner@example.com")

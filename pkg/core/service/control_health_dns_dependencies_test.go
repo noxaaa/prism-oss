@@ -70,8 +70,8 @@ func TestRecordMonitorHealthResultsSkipsDNSWhenAppliedValuesUnchanged(t *testing
 	}}); err != nil {
 		t.Fatalf("record monitor health results: %v", err)
 	}
-	if provider.calls != 0 {
-		t.Fatalf("expected unchanged DNS state to skip provider calls, got %d", provider.calls)
+	if provider.calls() != 0 {
+		t.Fatalf("expected unchanged DNS state to skip provider calls, got %d", provider.calls())
 	}
 	if store.record.LastAppliedAt != "" {
 		t.Fatalf("last_applied_at should not change when DNS action is skipped")
@@ -212,17 +212,228 @@ func TestCreateDNSRecordWithoutHealthBindingAppliesDesiredValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create dns record: %v", err)
 	}
-	if provider.calls != 1 {
-		t.Fatalf("expected immediate provider apply for unbound DNS record, got %d calls", provider.calls)
+	if provider.calls() != 1 {
+		t.Fatalf("expected immediate provider apply for unbound DNS record, got %d calls", provider.calls())
 	}
-	if provider.input.ProviderSecret != "cloudflare-token" || provider.input.Zone != "zone_1" || provider.input.RecordName != "app.example.com" {
-		t.Fatalf("unexpected provider input: %#v", provider.input)
+	if provider.lastInput().ProviderSecret != "cloudflare-token" || provider.lastInput().Zone != "zone_1" || provider.lastInput().RecordName != "app.example.com" {
+		t.Fatalf("unexpected provider input: %#v", provider.lastInput())
 	}
-	if got := provider.input.Values; len(got) != 1 || got[0] != "192.0.2.1" {
+	if got := provider.lastInput().Values; len(got) != 1 || got[0] != "192.0.2.1" {
 		t.Fatalf("expected desired values to be applied, got %#v", got)
 	}
 	if store.record.ID != record.ID || store.record.LastAppliedValuesJSON != `["192.0.2.1"]` || store.record.LastAppliedAt == "" {
 		t.Fatalf("expected last applied state to be recorded, got %#v", store.record)
+	}
+}
+
+func TestCreateDNSRecordWithHealthBindingAppliesDesiredValues(t *testing.T) {
+	store := &healthDNSTestStore{
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+		}},
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		Authorizer:             healthDNSTestAuthorizer{},
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	_, err = control.CreateDNSRecord(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage), string(domain.PermissionHealthChecksRead)), DNSRecordMutationInput{
+		DNSCredentialID: "credential_1",
+		Zone:            "zone_1",
+		RecordName:      "app.example.com",
+		RecordType:      "A",
+		DesiredValues:   []string{"192.0.2.1"},
+		HealthCheckID:   "health_1",
+		EventType:       "DNS_FAILOVER",
+		FailoverValues:  []string{"198.51.100.10"},
+	})
+	if err != nil {
+		t.Fatalf("create health-bound dns record: %v", err)
+	}
+	if provider.calls() != 1 {
+		t.Fatalf("expected immediate provider apply for health-bound DNS record, got %d calls", provider.calls())
+	}
+	if got := provider.lastInput().Values; len(got) != 1 || got[0] != "192.0.2.1" {
+		t.Fatalf("expected desired values to be applied, got %#v", got)
+	}
+	if store.record.LastAppliedValuesJSON != `["192.0.2.1"]` || store.record.LastAppliedAt == "" {
+		t.Fatalf("expected health-bound create to persist last applied state, got %#v", store.record)
+	}
+}
+
+func TestCreateDNSRecordProviderFailureDoesNotPersistRecord(t *testing.T) {
+	store := &healthDNSTestStore{
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+	}
+	providerErr := errors.New("provider unavailable")
+	provider := &healthDNSTestProvider{err: providerErr}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		Authorizer:             healthDNSTestAuthorizer{},
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	_, err = control.CreateDNSRecord(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), DNSRecordMutationInput{
+		DNSCredentialID: "credential_1",
+		Zone:            "zone_1",
+		RecordName:      "app.example.com",
+		RecordType:      "A",
+		DesiredValues:   []string{"192.0.2.1"},
+	})
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("expected provider error, got %v", err)
+	}
+	if store.createdDNSRecord.ID != "" || store.record.ID != "" {
+		t.Fatalf("provider failure must not persist active DNS record, created=%#v record=%#v", store.createdDNSRecord, store.record)
+	}
+}
+
+func TestDeleteDNSRecordDeletesProviderRecord(t *testing.T) {
+	store := &healthDNSTestStore{
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:                    "dns_1",
+			OrganizationID:        "org_1",
+			DNSCredentialID:       "credential_1",
+			Zone:                  "zone_1",
+			RecordName:            "app.example.com",
+			RecordType:            "A",
+			LastAppliedValuesJSON: `["192.0.2.1"]`,
+		},
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		Authorizer:             healthDNSTestAuthorizer{},
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	if err := control.DeleteDNSRecord(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), "dns_1"); err != nil {
+		t.Fatalf("delete dns record: %v", err)
+	}
+	if provider.calls() != 1 {
+		t.Fatalf("expected provider delete before DB soft delete, got %d calls", provider.calls())
+	}
+	if input := provider.lastInput(); input.Zone != "zone_1" || input.RecordName != "app.example.com" || len(input.Values) != 0 {
+		t.Fatalf("expected provider delete for old record, got %#v", input)
+	}
+	if store.deletedDNSRecordID != "dns_1" {
+		t.Fatalf("expected DNS record soft delete after provider delete, got %q", store.deletedDNSRecordID)
+	}
+}
+
+func TestDeleteDNSRecordRequiresHealthPermissionToRemoveHealthBinding(t *testing.T) {
+	store := &healthDNSTestStore{
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:              "dns_1",
+			OrganizationID:  "org_1",
+			DNSCredentialID: "credential_1",
+			Zone:            "zone_1",
+			RecordName:      "app.example.com",
+			RecordType:      "A",
+		},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+		}},
+		rules: []repo.HealthEvaluationRuleRecord{{
+			ID:             "rule_1",
+			OrganizationID: "org_1",
+			HealthCheckID:  "health_1",
+			Enabled:        true,
+			Events: []repo.HealthEventRecord{{
+				ID:         "event_1",
+				EventType:  "DNS_FAILOVER",
+				Enabled:    true,
+				ConfigJSON: `{"dns_record_id":"dns_1","failover_values":["198.51.100.10"]}`,
+			}},
+		}},
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		Authorizer:             healthDNSTestAuthorizer{},
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+
+	err := control.DeleteDNSRecord(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), "dns_1")
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+	if store.deletedRulesRecordID != "" || store.deletedDNSRecordID != "" || provider.calls() != 0 {
+		t.Fatalf("dns-only identity must not delete health actions or provider state, rules=%q record=%q calls=%d", store.deletedRulesRecordID, store.deletedDNSRecordID, provider.calls())
+	}
+}
+
+func TestUpdateDNSRecordRetiresOldProviderRecordWhenIdentityChanges(t *testing.T) {
+	store := &healthDNSTestStore{
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:                    "dns_1",
+			OrganizationID:        "org_1",
+			DNSCredentialID:       "credential_1",
+			Zone:                  "old-zone",
+			RecordName:            "old.example.com",
+			RecordType:            "A",
+			DesiredValuesJSON:     `["192.0.2.1"]`,
+			LastAppliedValuesJSON: `["192.0.2.1"]`,
+		},
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		Authorizer:             healthDNSTestAuthorizer{},
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	_, err = control.UpdateDNSRecord(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), "dns_1", DNSRecordMutationInput{
+		DNSCredentialID: "credential_1",
+		Zone:            "new-zone",
+		RecordName:      "new.example.com",
+		RecordType:      "A",
+		DesiredValues:   []string{"192.0.2.1"},
+	})
+	if err != nil {
+		t.Fatalf("update dns record: %v", err)
+	}
+	if provider.calls() != 2 {
+		t.Fatalf("expected old provider delete and new provider apply, got %d calls", provider.calls())
+	}
+	if input := provider.inputs[0]; input.Zone != "old-zone" || input.RecordName != "old.example.com" || len(input.Values) != 0 {
+		t.Fatalf("expected first call to delete old provider record, got %#v", input)
+	}
+	if input := provider.inputs[1]; input.Zone != "new-zone" || input.RecordName != "new.example.com" || len(input.Values) != 1 || input.Values[0] != "192.0.2.1" {
+		t.Fatalf("expected second call to apply new provider record, got %#v", input)
+	}
+	if store.record.Zone != "new-zone" || store.record.LastAppliedValuesJSON != `["192.0.2.1"]` || store.record.LastAppliedAt == "" {
+		t.Fatalf("expected updated record to track new applied state, got %#v", store.record)
 	}
 }
 
@@ -286,8 +497,8 @@ func TestRecordMonitorHealthResultsDoesNotDeleteAllWhileOnline(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("record monitor health results: %v", err)
 	}
-	if provider.calls != 0 {
-		t.Fatalf("DNS_DELETE_ALL must not delete healthy records, got %d provider calls", provider.calls)
+	if provider.calls() != 0 {
+		t.Fatalf("DNS_DELETE_ALL must not delete healthy records, got %d provider calls", provider.calls())
 	}
 }
 
