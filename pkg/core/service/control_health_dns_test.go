@@ -610,6 +610,7 @@ func TestCompileMonitorAgentConfigRefreshesTargetGroupMembers(t *testing.T) {
 				Members: []repo.TargetGroupMemberRecord{
 					{TargetID: "target_current", Enabled: true},
 					{TargetID: "target_disabled", Enabled: false},
+					{TargetID: "target_record_disabled", Enabled: true},
 				},
 			},
 		},
@@ -629,6 +630,14 @@ func TestCompileMonitorAgentConfigRefreshesTargetGroupMembers(t *testing.T) {
 				Host:           "198.51.100.30",
 				Port:           443,
 				Enabled:        true,
+			},
+			"target_record_disabled": {
+				ID:             "target_record_disabled",
+				OrganizationID: "org_1",
+				Name:           "record disabled",
+				Host:           "198.51.100.40",
+				Port:           443,
+				Enabled:        false,
 			},
 		},
 	}

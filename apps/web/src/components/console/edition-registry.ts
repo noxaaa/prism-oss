@@ -54,7 +54,7 @@ export const overviewItem: ConsoleNavItem = {
 export const coreAdminItems: ConsoleNavItem[] = [
   overviewItem,
   { href: "/console/admin/nodes", icon: ServerIcon, key: "nodes", labelKey: "nav.nodes", permissions: ["nodes.read", "nodes.manage"] },
-  { href: "/console/admin/monitors", icon: RadarIcon, key: "monitors", labelKey: "nav.monitors", permissions: ["monitors.read", "monitors.manage"] },
+  { href: "/console/admin/monitors", icon: RadarIcon, key: "monitors", labelKey: "nav.monitors", permissions: ["monitors.read"] },
   { href: "/console/admin/health", icon: HeartPulseIcon, key: "health", labelKey: "nav.health", permissions: ["health_checks.read", "health_checks.manage"] },
   { href: "/console/admin/dns", icon: GlobeIcon, key: "dns", labelKey: "nav.dns", permissions: ["dns.read", "dns.manage"] },
   { href: "/console/admin/targets", icon: TargetIcon, key: "targets", labelKey: "nav.targets", permissions: ["targets.read", "targets.manage"] },

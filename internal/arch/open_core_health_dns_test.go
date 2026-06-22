@@ -65,6 +65,15 @@ func TestOSSReadmesExposeMonitorAgentLifecycleCommands(t *testing.T) {
 	}
 }
 
+func TestMonitorConsoleNavigationRequiresReadPermission(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "apps", "web", "src", "components", "console", "edition-registry.ts"))
+	required := `{ href: "/console/admin/monitors", icon: RadarIcon, key: "monitors", labelKey: "nav.monitors", permissions: ["monitors.read"] }`
+	if !strings.Contains(source, required) {
+		t.Fatalf("monitors nav item must require monitors.read because the page reads monitor lists")
+	}
+}
+
 func TestHealthCheckTargetQueriesExcludeDeletedTargets(t *testing.T) {
 	root := repoRoot(t)
 	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "health_dns.go"))
@@ -108,6 +117,53 @@ func TestDNSRecordUpdatePersistsAppliedProviderState(t *testing.T) {
 	lastAppliedAtIndex := strings.Index(source[updateIndex:], "last_applied_at = NULLIF(?, '')::timestamptz")
 	if lastAppliedValuesIndex == -1 || lastAppliedAtIndex == -1 {
 		t.Fatalf("UpdateDNSRecord must persist last_applied_values_json and last_applied_at")
+	}
+}
+
+func TestDNSRecordWritesMapConstraintErrorsToConflicts(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "health_dns.go"))
+	createIndex := strings.Index(source, "func (store *PostgresStore) CreateDNSRecord(")
+	updateIndex := strings.Index(source, "func (store *PostgresStore) UpdateDNSRecord(")
+	if createIndex == -1 || updateIndex == -1 {
+		t.Fatalf("DNS record write implementations not found")
+	}
+	createSource := source[createIndex:updateIndex]
+	updateSource := source[updateIndex:]
+	if !strings.Contains(createSource, "return mapWriteError(err)") {
+		t.Fatalf("CreateDNSRecord must map unique constraint failures to repo.ErrConflict")
+	}
+	if !strings.Contains(updateSource, "return mapWriteError(err)") {
+		t.Fatalf("UpdateDNSRecord must map unique constraint failures to repo.ErrConflict")
+	}
+}
+
+func TestHealthCheckChildrenAreDiffedOnUpdate(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "health_dns.go"))
+	functionIndex := strings.Index(source, "func (store *PostgresStore) replaceHealthCheckChildren(")
+	if functionIndex == -1 {
+		t.Fatalf("replaceHealthCheckChildren implementation not found")
+	}
+	functionSource := source[functionIndex:]
+	for _, forbidden := range []string{
+		"`DELETE FROM health_check_targets WHERE organization_id = ? AND health_check_id = ?`",
+		"`DELETE FROM health_check_monitor_scopes WHERE organization_id = ? AND health_check_id = ?`",
+	} {
+		if strings.Contains(functionSource, forbidden) {
+			t.Fatalf("health check child update must preserve unchanged child rows; found unconditional delete %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"replaceHealthCheckTargets",
+		"replaceHealthCheckMonitorScopes",
+		"healthCheckTargetKey",
+		"healthCheckMonitorScopeKey",
+		"ON CONFLICT DO NOTHING",
+	} {
+		if !strings.Contains(functionSource, required) {
+			t.Fatalf("health check child update must diff bindings and preserve unchanged rows; missing %q", required)
+		}
 	}
 }
 

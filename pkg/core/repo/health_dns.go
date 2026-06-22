@@ -59,7 +59,7 @@ func (store *PostgresStore) CreateHealthCheck(ctx context.Context, healthCheck H
 		INSERT INTO health_checks (id, organization_id, name, probe_type, interval_seconds, timeout_seconds, config_json, enabled, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
 	`, healthCheck.ID, healthCheck.OrganizationID, healthCheck.Name, healthCheck.ProbeType, healthCheck.IntervalSeconds, healthCheck.TimeoutSeconds, healthCheck.ConfigJSON, healthCheck.Enabled, healthCheck.CreatedAt, healthCheck.UpdatedAt); err != nil {
-		return err
+		return mapWriteError(err)
 	}
 	return store.replaceHealthCheckChildren(ctx, healthCheck.OrganizationID, healthCheck.ID, targets, monitorScopes, now, nextID)
 }
@@ -89,13 +89,13 @@ func (store *PostgresStore) SyncHealthCheckTargets(ctx context.Context, organiza
 		if target.ScopeType != "TARGET_GROUP" {
 			continue
 		}
-		desired[healthCheckTargetGroupKey(target.TargetID, target.TargetGroupID)] = target
+		desired[healthCheckTargetKey(target)] = target
 	}
 	for _, target := range current {
 		if target.ScopeType != "TARGET_GROUP" {
 			continue
 		}
-		if _, ok := desired[healthCheckTargetGroupKey(target.TargetID, target.TargetGroupID)]; ok {
+		if _, ok := desired[healthCheckTargetKey(target)]; ok {
 			continue
 		}
 		if _, err := store.db.ExecContext(ctx, `
@@ -359,33 +359,108 @@ func (store *PostgresStore) listHealthCheckMonitorScopes(ctx context.Context, or
 }
 
 func (store *PostgresStore) replaceHealthCheckChildren(ctx context.Context, organizationID string, healthCheckID string, targets []HealthCheckTargetRecord, monitorScopes []HealthCheckMonitorScopeRecord, now string, nextID func() string) error {
-	if _, err := store.db.ExecContext(ctx, `DELETE FROM health_check_targets WHERE organization_id = ? AND health_check_id = ?`, organizationID, healthCheckID); err != nil {
+	if err := store.replaceHealthCheckTargets(ctx, organizationID, healthCheckID, targets, now, nextID); err != nil {
 		return err
 	}
-	if _, err := store.db.ExecContext(ctx, `DELETE FROM health_check_monitor_scopes WHERE organization_id = ? AND health_check_id = ?`, organizationID, healthCheckID); err != nil {
+	return store.replaceHealthCheckMonitorScopes(ctx, organizationID, healthCheckID, monitorScopes, now, nextID)
+}
+
+func (store *PostgresStore) replaceHealthCheckTargets(ctx context.Context, organizationID string, healthCheckID string, targets []HealthCheckTargetRecord, now string, nextID func() string) error {
+	current, err := store.listHealthCheckTargetBindings(ctx, organizationID, healthCheckID)
+	if err != nil {
 		return err
 	}
+	desired := make(map[string]HealthCheckTargetRecord, len(targets))
 	for _, target := range targets {
+		desired[healthCheckTargetKey(target)] = target
+	}
+	for _, target := range current {
+		if _, ok := desired[healthCheckTargetKey(target)]; ok {
+			continue
+		}
+		if _, err := store.db.ExecContext(ctx, `
+			DELETE FROM health_check_targets
+			WHERE organization_id = ? AND health_check_id = ? AND scope_type = ?
+			  AND ((target_id IS NULL AND ? = '') OR target_id = NULLIF(?, '')::uuid)
+			  AND ((target_group_id IS NULL AND ? = '') OR target_group_id = NULLIF(?, '')::uuid)
+		`, organizationID, healthCheckID, target.ScopeType, target.TargetID, target.TargetID, target.TargetGroupID, target.TargetGroupID); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	for _, target := range desired {
 		if _, err := store.db.ExecContext(ctx, `
 			INSERT INTO health_check_targets (id, organization_id, health_check_id, scope_type, target_id, target_group_id, created_at)
 			VALUES (?, ?, ?, ?, NULLIF(?, '')::uuid, NULLIF(?, '')::uuid, ?)
+			ON CONFLICT DO NOTHING
 		`, nextID(), organizationID, healthCheckID, target.ScopeType, target.TargetID, target.TargetGroupID, now); err != nil {
-			return err
+			return mapWriteError(err)
+		}
+	}
+	return nil
+}
+
+func (store *PostgresStore) replaceHealthCheckMonitorScopes(ctx context.Context, organizationID string, healthCheckID string, monitorScopes []HealthCheckMonitorScopeRecord, now string, nextID func() string) error {
+	current, err := store.listHealthCheckMonitorScopes(ctx, organizationID, healthCheckID)
+	if err != nil {
+		return err
+	}
+	desired := make(map[string]HealthCheckMonitorScopeRecord, len(monitorScopes))
+	for _, scope := range monitorScopes {
+		desired[healthCheckMonitorScopeKey(scope)] = scope
+	}
+	for _, scope := range current {
+		if _, ok := desired[healthCheckMonitorScopeKey(scope)]; ok {
+			continue
+		}
+		if _, err := store.db.ExecContext(ctx, `
+			DELETE FROM health_check_monitor_scopes
+			WHERE organization_id = ? AND health_check_id = ? AND scope_type = ?
+			  AND ((monitor_id IS NULL AND ? = '') OR monitor_id = NULLIF(?, '')::uuid)
+			  AND ((monitor_group_id IS NULL AND ? = '') OR monitor_group_id = NULLIF(?, '')::uuid)
+		`, organizationID, healthCheckID, scope.ScopeType, scope.MonitorID, scope.MonitorID, scope.MonitorGroupID, scope.MonitorGroupID); err != nil {
+			return mapWriteError(err)
 		}
 	}
 	for _, scope := range monitorScopes {
 		if _, err := store.db.ExecContext(ctx, `
 			INSERT INTO health_check_monitor_scopes (id, organization_id, health_check_id, scope_type, monitor_id, monitor_group_id, created_at)
 			VALUES (?, ?, ?, ?, NULLIF(?, '')::uuid, NULLIF(?, '')::uuid, ?)
+			ON CONFLICT DO NOTHING
 		`, nextID(), organizationID, healthCheckID, scope.ScopeType, scope.MonitorID, scope.MonitorGroupID, now); err != nil {
-			return err
+			return mapWriteError(err)
 		}
 	}
 	return nil
 }
 
-func healthCheckTargetGroupKey(targetID string, targetGroupID string) string {
-	return targetID + "\x00" + targetGroupID
+func (store *PostgresStore) listHealthCheckTargetBindings(ctx context.Context, organizationID string, healthCheckID string) ([]HealthCheckTargetRecord, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, organization_id, health_check_id, scope_type, COALESCE(target_id::text, ''), COALESCE(target_group_id::text, ''), '', '', 0, created_at
+		FROM health_check_targets
+		WHERE organization_id = ? AND health_check_id = ?
+		ORDER BY scope_type, target_group_id, target_id
+	`, organizationID, healthCheckID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	targets := make([]HealthCheckTargetRecord, 0)
+	for rows.Next() {
+		target, err := scanHealthCheckTargetRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, target)
+	}
+	return targets, rows.Err()
+}
+
+func healthCheckTargetKey(target HealthCheckTargetRecord) string {
+	return target.ScopeType + "\x00" + target.TargetID + "\x00" + target.TargetGroupID
+}
+
+func healthCheckMonitorScopeKey(scope HealthCheckMonitorScopeRecord) string {
+	return scope.ScopeType + "\x00" + scope.MonitorID + "\x00" + scope.MonitorGroupID
 }
 
 func scanHealthCheck(row rowScanner) (HealthCheckRecord, error) {
@@ -567,7 +642,7 @@ func (store *PostgresStore) CreateDNSRecord(ctx context.Context, record DNSRecor
 		)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?)
 	`, record.ID, record.OrganizationID, record.DNSCredentialID, record.Zone, record.RecordName, record.RecordType, record.ManagedMode, record.DesiredValuesJSON, record.LastAppliedValuesJSON, record.CreatedAt, record.UpdatedAt)
-	return err
+	return mapWriteError(err)
 }
 
 func (store *PostgresStore) UpdateDNSRecord(ctx context.Context, record DNSRecordRecord) error {
@@ -581,7 +656,7 @@ func (store *PostgresStore) UpdateDNSRecord(ctx context.Context, record DNSRecor
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, record.DNSCredentialID, record.Zone, record.RecordName, record.RecordType, record.ManagedMode, record.DesiredValuesJSON, record.LastAppliedValuesJSON, record.LastAppliedAt, record.UpdatedAt, record.OrganizationID, record.ID)
 	if err != nil {
-		return err
+		return mapWriteError(err)
 	}
 	return requireAffected(result)
 }

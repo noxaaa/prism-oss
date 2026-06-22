@@ -60,6 +60,7 @@ type healthDNSTestStore struct {
 	record                repo.DNSRecordRecord
 	createdDNSRecord      repo.DNSRecordRecord
 	updatedDNSRecord      repo.DNSRecordRecord
+	updateDNSRecordErr    error
 	monitor               repo.MonitorRecord
 	monitors              []repo.MonitorRecord
 	checks                []repo.HealthCheckRecord
@@ -457,6 +458,9 @@ func (repository healthDNSTestDNSRecordRepository) CreateDNSRecord(_ context.Con
 }
 
 func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecord(_ context.Context, record repo.DNSRecordRecord) error {
+	if repository.store.updateDNSRecordErr != nil {
+		return repository.store.updateDNSRecordErr
+	}
 	repository.store.updatedDNSRecord = record
 	repository.store.record = record
 	return nil

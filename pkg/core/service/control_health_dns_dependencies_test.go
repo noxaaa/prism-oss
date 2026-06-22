@@ -476,6 +476,48 @@ func TestUpdateDNSRecordRetiresOldProviderRecordWhenIdentityChanges(t *testing.T
 	}
 }
 
+func TestUpdateDNSRecordDoesNotApplyProviderBeforeLocalStateCommits(t *testing.T) {
+	store := &healthDNSTestStore{
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:                    "dns_1",
+			OrganizationID:        "org_1",
+			DNSCredentialID:       "credential_1",
+			Zone:                  "old-zone",
+			RecordName:            "old.example.com",
+			RecordType:            "A",
+			DesiredValuesJSON:     `["192.0.2.1"]`,
+			LastAppliedValuesJSON: `["192.0.2.1"]`,
+		},
+		updateDNSRecordErr: repo.ErrConflict,
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		Authorizer:             healthDNSTestAuthorizer{},
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	_, err = control.UpdateDNSRecord(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), "dns_1", DNSRecordMutationInput{
+		DNSCredentialID: "credential_1",
+		Zone:            "new-zone",
+		RecordName:      "new.example.com",
+		RecordType:      "A",
+		DesiredValues:   []string{"192.0.2.1"},
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	if provider.calls() != 0 {
+		t.Fatalf("provider must not be called before local state commits, got %d calls", provider.calls())
+	}
+}
+
 func TestRecordMonitorHealthResultsDoesNotDeleteAllWhileOnline(t *testing.T) {
 	store := &healthDNSTestStore{
 		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},

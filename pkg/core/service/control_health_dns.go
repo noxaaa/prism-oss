@@ -256,12 +256,9 @@ func (service *ControlService) buildHealthBindings(ctx context.Context, reposito
 		if err != nil {
 			return nil, nil, err
 		}
-		targets = append(targets, repo.HealthCheckTargetRecord{ScopeType: "TARGET_GROUP", TargetGroupID: targetGroup.ID})
-		for _, member := range targetGroup.Members {
-			if !member.Enabled {
-				continue
-			}
-			targets = append(targets, repo.HealthCheckTargetRecord{ScopeType: "TARGET_GROUP", TargetID: member.TargetID, TargetGroupID: targetGroup.ID})
+		targets, err = service.appendTargetGroupHealthBindings(ctx, repositories, organizationID, targets, targetGroup)
+		if err != nil {
+			return nil, nil, err
 		}
 	default:
 		return nil, nil, ErrInvalidInput
@@ -286,6 +283,34 @@ func (service *ControlService) buildHealthBindings(ctx context.Context, reposito
 		return nil, nil, ErrInvalidInput
 	}
 	return targets, scopes, nil
+}
+
+func (service *ControlService) appendTargetGroupHealthBindings(ctx context.Context, repositories repo.Repositories, organizationID string, targets []repo.HealthCheckTargetRecord, targetGroup repo.TargetGroupRecord) ([]repo.HealthCheckTargetRecord, error) {
+	targets = append(targets, repo.HealthCheckTargetRecord{
+		ScopeType:     "TARGET_GROUP",
+		TargetGroupID: targetGroup.ID,
+	})
+	for _, member := range targetGroup.Members {
+		if !member.Enabled {
+			continue
+		}
+		target, err := repositories.Targets().FindTargetByID(ctx, organizationID, member.TargetID)
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if !target.Enabled {
+			continue
+		}
+		targets = append(targets, repo.HealthCheckTargetRecord{
+			ScopeType:     "TARGET_GROUP",
+			TargetID:      target.ID,
+			TargetGroupID: targetGroup.ID,
+		})
+	}
+	return targets, nil
 }
 
 func (service *ControlService) CompileMonitorAgentConfig(ctx context.Context, organizationID string, monitorID string) (agent.MonitorConfigSnapshot, error) {
@@ -362,19 +387,9 @@ func (service *ControlService) syncHealthCheckTargetGroupBindings(ctx context.Co
 			}
 			return repo.HealthCheckRecord{}, err
 		}
-		targets = append(targets, repo.HealthCheckTargetRecord{
-			ScopeType:     "TARGET_GROUP",
-			TargetGroupID: group.ID,
-		})
-		for _, member := range group.Members {
-			if !member.Enabled {
-				continue
-			}
-			targets = append(targets, repo.HealthCheckTargetRecord{
-				ScopeType:     "TARGET_GROUP",
-				TargetID:      member.TargetID,
-				TargetGroupID: group.ID,
-			})
+		targets, err = service.appendTargetGroupHealthBindings(ctx, repositories, organizationID, targets, group)
+		if err != nil {
+			return repo.HealthCheckRecord{}, err
 		}
 	}
 	now := service.timestamp()
@@ -661,6 +676,10 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 		return DNSRecordPayload{}, err
 	}
 	var result DNSRecordPayload
+	var retireAction dnsEventAction
+	var hasRetireAction bool
+	var applyAction dnsEventAction
+	var hasApplyAction bool
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		record, err := repositories.DNSRecords().FindDNSRecordByID(ctx, identity.OrganizationID, recordID)
 		if err != nil {
@@ -689,9 +708,8 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 				return err
 			}
 			if ok {
-				if err := service.executeDNSProviderAction(ctx, action); err != nil {
-					return err
-				}
+				retireAction = action
+				hasRetireAction = true
 			}
 		}
 		action, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, input.DesiredValues, identityChanged)
@@ -699,11 +717,8 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 			return err
 		}
 		if ok {
-			if err := service.executeDNSProviderAction(ctx, action); err != nil {
-				return err
-			}
-			record.LastAppliedValuesJSON = action.LastAppliedValues
-			record.LastAppliedAt = record.UpdatedAt
+			applyAction = action
+			hasApplyAction = true
 		}
 		if err := repositories.DNSRecords().UpdateDNSRecord(ctx, record); err != nil {
 			return err
@@ -721,6 +736,25 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 	})
 	if err != nil {
 		return DNSRecordPayload{}, mapServiceError(err)
+	}
+	if hasRetireAction {
+		if err := service.executeDNSProviderAction(ctx, retireAction); err != nil {
+			return DNSRecordPayload{}, err
+		}
+	}
+	if hasApplyAction {
+		if err := service.executeDNSProviderAction(ctx, applyAction); err != nil {
+			return DNSRecordPayload{}, err
+		}
+		appliedAt := service.timestamp()
+		err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+			return repositories.DNSRecords().UpdateDNSRecordLastApplied(ctx, identity.OrganizationID, recordID, applyAction.LastAppliedValues, appliedAt)
+		})
+		if err != nil {
+			return DNSRecordPayload{}, mapServiceError(err)
+		}
+		result.LastAppliedValues = parseStringListJSON(applyAction.LastAppliedValues)
+		result.LastAppliedAt = appliedAt
 	}
 	return result, nil
 }
