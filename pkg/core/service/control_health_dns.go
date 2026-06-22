@@ -458,12 +458,28 @@ func (service *ControlService) DeleteDNSCredential(ctx context.Context, identity
 		return ErrForbidden
 	}
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		if err := service.ensureDNSCredentialNotReferenced(ctx, repositories, identity.OrganizationID, credentialID); err != nil {
+			return err
+		}
 		if err := repositories.DNSCredentials().DeleteDNSCredential(ctx, identity.OrganizationID, credentialID, service.timestamp()); err != nil {
 			return err
 		}
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_credentials.delete", "DNS_CREDENTIAL", credentialID, ""))
 	})
 	return mapServiceError(err)
+}
+
+func (service *ControlService) ensureDNSCredentialNotReferenced(ctx context.Context, repositories repo.Repositories, organizationID string, credentialID string) error {
+	records, err := repositories.DNSRecords().ListDNSRecordsByOrganization(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if record.DNSCredentialID == credentialID {
+			return ErrConflict
+		}
+	}
+	return nil
 }
 
 func (service *ControlService) encryptDNSSecret(secret string) (string, error) {

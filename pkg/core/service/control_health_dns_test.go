@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/noxaaa/prism-oss/pkg/core/dns"
+	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
 
@@ -194,6 +195,26 @@ func TestRecordMonitorHealthResultsRejectsOutOfScopeMonitor(t *testing.T) {
 	}
 }
 
+func TestDeleteDNSCredentialRejectsActiveRecords(t *testing.T) {
+	store := &healthDNSTestStore{
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1"},
+		record: repo.DNSRecordRecord{
+			ID:              "dns_1",
+			OrganizationID:  "org_1",
+			DNSCredentialID: "credential_1",
+		},
+	}
+	control := NewControlService(store)
+
+	err := control.DeleteDNSCredential(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), "credential_1")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	if store.deletedCredentialID != "" {
+		t.Fatalf("credential should not be deleted while active records reference it")
+	}
+}
+
 func TestCompileMonitorAgentConfigRefreshesTargetGroupMembers(t *testing.T) {
 	store := &healthDNSTestStore{
 		monitor: repo.MonitorRecord{
@@ -314,6 +335,7 @@ type healthDNSTestStore struct {
 	targetGroups        map[string]repo.TargetGroupRecord
 	targetsByID         map[string]repo.TargetRecord
 	syncedHealthTargets bool
+	deletedCredentialID string
 }
 
 func (store *healthDNSTestStore) WithinTx(ctx context.Context, fn func(context.Context, repo.Repositories) error) error {
@@ -355,7 +377,9 @@ func (repositories healthDNSTestRepositories) AgentRegistrationTokens() repo.Age
 func (repositories healthDNSTestRepositories) AgentCredentials() repo.AgentCredentialRepository {
 	return nil
 }
-func (repositories healthDNSTestRepositories) AuditLogs() repo.AuditLogRepository { return nil }
+func (repositories healthDNSTestRepositories) AuditLogs() repo.AuditLogRepository {
+	return healthDNSTestAuditRepository{}
+}
 
 type healthDNSTestMonitorRepository struct {
 	store *healthDNSTestStore
@@ -524,6 +548,7 @@ func (repository healthDNSTestDNSCredentialRepository) UpdateDNSCredential(conte
 	return nil
 }
 func (repository healthDNSTestDNSCredentialRepository) DeleteDNSCredential(context.Context, string, string, string) error {
+	repository.store.deletedCredentialID = repository.store.credential.ID
 	return nil
 }
 
@@ -532,7 +557,10 @@ type healthDNSTestDNSRecordRepository struct {
 }
 
 func (repository healthDNSTestDNSRecordRepository) ListDNSRecordsByOrganization(context.Context, string) ([]repo.DNSRecordRecord, error) {
-	return nil, nil
+	if repository.store.record.ID == "" {
+		return nil, nil
+	}
+	return []repo.DNSRecordRecord{repository.store.record}, nil
 }
 func (repository healthDNSTestDNSRecordRepository) FindDNSRecordByID(_ context.Context, organizationID string, recordID string) (repo.DNSRecordRecord, error) {
 	if repository.store.record.OrganizationID == organizationID && repository.store.record.ID == recordID {
@@ -555,5 +583,19 @@ func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecordLastApplied(_ 
 	return nil
 }
 func (repository healthDNSTestDNSRecordRepository) DeleteDNSRecord(context.Context, string, string, string) error {
+	return nil
+}
+
+func healthDNSTestIdentity(permissions ...string) InternalIdentity {
+	return InternalIdentity{
+		UserID:         "user_1",
+		OrganizationID: "org_1",
+		Permissions:    permissions,
+	}
+}
+
+type healthDNSTestAuditRepository struct{}
+
+func (repository healthDNSTestAuditRepository) CreateAuditLog(context.Context, repo.AuditLogRecord) error {
 	return nil
 }

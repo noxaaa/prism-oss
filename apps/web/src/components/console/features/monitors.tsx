@@ -19,6 +19,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { controlDelete, controlPost, shortDate } from "@/components/console/control-api";
+import { canUseDNSHealthSelector, dnsPageResourceState } from "@/components/console/dns-page-state";
 import { localizeControlError, useI18n } from "@/components/console/i18n";
 import { hasPermission } from "@/components/console/permissions";
 import { useConsoleSession } from "@/components/console/shell";
@@ -283,13 +284,20 @@ export function DNSPage() {
   const { locale, t } = useI18n();
   const { session } = useConsoleSession();
   const canManage = hasPermission(session, "dns.manage");
+  const canSelectHealthCheck = canUseDNSHealthSelector(session);
   const credentials = useControlList<DNSCredential>("/api/control/dns/credentials");
   const records = useControlList<DNSRecord>("/api/control/dns/records");
-  const checks = useControlList<HealthCheck>("/api/control/health-checks");
+  const checks = useControlList<HealthCheck>(canSelectHealthCheck ? "/api/control/health-checks" : "");
   const [eventType, setEventType] = useState("DNS_FAILOVER");
+  const resourceState = dnsPageResourceState({
+    credentials,
+    records,
+    healthChecks: checks,
+    includeHealthChecks: canSelectHealthCheck,
+  });
 
   async function refreshAll() {
-    await Promise.all([credentials.refresh(), records.refresh(), checks.refresh()]);
+    await Promise.all([credentials.refresh(), records.refresh(), canSelectHealthCheck ? checks.refresh() : Promise.resolve()]);
   }
 
   async function createCredential(event: FormEvent<HTMLFormElement>) {
@@ -364,9 +372,13 @@ export function DNSPage() {
                 <Field><FieldLabel htmlFor="dns-record-name">{t("dns.record")}</FieldLabel><Input id="dns-record-name" name="record_name" required /></Field>
                 <Field><FieldLabel htmlFor="dns-record-type">{t("dns.type")}</FieldLabel><Input defaultValue="A" id="dns-record-type" name="record_type" required /></Field>
                 <Field><FieldLabel htmlFor="dns-values">{t("dns.values")}</FieldLabel><Input id="dns-values" name="desired_values" placeholder="192.0.2.1, 192.0.2.2" required /></Field>
-                <OptionalSelectField label={t("field.health_check_id")} name="health_check_id" options={checks.data.map((check) => ({ value: check.id, label: check.name }))} />
-                <EnumSelect label={t("dns.eventType")} onValueChange={setEventType} options={[{ value: "DNS_FAILOVER", label: "DNS_FAILOVER" }, { value: "DNS_DELETE_OFFLINE", label: "DNS_DELETE_OFFLINE" }, { value: "DNS_DELETE_ALL", label: "DNS_DELETE_ALL" }, { value: "DNS_RESTORE", label: "DNS_RESTORE" }]} value={eventType} />
-                <Field><FieldLabel htmlFor="dns-failover-values">{t("dns.failoverValues")}</FieldLabel><Input id="dns-failover-values" name="failover_values" placeholder="198.51.100.10" /></Field>
+                {canSelectHealthCheck ? (
+                  <>
+                    <OptionalSelectField label={t("field.health_check_id")} name="health_check_id" options={checks.data.map((check) => ({ value: check.id, label: check.name }))} />
+                    <EnumSelect label={t("dns.eventType")} onValueChange={setEventType} options={[{ value: "DNS_FAILOVER", label: "DNS_FAILOVER" }, { value: "DNS_DELETE_OFFLINE", label: "DNS_DELETE_OFFLINE" }, { value: "DNS_DELETE_ALL", label: "DNS_DELETE_ALL" }, { value: "DNS_RESTORE", label: "DNS_RESTORE" }]} value={eventType} />
+                    <Field><FieldLabel htmlFor="dns-failover-values">{t("dns.failoverValues")}</FieldLabel><Input id="dns-failover-values" name="failover_values" placeholder="198.51.100.10" /></Field>
+                  </>
+                ) : null}
                 <Button disabled={credentials.data.length === 0} type="submit"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button>
               </form>
             </CardContent>
@@ -376,7 +388,7 @@ export function DNSPage() {
       <Card>
         <CardHeader><CardTitle>{t("dns.records")}</CardTitle><CardAction><Button onClick={refreshAll} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button></CardAction></CardHeader>
         <CardContent>
-          <DataState loading={records.loading || credentials.loading || checks.loading} error={records.error || credentials.error || checks.error}>
+          <DataState loading={resourceState.loading} error={resourceState.error}>
             <Table>
               <TableHeader><TableRow><TableHead>{t("dns.record")}</TableHead><TableHead>{t("dns.type")}</TableHead><TableHead>{t("dns.values")}</TableHead><TableHead>{t("dns.credential")}</TableHead>{canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
               <TableBody>
