@@ -176,6 +176,27 @@ func TestControlServiceRejectsDeletingTargetGroupUsedByHealthCheck(t *testing.T)
 	}
 }
 
+func TestControlServiceRejectsDeletingTargetUsedByHealthCheck(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	store.healthChecks = []repo.HealthCheckRecord{{
+		ID:             "health_1",
+		OrganizationID: "org_1",
+		Targets: []repo.HealthCheckTargetRecord{{
+			ScopeType: "TARGET",
+			TargetID:  "target_a",
+		}},
+	}}
+	control := NewControlService(store)
+
+	err := control.DeleteTarget(context.Background(), targetGroupServiceTestIdentity(), "target_a")
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+	if store.deletedTargetID != "" {
+		t.Fatalf("target must not be deleted while health checks reference it")
+	}
+}
+
 func newTargetGroupServiceTestStore() *targetGroupServiceTestStore {
 	return &targetGroupServiceTestStore{
 		targets: map[string]repo.TargetRecord{
@@ -187,10 +208,11 @@ func newTargetGroupServiceTestStore() *targetGroupServiceTestStore {
 }
 
 type targetGroupServiceTestStore struct {
-	targets      map[string]repo.TargetRecord
-	targetGroups map[string]repo.TargetGroupRecord
-	healthChecks []repo.HealthCheckRecord
-	auditLogs    []repo.AuditLogRecord
+	targets         map[string]repo.TargetRecord
+	targetGroups    map[string]repo.TargetGroupRecord
+	healthChecks    []repo.HealthCheckRecord
+	auditLogs       []repo.AuditLogRecord
+	deletedTargetID string
 }
 
 func (store *targetGroupServiceTestStore) WithinTx(ctx context.Context, fn func(context.Context, repo.Repositories) error) error {
@@ -274,7 +296,8 @@ func (targets targetGroupServiceTestTargetRepository) UpdateTarget(context.Conte
 	return nil
 }
 
-func (targets targetGroupServiceTestTargetRepository) DeleteTarget(context.Context, string, string, string) error {
+func (targets targetGroupServiceTestTargetRepository) DeleteTarget(_ context.Context, _ string, targetID string, _ string) error {
+	targets.store.deletedTargetID = targetID
 	return nil
 }
 

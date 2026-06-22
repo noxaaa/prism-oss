@@ -66,3 +66,65 @@ func TestICMPHealthProbeReportsCommandOutput(t *testing.T) {
 		t.Fatalf("expected OFFLINE, got %s", status)
 	}
 }
+
+func TestCollectDueHealthResultsDoesNotHoldMonitorLockWhileProbing(t *testing.T) {
+	previousRunner := runMonitorProbeCommand
+	defer func() {
+		runMonitorProbeCommand = previousRunner
+	}()
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	runMonitorProbeCommand = func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		close(probeStarted)
+		select {
+		case <-releaseProbe:
+			return []byte("ok"), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	runtime := &NodeRuntime{monitorLastProbe: map[string]time.Time{}}
+	runtime.setMonitorSnapshot(MonitorConfigSnapshot{HealthChecks: []MonitorHealthCheck{{
+		ID:              "health_1",
+		ProbeType:       "ICMP",
+		IntervalSeconds: 1,
+		TimeoutSeconds:  30,
+		Targets: []MonitorHealthTarget{{
+			HealthCheckTargetID: "health_target_1",
+			TargetID:            "target_1",
+			Host:                "192.0.2.10",
+			Port:                443,
+		}},
+	}}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultsDone := make(chan struct{})
+	go func() {
+		_ = runtime.collectDueHealthResults(ctx)
+		close(resultsDone)
+	}()
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for probe to start")
+	}
+
+	snapshotUpdated := make(chan struct{})
+	go func() {
+		runtime.setMonitorSnapshot(MonitorConfigSnapshot{})
+		close(snapshotUpdated)
+	}()
+	select {
+	case <-snapshotUpdated:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("setMonitorSnapshot blocked while probe was running")
+	}
+	close(releaseProbe)
+	select {
+	case <-resultsDone:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for probe collection to finish")
+	}
+}

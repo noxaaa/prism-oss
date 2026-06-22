@@ -135,6 +135,9 @@ func (service *ControlService) DeleteTarget(ctx context.Context, identity Intern
 		if err := ensureTargetNotUsedByRules(ctx, repositories, identity.OrganizationID, targetID); err != nil {
 			return err
 		}
+		if err := ensureTargetNotUsedByHealthChecks(ctx, repositories, identity.OrganizationID, targetID); err != nil {
+			return err
+		}
 		if err := repositories.Targets().DeleteTarget(ctx, identity.OrganizationID, targetID, service.timestamp()); err != nil {
 			return err
 		}
@@ -357,6 +360,29 @@ func ensureTargetGroupNotUsedByHealthChecks(ctx context.Context, repositories re
 					Message: "The target group is still assigned to one or more health checks.",
 					Details: map[string]any{
 						"target_group_id": targetGroupID,
+						"health_check_id": check.ID,
+					},
+					Cause: ErrConflict,
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func ensureTargetNotUsedByHealthChecks(ctx context.Context, repositories repo.Repositories, organizationID string, targetID string) error {
+	checks, err := repositories.HealthChecks().ListHealthChecksByOrganization(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	for _, check := range checks {
+		for _, target := range check.Targets {
+			if target.ScopeType == "TARGET" && target.TargetID == targetID {
+				return &controlServiceError{
+					Code:    "TARGET_IN_USE",
+					Message: "The target is still assigned to one or more health checks.",
+					Details: map[string]any{
+						"target_id":       targetID,
 						"health_check_id": check.ID,
 					},
 					Cause: ErrConflict,

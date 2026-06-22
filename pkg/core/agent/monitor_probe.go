@@ -26,13 +26,28 @@ func (runtime *NodeRuntime) setMonitorSnapshot(snapshot MonitorConfigSnapshot) {
 }
 
 func (runtime *NodeRuntime) collectDueHealthResults(ctx context.Context) []HealthResultPayload {
+	probes := runtime.collectDueMonitorProbes()
+	results := make([]HealthResultPayload, 0, len(probes))
+	for _, probe := range probes {
+		results = append(results, runtime.probeHealthTarget(ctx, probe.check, probe.target, probe.observedAt))
+	}
+	return results
+}
+
+type dueMonitorProbe struct {
+	check      MonitorHealthCheck
+	target     MonitorHealthTarget
+	observedAt time.Time
+}
+
+func (runtime *NodeRuntime) collectDueMonitorProbes() []dueMonitorProbe {
 	runtime.monitorMu.Lock()
 	defer runtime.monitorMu.Unlock()
 	if runtime.monitorLastProbe == nil {
 		runtime.monitorLastProbe = map[string]time.Time{}
 	}
 	now := time.Now().UTC()
-	results := make([]HealthResultPayload, 0)
+	probes := make([]dueMonitorProbe, 0)
 	for _, check := range runtime.monitorSnapshot.HealthChecks {
 		interval := time.Duration(check.IntervalSeconds) * time.Second
 		if interval <= 0 {
@@ -44,10 +59,10 @@ func (runtime *NodeRuntime) collectDueHealthResults(ctx context.Context) []Healt
 				continue
 			}
 			runtime.monitorLastProbe[key] = now
-			results = append(results, runtime.probeHealthTarget(ctx, check, target, now))
+			probes = append(probes, dueMonitorProbe{check: check, target: target, observedAt: now})
 		}
 	}
-	return results
+	return probes
 }
 
 func (runtime *NodeRuntime) probeHealthTarget(ctx context.Context, check MonitorHealthCheck, target MonitorHealthTarget, observedAt time.Time) HealthResultPayload {
