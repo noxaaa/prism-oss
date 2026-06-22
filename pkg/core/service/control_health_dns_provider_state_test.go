@@ -57,6 +57,72 @@ func TestDeleteDNSRecordProviderFailureKeepsRecordRetryable(t *testing.T) {
 	}
 }
 
+func TestRecordMonitorHealthResultsSkipsDNSRecordPendingProviderDelete(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:       "health_target_1",
+				TargetID: "target_1",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType: "MONITOR",
+				MonitorID: "monitor_1",
+			}},
+		}},
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:                      "dns_1",
+			OrganizationID:          "org_1",
+			DNSCredentialID:         "credential_1",
+			Zone:                    "zone_1",
+			RecordName:              "app.example.com",
+			RecordType:              "A",
+			DesiredValuesJSON:       `["192.0.2.1"]`,
+			LastAppliedValuesJSON:   `["192.0.2.1"]`,
+			ProviderDeletePendingAt: "2026-06-20T00:00:00Z",
+		},
+		rules: []repo.HealthEvaluationRuleRecord{{
+			ID:             "rule_1",
+			OrganizationID: "org_1",
+			HealthCheckID:  "health_1",
+			Enabled:        true,
+			Events: []repo.HealthEventRecord{{
+				ID:         "event_1",
+				EventType:  "DNS_FAILOVER",
+				Enabled:    true,
+				ConfigJSON: `{"dns_record_id":"dns_1","failover_values":["198.51.100.10"]}`,
+			}},
+		}},
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
+		HealthCheckID:       "health_1",
+		HealthCheckTargetID: "health_target_1",
+		TargetID:            "target_1",
+		Status:              "OFFLINE",
+		ObservedAt:          "2026-06-20T00:00:01Z",
+	}}); err != nil {
+		t.Fatalf("record monitor health results: %v", err)
+	}
+	if provider.calls() != 0 {
+		t.Fatalf("provider delete pending records must not be changed by health actions, got %d calls", provider.calls())
+	}
+}
+
 func TestUpdateDNSRecordIdentityRetireFailureRetriesOldIdentity(t *testing.T) {
 	providerErr := errors.New("provider retire failed")
 	store := &healthDNSTestStore{

@@ -56,6 +56,9 @@ func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, reposit
 	if err != nil {
 		return dnsEventAction{}, false, err
 	}
+	if strings.TrimSpace(record.ProviderDeletePendingAt) != "" {
+		return dnsEventAction{}, false, nil
+	}
 	desiredValues := parseStringListJSON(record.DesiredValuesJSON)
 	values := desiredValues
 	status := strings.ToUpper(strings.TrimSpace(input.Result.Status))

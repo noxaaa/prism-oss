@@ -84,6 +84,18 @@ func TestMonitorAgentUninstallAcceptsCredentialFile(t *testing.T) {
 	if !strings.Contains(source, `flags.StringVar(&options.CredentialFile, "credential-file"`) {
 		t.Fatalf("monitor-agent uninstall must accept --credential-file so purge can remove non-default credentials")
 	}
+	if strings.Contains(source, "os.RemoveAll(filepath.Dir(options.CredentialFile))") {
+		t.Fatalf("monitor-agent purge must not delete a custom credential file's parent directory")
+	}
+	for _, required := range []string{
+		"os.Remove(options.CredentialFile)",
+		"filepath.Clean(options.CredentialFile) == defaultCredentialFile(options.ServiceName)",
+		"os.Remove(filepath.Dir(options.CredentialFile))",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("monitor-agent purge must remove only the selected credential and clean the default state dir when empty; missing %q", required)
+		}
+	}
 	script := readText(t, filepath.Join(root, "scripts", "uninstall-monitor-agent.sh"))
 	for _, required := range []string{
 		`--credential-file) credential_file=`,

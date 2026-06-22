@@ -180,7 +180,7 @@ func uninstallService(args []string) error {
 	_ = os.RemoveAll(options.InstallDir)
 	if options.Purge {
 		_ = os.Remove(options.ConfigFile)
-		_ = os.RemoveAll(filepath.Dir(options.CredentialFile))
+		removeCredentialState(options)
 	}
 	return nil
 }
@@ -196,7 +196,18 @@ func defaultPaths(options *serviceOptions) {
 		options.ConfigFile = filepath.Join("/etc", options.ServiceName, "agent.env")
 	}
 	if options.CredentialFile == "" || options.CredentialFile == "agent-credential.json" {
-		options.CredentialFile = filepath.Join("/var/lib", options.ServiceName, "agent-credential.json")
+		options.CredentialFile = defaultCredentialFile(options.ServiceName)
+	}
+}
+
+func defaultCredentialFile(serviceName string) string {
+	return filepath.Join("/var/lib", serviceName, "agent-credential.json")
+}
+
+func removeCredentialState(options serviceOptions) {
+	_ = os.Remove(options.CredentialFile)
+	if filepath.Clean(options.CredentialFile) == defaultCredentialFile(options.ServiceName) {
+		_ = os.Remove(filepath.Dir(options.CredentialFile))
 	}
 }
 
