@@ -312,11 +312,14 @@ CREATE TABLE dns_records (
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   deleted_at timestamptz,
-  UNIQUE (organization_id, zone, record_name, record_type),
   CHECK (record_type IN ('A', 'AAAA', 'CNAME')),
   CHECK (managed_mode = 'CUSTOMER_CREDENTIAL'),
   FOREIGN KEY (organization_id, dns_credential_id) REFERENCES dns_credentials(organization_id, id)
 );
+
+CREATE UNIQUE INDEX uniq_dns_records_active_name
+  ON dns_records(organization_id, zone, record_name, record_type)
+  WHERE deleted_at IS NULL;
 
 CREATE INDEX idx_health_results_check_target_time ON health_results(health_check_id, target_id, observed_at);
 

@@ -283,7 +283,7 @@ func (store *PostgresStore) listHealthCheckTargets(ctx context.Context, organiza
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT hct.id, hct.organization_id, hct.health_check_id, hct.scope_type, hct.target_id, COALESCE(hct.target_group_id::text, ''), targets.name, targets.host, targets.port, hct.created_at
 		FROM health_check_targets hct
-		JOIN targets ON targets.organization_id = hct.organization_id AND targets.id = hct.target_id
+		JOIN targets ON targets.organization_id = hct.organization_id AND targets.id = hct.target_id AND targets.deleted_at IS NULL
 		WHERE hct.organization_id = ? AND hct.health_check_id = ?
 		ORDER BY targets.name, hct.target_id
 	`, organizationID, healthCheckID)

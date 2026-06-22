@@ -23,6 +23,9 @@ func TestOSSMigrationsIncludeMonitorHealthAndDNSTables(t *testing.T) {
 		"'EMAIL'",
 		"CREATE TABLE dns_credentials",
 		"CREATE TABLE dns_records",
+		"CREATE UNIQUE INDEX uniq_dns_records_active_name",
+		"ON dns_records(organization_id, zone, record_name, record_type)",
+		"WHERE deleted_at IS NULL",
 		"validate_monitor_agent_auth",
 	} {
 		if !strings.Contains(source, required) {
@@ -48,5 +51,13 @@ func TestOSSReadmesExposeMonitorAgentLifecycleCommands(t *testing.T) {
 				t.Fatalf("%s must include monitor-agent and DNS secret documentation; missing %q", relative, required)
 			}
 		}
+	}
+}
+
+func TestHealthCheckTargetQueriesExcludeDeletedTargets(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "health_dns.go"))
+	if !strings.Contains(source, "targets.deleted_at IS NULL") {
+		t.Fatalf("health check target queries must exclude soft-deleted targets from monitor configs")
 	}
 }

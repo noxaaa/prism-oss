@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/noxaaa/prism-oss/pkg/core/dns"
@@ -11,6 +12,21 @@ import (
 
 func TestRecordMonitorHealthResultsAppliesDNSFailover(t *testing.T) {
 	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:            "health_target_1",
+				TargetID:      "target_1",
+				TargetGroupID: "",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType: "MONITOR",
+				MonitorID: "monitor_1",
+			}},
+		}},
 		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
 		record: repo.DNSRecordRecord{
 			ID:                    "dns_1",
@@ -75,6 +91,21 @@ func TestRecordMonitorHealthResultsAppliesDNSFailover(t *testing.T) {
 
 func TestRecordMonitorHealthResultsUsesCustomHealthEventExecutor(t *testing.T) {
 	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:            "health_target_1",
+				TargetID:      "target_1",
+				TargetGroupID: "",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType: "MONITOR",
+				MonitorID: "monitor_1",
+			}},
+		}},
 		rules: []repo.HealthEvaluationRuleRecord{{
 			ID:             "rule_1",
 			OrganizationID: "org_1",
@@ -108,6 +139,58 @@ func TestRecordMonitorHealthResultsUsesCustomHealthEventExecutor(t *testing.T) {
 	action := executor.executed[0]
 	if action.EventID != "event_1" || action.Status != "OFFLINE" || action.ConfigJSON != `{"url":"https://hooks.example.test/health"}` {
 		t.Fatalf("unexpected custom action: %#v", action)
+	}
+}
+
+func TestRecordMonitorHealthResultsRejectsOutOfScopeMonitor(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:       "health_target_1",
+				TargetID: "target_1",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType: "MONITOR",
+				MonitorID: "monitor_2",
+			}},
+		}},
+		rules: []repo.HealthEvaluationRuleRecord{{
+			ID:             "rule_1",
+			OrganizationID: "org_1",
+			HealthCheckID:  "health_1",
+			Enabled:        true,
+			Events: []repo.HealthEventRecord{{
+				ID:         "event_1",
+				EventType:  "WEBHOOK",
+				Enabled:    true,
+				ConfigJSON: `{"url":"https://hooks.example.test/health"}`,
+			}},
+		}},
+	}
+	executor := &recordingHealthEventExecutor{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		HealthEventExecutors: []HealthEventExecutor{executor},
+	})
+
+	err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
+		HealthCheckID:       "health_1",
+		HealthCheckTargetID: "health_target_1",
+		TargetID:            "target_1",
+		Status:              "OFFLINE",
+		ObservedAt:          "2026-06-20T00:00:00Z",
+	}})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected ErrForbidden, got %v", err)
+	}
+	if len(store.results) != 0 {
+		t.Fatalf("out-of-scope result must not be recorded, got %#v", store.results)
+	}
+	if len(executor.executed) != 0 {
+		t.Fatalf("out-of-scope result must not execute events, got %#v", executor.executed)
 	}
 }
 

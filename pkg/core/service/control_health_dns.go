@@ -139,6 +139,9 @@ func (service *ControlService) RecordMonitorHealthResults(ctx context.Context, o
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		now := service.timestamp()
 		records := make([]repo.HealthResultRecord, 0, len(results))
+		if err := service.authorizeMonitorHealthResults(ctx, repositories, organizationID, monitorID, results); err != nil {
+			return err
+		}
 		for _, result := range results {
 			records = append(records, repo.HealthResultRecord{
 				ID:                  service.newID(),
@@ -170,6 +173,44 @@ func (service *ControlService) RecordMonitorHealthResults(ctx context.Context, o
 		}
 	}
 	return nil
+}
+
+func (service *ControlService) authorizeMonitorHealthResults(ctx context.Context, repositories repo.Repositories, organizationID string, monitorID string, results []HealthResultInput) error {
+	if len(results) == 0 {
+		return nil
+	}
+	monitor, err := repositories.Monitors().FindMonitorByID(ctx, organizationID, monitorID)
+	if err != nil {
+		return err
+	}
+	checks := make(map[string]repo.HealthCheckRecord)
+	for _, result := range results {
+		check, ok := checks[result.HealthCheckID]
+		if !ok {
+			check, err = repositories.HealthChecks().FindHealthCheckByID(ctx, organizationID, result.HealthCheckID)
+			if err != nil {
+				return err
+			}
+			check, err = service.syncHealthCheckTargetGroupBindings(ctx, repositories, organizationID, check)
+			if err != nil {
+				return err
+			}
+			checks[result.HealthCheckID] = check
+		}
+		if !check.Enabled || !healthCheckTargetsMonitor(check, monitor) || !healthCheckIncludesResultTarget(check, result) {
+			return ErrForbidden
+		}
+	}
+	return nil
+}
+
+func healthCheckIncludesResultTarget(check repo.HealthCheckRecord, result HealthResultInput) bool {
+	for _, target := range check.Targets {
+		if target.ID == result.HealthCheckTargetID && target.TargetID == result.TargetID {
+			return true
+		}
+	}
+	return false
 }
 
 func (service *ControlService) buildHealthBindings(ctx context.Context, repositories repo.Repositories, organizationID string, input HealthCheckMutationInput) ([]repo.HealthCheckTargetRecord, []repo.HealthCheckMonitorScopeRecord, error) {
