@@ -10,11 +10,15 @@ import (
 type healthDNSTestProvider struct {
 	inputs []dns.ApplyRecordInput
 	err    error
+	errAt  int
 }
 
 func (provider *healthDNSTestProvider) ApplyRecord(_ context.Context, input dns.ApplyRecordInput) error {
 	provider.inputs = append(provider.inputs, input)
-	return provider.err
+	if provider.err != nil && (provider.errAt == 0 || provider.errAt == len(provider.inputs)) {
+		return provider.err
+	}
+	return nil
 }
 
 func (provider *healthDNSTestProvider) calls() int {
@@ -75,6 +79,7 @@ type healthDNSTestStore struct {
 	createdDNSRecord      repo.DNSRecordRecord
 	updatedDNSRecord      repo.DNSRecordRecord
 	updateDNSRecordErr    error
+	deleteDNSRecordErr    error
 	monitor               repo.MonitorRecord
 	monitors              []repo.MonitorRecord
 	checks                []repo.HealthCheckRecord
@@ -490,6 +495,9 @@ func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecordLastApplied(_ 
 }
 
 func (repository healthDNSTestDNSRecordRepository) DeleteDNSRecord(_ context.Context, organizationID string, recordID string, _ string) error {
+	if repository.store.deleteDNSRecordErr != nil {
+		return repository.store.deleteDNSRecordErr
+	}
 	if repository.store.record.OrganizationID != organizationID || repository.store.record.ID != recordID {
 		return repo.ErrNotFound
 	}

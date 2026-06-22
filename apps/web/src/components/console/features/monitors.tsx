@@ -20,6 +20,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { controlDelete, controlPost, shortDate } from "@/components/console/control-api";
 import { canUseDNSHealthSelector, dnsPageResourceState } from "@/components/console/dns-page-state";
+import { canReadHealthChecks, canUseHealthCheckEditor, healthPageResourceState } from "@/components/console/health-page-state";
 import { localizeControlError, useI18n } from "@/components/console/i18n";
 import { hasPermission } from "@/components/console/permissions";
 import { useConsoleSession } from "@/components/console/shell";
@@ -178,18 +179,34 @@ export function HealthChecksPage() {
   const { locale, t } = useI18n();
   const { session } = useConsoleSession();
   const canManage = hasPermission(session, "health_checks.manage");
-  const checks = useControlList<HealthCheck>("/api/control/health-checks");
-  const targets = useControlList<Target>("/api/control/targets");
-  const targetGroups = useControlList<TargetGroup>("/api/control/target-groups");
-  const monitors = useControlList<Monitor>("/api/control/monitors");
-  const monitorGroups = useControlList<MonitorGroup>("/api/control/monitor-groups");
+  const canRead = canReadHealthChecks(session);
+  const canUseEditor = canUseHealthCheckEditor(session);
+  const checks = useControlList<HealthCheck>(canRead ? "/api/control/health-checks" : "");
+  const targets = useControlList<Target>(canUseEditor ? "/api/control/targets" : "");
+  const targetGroups = useControlList<TargetGroup>(canUseEditor ? "/api/control/target-groups" : "");
+  const monitors = useControlList<Monitor>(canUseEditor ? "/api/control/monitors" : "");
+  const monitorGroups = useControlList<MonitorGroup>(canUseEditor ? "/api/control/monitor-groups" : "");
   const [targetScopeType, setTargetScopeType] = useState("TARGETS");
   const [monitorScopeType, setMonitorScopeType] = useState("MONITOR");
   const [probeType, setProbeType] = useState("TCP_PORT");
   const [enabled, setEnabled] = useState(true);
+  const resourceState = healthPageResourceState({
+    checks,
+    targets,
+    targetGroups,
+    monitors,
+    monitorGroups,
+    includeEditorDependencies: canUseEditor,
+  });
 
   async function refreshAll() {
-    await Promise.all([checks.refresh(), targets.refresh(), targetGroups.refresh(), monitors.refresh(), monitorGroups.refresh()]);
+    await Promise.all([
+      checks.refresh(),
+      canUseEditor ? targets.refresh() : Promise.resolve(),
+      canUseEditor ? targetGroups.refresh() : Promise.resolve(),
+      canUseEditor ? monitors.refresh() : Promise.resolve(),
+      canUseEditor ? monitorGroups.refresh() : Promise.resolve(),
+    ]);
   }
 
   async function createCheck(event: FormEvent<HTMLFormElement>) {
@@ -235,7 +252,7 @@ export function HealthChecksPage() {
         <SummaryCard icon={<HeartPulseIcon />} label={t("health.checks")} value={checks.data.length} />
         <SummaryCard icon={<HeartPulseIcon />} label={t("common.enabled")} value={checks.data.filter((check) => check.enabled).length} />
       </SummaryGrid>
-      {canManage ? (
+      {canManage && canUseEditor ? (
         <Card>
           <CardHeader><CardTitle>{t("health.create")}</CardTitle></CardHeader>
           <CardContent>
@@ -258,7 +275,7 @@ export function HealthChecksPage() {
       <Card>
         <CardHeader><CardTitle>{t("health.checks")}</CardTitle><CardAction><Button onClick={refreshAll} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button></CardAction></CardHeader>
         <CardContent>
-          <DataState loading={checks.loading} error={checks.error}>
+          <DataState loading={resourceState.loading} error={resourceState.error}>
             <Table>
               <TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("health.probeType")}</TableHead><TableHead>{t("targets.targets")}</TableHead><TableHead>{t("common.enabled")}</TableHead>{canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
               <TableBody>

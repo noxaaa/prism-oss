@@ -72,6 +72,27 @@ func TestMonitorConsoleNavigationRequiresReadPermission(t *testing.T) {
 	if !strings.Contains(source, required) {
 		t.Fatalf("monitors nav item must require monitors.read because the page reads monitor lists")
 	}
+	required = `{ href: "/console/admin/health", icon: HeartPulseIcon, key: "health", labelKey: "nav.health", permissions: ["health_checks.read"] }`
+	if !strings.Contains(source, required) {
+		t.Fatalf("health nav item must require health_checks.read because the page reads health-check lists")
+	}
+}
+
+func TestMonitorAgentUninstallAcceptsCredentialFile(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "cmd", "monitor-agent", "main.go"))
+	if !strings.Contains(source, `flags.StringVar(&options.CredentialFile, "credential-file"`) {
+		t.Fatalf("monitor-agent uninstall must accept --credential-file so purge can remove non-default credentials")
+	}
+	script := readText(t, filepath.Join(root, "scripts", "uninstall-monitor-agent.sh"))
+	for _, required := range []string{
+		`--credential-file) credential_file=`,
+		`--credential-file "$credential_file"`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("uninstall-monitor-agent.sh must pass through --credential-file; missing %q", required)
+		}
+	}
 }
 
 func TestHealthCheckTargetQueriesExcludeDeletedTargets(t *testing.T) {

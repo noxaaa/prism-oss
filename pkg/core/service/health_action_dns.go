@@ -66,7 +66,7 @@ func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, reposit
 		}
 	case "DNS_DELETE_OFFLINE":
 		if status == "OFFLINE" {
-			values = nil
+			values = dnsValuesWithoutOfflineTarget(record.RecordType, desiredValues, input.HealthCheck, input.Result)
 		}
 	case "DNS_DELETE_ALL":
 		if status == "OFFLINE" {
@@ -150,4 +150,30 @@ func stringListJSON(values []string) string {
 		return "[]"
 	}
 	return string(data)
+}
+
+func dnsValuesWithoutOfflineTarget(recordType string, values []string, check repo.HealthCheckRecord, result repo.HealthResultRecord) []string {
+	recordType = strings.ToUpper(strings.TrimSpace(recordType))
+	if recordType != "A" && recordType != "AAAA" {
+		return values
+	}
+	offlineValue := ""
+	for _, target := range check.Targets {
+		if target.ID != result.HealthCheckTargetID && target.TargetID != result.TargetID {
+			continue
+		}
+		offlineValue = strings.TrimSpace(target.TargetHost)
+		break
+	}
+	if offlineValue == "" {
+		return values
+	}
+	next := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == offlineValue {
+			continue
+		}
+		next = append(next, value)
+	}
+	return next
 }

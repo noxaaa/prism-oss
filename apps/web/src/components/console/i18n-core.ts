@@ -310,6 +310,7 @@ const commonMessages = {
   "targets.address": { en: "Address", zh: "地址" },
   "targets.groups": { en: "Groups", zh: "分组" },
   "targets.noGroups": { en: "No groups", zh: "无分组" },
+  "targets.targetGroup": { en: "Target group", zh: "目标组" },
   "targets.targetGroups": { en: "Target groups", zh: "目标组" },
   "targets.poolDescription": { en: "Priority + iphash target pools.", zh: "基于优先级和 iphash 的目标池。" },
   "targets.scheduler": { en: "Scheduler", zh: "调度器" },

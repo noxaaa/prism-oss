@@ -165,6 +165,7 @@ func uninstallService(args []string) error {
 	flags.StringVar(&options.ServiceName, "service-name", envOrDefault("AGENT_SERVICE_NAME", defaultServiceName), "systemd service name")
 	flags.StringVar(&options.InstallDir, "install-dir", envOrDefault("AGENT_INSTALL_DIR", filepath.Join("/opt", defaultServiceName)), "install directory")
 	flags.StringVar(&options.ConfigFile, "config-file", "", "agent env file")
+	flags.StringVar(&options.CredentialFile, "credential-file", "agent-credential.json", "credential file")
 	flags.BoolVar(&options.Purge, "purge", false, "remove credentials and config")
 	if err := flags.Parse(args); err != nil {
 		return err

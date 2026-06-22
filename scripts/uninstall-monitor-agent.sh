@@ -4,6 +4,7 @@ set -eu
 service_name="prism-monitor-agent"
 install_dir="/opt/prism-monitor-agent"
 config_file="/etc/prism-monitor-agent/agent.env"
+credential_file="/var/lib/prism-monitor-agent/agent-credential.json"
 purge=""
 local_binary=""
 repo="https://github.com/noxaaa/prism-oss"
@@ -15,6 +16,7 @@ while [ "$#" -gt 0 ]; do
     --service-name) service_name="${2:-}"; shift 2 ;;
     --install-dir) install_dir="${2:-}"; shift 2 ;;
     --config-file) config_file="${2:-}"; shift 2 ;;
+    --credential-file) credential_file="${2:-}"; shift 2 ;;
     --purge) purge="--purge"; shift ;;
     --monitor-agent) local_binary="${2:-}"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -22,7 +24,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -n "$local_binary" ]; then
-  "$local_binary" uninstall --service-name "$service_name" --install-dir "$install_dir" --config-file "$config_file" $purge
+  "$local_binary" uninstall --service-name "$service_name" --install-dir "$install_dir" --config-file "$config_file" --credential-file "$credential_file" $purge
   exit 0
 fi
 
@@ -64,4 +66,4 @@ curl -fsSL "${base}/${asset}" -o "$tmp_dir/${asset}"
 )
 
 tar -xzf "$tmp_dir/${asset}" -C "$tmp_dir"
-"$tmp_dir/monitor-agent" uninstall --service-name "$service_name" --install-dir "$install_dir" --config-file "$config_file" $purge
+"$tmp_dir/monitor-agent" uninstall --service-name "$service_name" --install-dir "$install_dir" --config-file "$config_file" --credential-file "$credential_file" $purge

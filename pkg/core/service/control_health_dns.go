@@ -703,6 +703,8 @@ func (service *ControlService) UpdateDNSRecord(ctx context.Context, identity Int
 		record.UpdatedAt = service.timestamp()
 		identityChanged := dnsRecordProviderIdentityChanged(previousRecord, record)
 		if identityChanged {
+			record.LastAppliedValuesJSON = "[]"
+			record.LastAppliedAt = ""
 			action, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, previousRecord, nil, true)
 			if err != nil {
 				return err
@@ -763,6 +765,8 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 	if !service.hasPermission(identity, string(domain.PermissionDNSManage)) {
 		return ErrForbidden
 	}
+	var action dnsEventAction
+	var hasAction bool
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		deletedAt := service.timestamp()
 		record, err := repositories.DNSRecords().FindDNSRecordByID(ctx, identity.OrganizationID, recordID)
@@ -772,14 +776,13 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 		if err := service.ensureCanRemoveDNSHealthBinding(ctx, repositories, identity, recordID); err != nil {
 			return err
 		}
-		action, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, nil, true)
+		providerAction, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, nil, true)
 		if err != nil {
 			return err
 		}
 		if ok {
-			if err := service.executeDNSProviderAction(ctx, action); err != nil {
-				return err
-			}
+			action = providerAction
+			hasAction = true
 		}
 		if err := repositories.HealthChecks().DeleteHealthEvaluationRulesForDNSRecord(ctx, identity.OrganizationID, recordID, deletedAt); err != nil {
 			return err
@@ -789,7 +792,13 @@ func (service *ControlService) DeleteDNSRecord(ctx context.Context, identity Int
 		}
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_records.delete", "DNS_RECORD", recordID, ""))
 	})
-	return mapServiceError(err)
+	if err != nil {
+		return mapServiceError(err)
+	}
+	if hasAction {
+		return service.executeDNSProviderAction(ctx, action)
+	}
+	return nil
 }
 
 func (service *ControlService) ensureDNSRecordMutationAllowed(identity InternalIdentity, input DNSRecordMutationInput) error {
