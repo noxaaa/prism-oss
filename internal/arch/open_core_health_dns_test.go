@@ -184,3 +184,19 @@ func TestHealthEvaluationRuleQueriesCloseRowsBeforeLoadingEvents(t *testing.T) {
 		t.Fatalf("ListHealthEvaluationRulesByCheck loads events while rule rows are still open")
 	}
 }
+
+func TestHealthEvaluationUsesActionRegistryBoundary(t *testing.T) {
+	root := repoRoot(t)
+	actionsSource := readText(t, filepath.Join(root, "pkg", "core", "service", "control_health_actions.go"))
+	for _, forbidden := range []string{"DNS_FAILOVER", "DNS_DELETE_OFFLINE", "DNS_DELETE_ALL", "DNS_RESTORE", "executeDNSProviderAction"} {
+		if strings.Contains(actionsSource, forbidden) {
+			t.Fatalf("health evaluation must dispatch actions through the registry, not embed DNS action logic; found %q", forbidden)
+		}
+	}
+	executorSource := readText(t, filepath.Join(root, "pkg", "core", "service", "health_event_executor.go"))
+	for _, required := range []string{"type HealthActionRegistry", "SupportedHealthActionTypes", "HealthActionTypes"} {
+		if !strings.Contains(executorSource, required) {
+			t.Fatalf("health action layer must expose an extension registry for future Webhook/Email executors; missing %q", required)
+		}
+	}
+}

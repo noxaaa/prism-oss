@@ -31,8 +31,12 @@ type dnsHealthActionExecutor struct {
 	service *ControlService
 }
 
+func (executor dnsHealthActionExecutor) HealthActionTypes() []string {
+	return []string{"DNS_FAILOVER", "DNS_DELETE_OFFLINE", "DNS_DELETE_ALL", "DNS_RESTORE"}
+}
+
 func (executor dnsHealthActionExecutor) Supports(eventType string) bool {
-	switch strings.ToUpper(strings.TrimSpace(eventType)) {
+	switch normalizeHealthActionType(eventType) {
 	case "DNS_FAILOVER", "DNS_DELETE_OFFLINE", "DNS_DELETE_ALL", "DNS_RESTORE":
 		return true
 	default:
@@ -55,7 +59,7 @@ func (executor dnsHealthActionExecutor) BuildAction(ctx context.Context, reposit
 	desiredValues := parseStringListJSON(record.DesiredValuesJSON)
 	values := desiredValues
 	status := strings.ToUpper(strings.TrimSpace(input.Result.Status))
-	switch strings.ToUpper(strings.TrimSpace(input.Event.EventType)) {
+	switch normalizeHealthActionType(input.Event.EventType) {
 	case "DNS_FAILOVER":
 		if status == "OFFLINE" {
 			values = config.FailoverValues

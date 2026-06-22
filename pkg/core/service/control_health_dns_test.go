@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/noxaaa/prism-oss/pkg/core/dns"
@@ -405,6 +406,20 @@ func TestRecordMonitorHealthResultsUsesCustomHealthActionExecutor(t *testing.T) 
 	action := executor.executed[0]
 	if action.EventID != "event_1" || action.RuleID != "rule_1" || action.HealthCheckName != "edge probe" || action.Status != "OFFLINE" || action.ConfigJSON != `{"url":"https://hooks.example.test/health"}` {
 		t.Fatalf("unexpected custom action: %#v", action)
+	}
+}
+
+func TestControlServiceReportsRegisteredHealthActionTypes(t *testing.T) {
+	control := NewControlServiceWithOptions(&healthDNSTestStore{}, ControlServiceOptions{
+		HealthActionExecutors: []HealthActionExecutor{
+			&recordingHealthActionExecutor{types: []string{"webhook", "EMAIL", "webhook"}},
+		},
+	})
+
+	got := control.SupportedHealthActionTypes()
+	want := []string{"DNS_DELETE_ALL", "DNS_DELETE_OFFLINE", "DNS_FAILOVER", "DNS_RESTORE", "EMAIL", "WEBHOOK"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("supported health action types = %#v, want %#v", got, want)
 	}
 }
 

@@ -30,6 +30,7 @@ func (provider *healthDNSTestProvider) lastInput() dns.ApplyRecordInput {
 
 type recordingHealthActionExecutor struct {
 	executed []recordingHealthEventAction
+	types    []string
 }
 
 type recordingHealthEventAction struct {
@@ -41,7 +42,20 @@ type recordingHealthEventAction struct {
 }
 
 func (executor *recordingHealthActionExecutor) Supports(eventType string) bool {
+	eventType = normalizeHealthActionType(eventType)
+	for _, candidate := range executor.types {
+		if eventType == normalizeHealthActionType(candidate) {
+			return true
+		}
+	}
 	return eventType == "WEBHOOK"
+}
+
+func (executor *recordingHealthActionExecutor) HealthActionTypes() []string {
+	if len(executor.types) == 0 {
+		return []string{"WEBHOOK"}
+	}
+	return executor.types
 }
 
 func (executor *recordingHealthActionExecutor) BuildAction(_ context.Context, _ repo.Repositories, input HealthActionExecutionInput) (any, bool, error) {
