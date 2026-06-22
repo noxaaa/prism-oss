@@ -96,3 +96,35 @@ func TestHealthCheckTargetsSupportEmptyTargetGroupBindings(t *testing.T) {
 		}
 	}
 }
+
+func TestDNSRecordUpdatePersistsAppliedProviderState(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "health_dns.go"))
+	updateIndex := strings.Index(source, "func (store *PostgresStore) UpdateDNSRecord(")
+	if updateIndex == -1 {
+		t.Fatalf("UpdateDNSRecord implementation not found")
+	}
+	lastAppliedValuesIndex := strings.Index(source[updateIndex:], "last_applied_values_json = ?::jsonb")
+	lastAppliedAtIndex := strings.Index(source[updateIndex:], "last_applied_at = NULLIF(?, '')::timestamptz")
+	if lastAppliedValuesIndex == -1 || lastAppliedAtIndex == -1 {
+		t.Fatalf("UpdateDNSRecord must persist last_applied_values_json and last_applied_at")
+	}
+}
+
+func TestHealthEvaluationRuleQueriesCloseRowsBeforeLoadingEvents(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "health_dns.go"))
+	functionIndex := strings.Index(source, "func (store *PostgresStore) ListHealthEvaluationRulesByCheck(")
+	if functionIndex == -1 {
+		t.Fatalf("ListHealthEvaluationRulesByCheck implementation not found")
+	}
+	functionSource := source[functionIndex:]
+	closeIndex := strings.Index(functionSource, "if err := rows.Close(); err != nil")
+	eventsIndex := strings.Index(functionSource, "store.listHealthEventsByRule")
+	if closeIndex == -1 || eventsIndex == -1 {
+		t.Fatalf("ListHealthEvaluationRulesByCheck must close rule rows before loading events")
+	}
+	if closeIndex > eventsIndex {
+		t.Fatalf("ListHealthEvaluationRulesByCheck loads events while rule rows are still open")
+	}
+}

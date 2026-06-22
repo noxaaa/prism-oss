@@ -186,6 +186,42 @@ func TestUpdateDNSRecordRequiresHealthPermissionToRemoveHealthBinding(t *testing
 	}
 }
 
+func TestCreateHealthCheckRejectsDisabledDirectTarget(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
+		targetsByID: map[string]repo.TargetRecord{
+			"target_1": {
+				ID:             "target_1",
+				OrganizationID: "org_1",
+				Name:           "disabled target",
+				Host:           "192.0.2.1",
+				Port:           443,
+				Enabled:        false,
+			},
+		},
+	}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{Authorizer: healthDNSTestAuthorizer{}})
+
+	_, err := control.CreateHealthCheck(context.Background(), healthDNSTestIdentity(string(domain.PermissionHealthChecksManage)), HealthCheckMutationInput{
+		Name:            "disabled probe",
+		ProbeType:       "TCP_PORT",
+		IntervalSeconds: 30,
+		TimeoutSeconds:  5,
+		Enabled:         true,
+		TargetScope: HealthTargetScopeInput{
+			Type:      "TARGETS",
+			TargetIDs: []string{"target_1"},
+		},
+		MonitorScope: HealthMonitorScopeInput{
+			Type:      "MONITOR",
+			MonitorID: "monitor_1",
+		},
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for disabled target, got %v", err)
+	}
+}
+
 func TestCreateDNSRecordWithoutHealthBindingAppliesDesiredValues(t *testing.T) {
 	store := &healthDNSTestStore{
 		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
@@ -298,8 +334,11 @@ func TestCreateDNSRecordProviderFailureDoesNotPersistRecord(t *testing.T) {
 	if !errors.Is(err, providerErr) {
 		t.Fatalf("expected provider error, got %v", err)
 	}
-	if store.createdDNSRecord.ID != "" || store.record.ID != "" {
-		t.Fatalf("provider failure must not persist active DNS record, created=%#v record=%#v", store.createdDNSRecord, store.record)
+	if store.createdDNSRecord.ID == "" {
+		t.Fatalf("expected DNS record to be created before provider apply")
+	}
+	if store.deletedDNSRecordID != store.createdDNSRecord.ID || store.record.ID != "" {
+		t.Fatalf("provider failure must clean up active DNS record, deleted=%q created=%#v record=%#v", store.deletedDNSRecordID, store.createdDNSRecord, store.record)
 	}
 }
 

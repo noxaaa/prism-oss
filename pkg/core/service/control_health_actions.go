@@ -84,6 +84,9 @@ func (service *ControlService) latestHealthEvaluationResult(ctx context.Context,
 	}
 	scopedMonitors := make(map[string]bool, len(monitors))
 	for _, monitor := range monitors {
+		if strings.EqualFold(strings.TrimSpace(monitor.Status), "OFFLINE") {
+			continue
+		}
 		if healthCheckTargetsMonitor(check, monitor, activeMonitorGroupIDs) {
 			scopedMonitors[monitor.ID] = true
 		}

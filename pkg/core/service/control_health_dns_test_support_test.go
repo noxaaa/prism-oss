@@ -104,7 +104,9 @@ func (repositories healthDNSTestRepositories) DNSCredentials() repo.DNSCredentia
 func (repositories healthDNSTestRepositories) DNSRecords() repo.DNSRecordRepository {
 	return healthDNSTestDNSRecordRepository(repositories)
 }
-func (repositories healthDNSTestRepositories) Targets() repo.TargetRepository { return nil }
+func (repositories healthDNSTestRepositories) Targets() repo.TargetRepository {
+	return healthDNSTestTargetRepository(repositories)
+}
 func (repositories healthDNSTestRepositories) TargetGroups() repo.TargetGroupRepository {
 	return healthDNSTestTargetGroupRepository(repositories)
 }
@@ -206,6 +208,54 @@ func (repository healthDNSTestMonitorRepository) DeleteMonitor(_ context.Context
 
 type healthDNSTestTargetGroupRepository struct {
 	store *healthDNSTestStore
+}
+
+type healthDNSTestTargetRepository struct {
+	store *healthDNSTestStore
+}
+
+func (repository healthDNSTestTargetRepository) ListTargetsByOrganization(_ context.Context, organizationID string) ([]repo.TargetRecord, error) {
+	result := make([]repo.TargetRecord, 0, len(repository.store.targetsByID))
+	for _, target := range repository.store.targetsByID {
+		if target.OrganizationID == organizationID && target.DeletedAt == "" {
+			result = append(result, target)
+		}
+	}
+	return result, nil
+}
+
+func (repository healthDNSTestTargetRepository) FindTargetByID(_ context.Context, organizationID string, targetID string) (repo.TargetRecord, error) {
+	target, ok := repository.store.targetsByID[targetID]
+	if ok && target.OrganizationID == organizationID && target.DeletedAt == "" {
+		return target, nil
+	}
+	return repo.TargetRecord{}, repo.ErrNotFound
+}
+
+func (repository healthDNSTestTargetRepository) CreateTarget(_ context.Context, target repo.TargetRecord) error {
+	if repository.store.targetsByID == nil {
+		repository.store.targetsByID = make(map[string]repo.TargetRecord)
+	}
+	repository.store.targetsByID[target.ID] = target
+	return nil
+}
+
+func (repository healthDNSTestTargetRepository) UpdateTarget(_ context.Context, target repo.TargetRecord) error {
+	if _, ok := repository.store.targetsByID[target.ID]; !ok {
+		return repo.ErrNotFound
+	}
+	repository.store.targetsByID[target.ID] = target
+	return nil
+}
+
+func (repository healthDNSTestTargetRepository) DeleteTarget(_ context.Context, _ string, targetID string, deletedAt string) error {
+	target, ok := repository.store.targetsByID[targetID]
+	if !ok {
+		return repo.ErrNotFound
+	}
+	target.DeletedAt = deletedAt
+	repository.store.targetsByID[targetID] = target
+	return nil
 }
 
 func (repository healthDNSTestTargetGroupRepository) ListTargetGroupsByOrganization(context.Context, string) ([]repo.TargetGroupRecord, error) {
@@ -426,6 +476,7 @@ func (repository healthDNSTestDNSRecordRepository) DeleteDNSRecord(_ context.Con
 		return repo.ErrNotFound
 	}
 	repository.store.deletedDNSRecordID = recordID
+	repository.store.record = repo.DNSRecordRecord{}
 	return nil
 }
 

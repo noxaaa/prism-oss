@@ -242,8 +242,12 @@ func (service *ControlService) buildHealthBindings(ctx context.Context, reposito
 	switch input.TargetScope.Type {
 	case "TARGETS":
 		for _, targetID := range input.TargetScope.TargetIDs {
-			if _, err := repositories.Targets().FindTargetByID(ctx, organizationID, targetID); err != nil {
+			target, err := repositories.Targets().FindTargetByID(ctx, organizationID, targetID)
+			if err != nil {
 				return nil, nil, err
+			}
+			if !target.Enabled {
+				return nil, nil, ErrInvalidInput
 			}
 			targets = append(targets, repo.HealthCheckTargetRecord{ScopeType: "TARGET", TargetID: targetID})
 		}
@@ -585,6 +589,9 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 		return DNSRecordPayload{}, err
 	}
 	var result DNSRecordPayload
+	var action dnsEventAction
+	var hasAction bool
+	var recordID string
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if _, err := repositories.DNSCredentials().FindDNSCredentialByID(ctx, identity.OrganizationID, input.DNSCredentialID); err != nil {
 			return err
@@ -603,16 +610,13 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 			CreatedAt:             now,
 			UpdatedAt:             now,
 		}
-		action, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, input.DesiredValues, true)
+		providerAction, ok, err := service.buildDNSRecordProviderAction(ctx, repositories, identity.OrganizationID, record, input.DesiredValues, true)
 		if err != nil {
 			return err
 		}
 		if ok {
-			if err := service.executeDNSProviderAction(ctx, action); err != nil {
-				return err
-			}
-			record.LastAppliedValuesJSON = action.LastAppliedValues
-			record.LastAppliedAt = now
+			action = providerAction
+			hasAction = true
 		}
 		if err := repositories.DNSRecords().CreateDNSRecord(ctx, record); err != nil {
 			return err
@@ -623,10 +627,28 @@ func (service *ControlService) CreateDNSRecord(ctx context.Context, identity Int
 			}
 		}
 		result = toDNSRecordPayload(record)
+		recordID = record.ID
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_records.create", "DNS_RECORD", record.ID, ""))
 	})
 	if err != nil {
 		return DNSRecordPayload{}, mapServiceError(err)
+	}
+	if hasAction {
+		if err := service.executeDNSProviderAction(ctx, action); err != nil {
+			if cleanupErr := service.deleteCreatedDNSRecordLocalState(ctx, identity.OrganizationID, recordID); cleanupErr != nil {
+				return DNSRecordPayload{}, mapServiceError(cleanupErr)
+			}
+			return DNSRecordPayload{}, err
+		}
+		appliedAt := service.timestamp()
+		err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+			return repositories.DNSRecords().UpdateDNSRecordLastApplied(ctx, identity.OrganizationID, recordID, action.LastAppliedValues, appliedAt)
+		})
+		if err != nil {
+			return DNSRecordPayload{}, mapServiceError(err)
+		}
+		result.LastAppliedValues = parseStringListJSON(action.LastAppliedValues)
+		result.LastAppliedAt = appliedAt
 	}
 	return result, nil
 }
@@ -878,108 +900,4 @@ func normalizedConfigJSON(value string) string {
 		return "{}"
 	}
 	return value
-}
-
-func toHealthCheckPayloads(checks []repo.HealthCheckRecord) []HealthCheckPayload {
-	payloads := make([]HealthCheckPayload, 0, len(checks))
-	for _, check := range checks {
-		payloads = append(payloads, toHealthCheckPayload(check))
-	}
-	return payloads
-}
-
-func toHealthCheckPayload(check repo.HealthCheckRecord) HealthCheckPayload {
-	config := map[string]any{}
-	_ = json.Unmarshal([]byte(normalizedConfigJSON(check.ConfigJSON)), &config)
-	targets := make([]HealthCheckTargetPayload, 0, len(check.Targets))
-	for _, target := range check.Targets {
-		if target.TargetID == "" {
-			continue
-		}
-		targets = append(targets, HealthCheckTargetPayload{
-			ID:            target.ID,
-			ScopeType:     target.ScopeType,
-			TargetID:      target.TargetID,
-			TargetGroupID: target.TargetGroupID,
-			TargetName:    target.TargetName,
-			TargetHost:    target.TargetHost,
-			TargetPort:    target.TargetPort,
-		})
-	}
-	scopes := make([]HealthMonitorScopePayload, 0, len(check.MonitorScopes))
-	for _, scope := range check.MonitorScopes {
-		scopes = append(scopes, HealthMonitorScopePayload{ID: scope.ID, ScopeType: scope.ScopeType, MonitorID: scope.MonitorID, MonitorGroupID: scope.MonitorGroupID})
-	}
-	return HealthCheckPayload{
-		ID:              check.ID,
-		Name:            check.Name,
-		ProbeType:       check.ProbeType,
-		IntervalSeconds: check.IntervalSeconds,
-		TimeoutSeconds:  check.TimeoutSeconds,
-		Config:          config,
-		Enabled:         check.Enabled,
-		Targets:         targets,
-		MonitorScopes:   scopes,
-	}
-}
-
-func toHealthResultPayloads(results []repo.HealthResultRecord) []HealthResultPayload {
-	payloads := make([]HealthResultPayload, 0, len(results))
-	for _, result := range results {
-		payloads = append(payloads, HealthResultPayload{
-			ID:                  result.ID,
-			HealthCheckID:       result.HealthCheckID,
-			HealthCheckTargetID: result.HealthCheckTargetID,
-			MonitorID:           result.MonitorID,
-			TargetID:            result.TargetID,
-			Status:              result.Status,
-			LatencyMS:           result.LatencyMS,
-			ErrorMessage:        result.ErrorMessage,
-			ObservedAt:          result.ObservedAt,
-			CreatedAt:           result.CreatedAt,
-		})
-	}
-	return payloads
-}
-
-func toDNSCredentialPayloads(credentials []repo.DNSCredentialRecord) []DNSCredentialPayload {
-	payloads := make([]DNSCredentialPayload, 0, len(credentials))
-	for _, credential := range credentials {
-		payloads = append(payloads, toDNSCredentialPayload(credential))
-	}
-	return payloads
-}
-
-func toDNSCredentialPayload(credential repo.DNSCredentialRecord) DNSCredentialPayload {
-	return DNSCredentialPayload{ID: credential.ID, Name: credential.Name, Provider: credential.Provider}
-}
-
-func toDNSRecordPayloads(records []repo.DNSRecordRecord) []DNSRecordPayload {
-	payloads := make([]DNSRecordPayload, 0, len(records))
-	for _, record := range records {
-		payloads = append(payloads, toDNSRecordPayload(record))
-	}
-	return payloads
-}
-
-func toDNSRecordPayload(record repo.DNSRecordRecord) DNSRecordPayload {
-	return DNSRecordPayload{
-		ID:                record.ID,
-		DNSCredentialID:   record.DNSCredentialID,
-		Zone:              record.Zone,
-		RecordName:        record.RecordName,
-		RecordType:        record.RecordType,
-		ManagedMode:       record.ManagedMode,
-		DesiredValues:     parseStringListJSON(record.DesiredValuesJSON),
-		LastAppliedValues: parseStringListJSON(record.LastAppliedValuesJSON),
-		LastAppliedAt:     record.LastAppliedAt,
-	}
-}
-
-func parseStringListJSON(value string) []string {
-	var values []string
-	if err := json.Unmarshal([]byte(value), &values); err != nil {
-		return nil
-	}
-	return values
 }

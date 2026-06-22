@@ -257,6 +257,103 @@ func TestRecordMonitorHealthResultsEvaluatesLatestResultsAcrossMonitorGroup(t *t
 	}
 }
 
+func TestRecordMonitorHealthResultsIgnoresDisconnectedMonitorLatestResult(t *testing.T) {
+	store := &healthDNSTestStore{
+		monitor: repo.MonitorRecord{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+			Status:         "ONLINE",
+			GroupIDs:       []string{"monitor_group_1"},
+		},
+		monitors: []repo.MonitorRecord{{
+			ID:             "monitor_1",
+			OrganizationID: "org_1",
+			Status:         "ONLINE",
+			GroupIDs:       []string{"monitor_group_1"},
+		}, {
+			ID:             "monitor_2",
+			OrganizationID: "org_1",
+			Status:         "OFFLINE",
+			GroupIDs:       []string{"monitor_group_1"},
+		}},
+		monitorGroups: map[string]repo.MonitorGroupRecord{
+			"monitor_group_1": {ID: "monitor_group_1", OrganizationID: "org_1"},
+		},
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+			Targets: []repo.HealthCheckTargetRecord{{
+				ID:       "health_target_1",
+				TargetID: "target_1",
+			}},
+			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
+				ScopeType:      "MONITOR_GROUP",
+				MonitorGroupID: "monitor_group_1",
+			}},
+		}},
+		results: []repo.HealthResultRecord{{
+			ID:                  "existing_result_1",
+			OrganizationID:      "org_1",
+			HealthCheckID:       "health_1",
+			HealthCheckTargetID: "health_target_1",
+			MonitorID:           "monitor_2",
+			TargetID:            "target_1",
+			Status:              "OFFLINE",
+			ObservedAt:          "2026-06-20T00:00:00Z",
+		}},
+		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
+		record: repo.DNSRecordRecord{
+			ID:                    "dns_1",
+			OrganizationID:        "org_1",
+			DNSCredentialID:       "credential_1",
+			Zone:                  "zone_1",
+			RecordName:            "health.example.com",
+			RecordType:            "A",
+			DesiredValuesJSON:     `["192.0.2.1"]`,
+			LastAppliedValuesJSON: `["198.51.100.10"]`,
+		},
+		rules: []repo.HealthEvaluationRuleRecord{{
+			ID:             "rule_1",
+			OrganizationID: "org_1",
+			HealthCheckID:  "health_1",
+			Enabled:        true,
+			Events: []repo.HealthEventRecord{{
+				ID:         "event_1",
+				EventType:  "DNS_FAILOVER",
+				Enabled:    true,
+				ConfigJSON: `{"dns_record_id":"dns_1","failover_values":["198.51.100.10"]}`,
+			}},
+		}},
+	}
+	provider := &healthDNSTestProvider{}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		DNSSecretEncryptionKey: "test-dns-key",
+		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
+	})
+	encrypted, err := control.encryptDNSSecret("cloudflare-token")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+	store.credential.EncryptedSecret = encrypted
+
+	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
+		HealthCheckID:       "health_1",
+		HealthCheckTargetID: "health_target_1",
+		TargetID:            "target_1",
+		Status:              "ONLINE",
+		ObservedAt:          "2026-06-20T00:00:05Z",
+	}}); err != nil {
+		t.Fatalf("record monitor health results: %v", err)
+	}
+	if provider.calls() != 1 {
+		t.Fatalf("expected stale result from disconnected monitor to be ignored and DNS restored, got %d provider calls", provider.calls())
+	}
+	if got := provider.lastInput().Values; len(got) != 1 || got[0] != "192.0.2.1" {
+		t.Fatalf("expected desired value to be restored, got %#v", got)
+	}
+}
+
 func TestRecordMonitorHealthResultsUsesCustomHealthActionExecutor(t *testing.T) {
 	store := &healthDNSTestStore{
 		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},

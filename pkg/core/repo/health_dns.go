@@ -207,21 +207,30 @@ func (store *PostgresStore) ListHealthEvaluationRulesByCheck(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
 	rules := make([]HealthEvaluationRuleRecord, 0)
 	for rows.Next() {
 		rule, err := scanHealthEvaluationRuleRows(rows)
 		if err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
-		events, err := store.listHealthEventsByRule(ctx, rule.OrganizationID, rule.ID)
+		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range rules {
+		events, err := store.listHealthEventsByRule(ctx, rules[index].OrganizationID, rules[index].ID)
 		if err != nil {
 			return nil, err
 		}
-		rule.Events = events
-		rules = append(rules, rule)
+		rules[index].Events = events
 	}
-	return rules, rows.Err()
+	return rules, nil
 }
 
 func (store *PostgresStore) CreateHealthEvaluationRule(ctx context.Context, rule HealthEvaluationRuleRecord, events []HealthEventRecord) error {
@@ -564,9 +573,13 @@ func (store *PostgresStore) CreateDNSRecord(ctx context.Context, record DNSRecor
 func (store *PostgresStore) UpdateDNSRecord(ctx context.Context, record DNSRecordRecord) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE dns_records
-		SET dns_credential_id = ?, zone = ?, record_name = ?, record_type = ?, managed_mode = ?, desired_values_json = ?::jsonb, updated_at = ?
+		SET dns_credential_id = ?, zone = ?, record_name = ?, record_type = ?, managed_mode = ?,
+		    desired_values_json = ?::jsonb,
+		    last_applied_values_json = ?::jsonb,
+		    last_applied_at = NULLIF(?, '')::timestamptz,
+		    updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, record.DNSCredentialID, record.Zone, record.RecordName, record.RecordType, record.ManagedMode, record.DesiredValuesJSON, record.UpdatedAt, record.OrganizationID, record.ID)
+	`, record.DNSCredentialID, record.Zone, record.RecordName, record.RecordType, record.ManagedMode, record.DesiredValuesJSON, record.LastAppliedValuesJSON, record.LastAppliedAt, record.UpdatedAt, record.OrganizationID, record.ID)
 	if err != nil {
 		return err
 	}
