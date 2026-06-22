@@ -35,6 +35,8 @@ func TestOSSReleaseWorkflowPublishesPrebuiltArtifacts(t *testing.T) {
 		"prism-oss-migrate",
 		"node-agent-linux-amd64.tar.gz",
 		"node-agent-linux-arm64.tar.gz",
+		"monitor-agent-linux-amd64.tar.gz",
+		"monitor-agent-linux-arm64.tar.gz",
 		"control-plane-oss-linux-amd64",
 		"control-plane-oss-linux-arm64",
 		"migrate-linux-amd64.tar.gz",
@@ -44,6 +46,8 @@ func TestOSSReleaseWorkflowPublishesPrebuiltArtifacts(t *testing.T) {
 		"upgrade.sh",
 		"install-node-agent.sh",
 		"uninstall-node-agent.sh",
+		"install-monitor-agent.sh",
+		"uninstall-monitor-agent.sh",
 		"SHA256SUMS",
 	} {
 		if !strings.Contains(source, required) {
@@ -131,6 +135,7 @@ func TestOSSReleaseWorkflowCrossCompilesGoBeforeDockerBuild(t *testing.T) {
 		`-o "$out_dir/control-plane-oss"`,
 		`-o "$out_dir/migrate"`,
 		`-o "$out_dir/node-agent"`,
+		`-o "$out_dir/monitor-agent"`,
 		"actions/upload-artifact@",
 		"actions/download-artifact@",
 		"needs: build-go",
@@ -629,7 +634,6 @@ func TestOSSReleaseTreeDoesNotContainCommercialOnlyPaths(t *testing.T) {
 		"control_edition_full.go",
 		"control_authorizer_full.go",
 		"cmd/control-plane/main.go",
-		"cmd/monitor-agent",
 	}
 	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {

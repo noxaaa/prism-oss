@@ -211,6 +211,17 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 					continue
 				}
 				_ = writeAgentEnvelope(ctx, conn, "config_snapshot", config)
+			} else if authResult.AgentType == "MONITOR" {
+				config, err := server.controlService.CompileMonitorAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID)
+				if err != nil {
+					if errors.Is(err, service.ErrNotFound) {
+						server.closeStaleAgentSession(ctx, conn, authResult)
+						return
+					}
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "MONITOR_CONFIG_COMPILE_FAILED"})
+					continue
+				}
+				_ = writeAgentEnvelope(ctx, conn, "monitor_config_snapshot", config)
 			}
 		case "heartbeat":
 			if authResult.AgentType == "NODE" {
@@ -270,6 +281,16 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "STATE_UPDATE_FAILED"})
 					continue
 				}
+				config, err := server.controlService.CompileMonitorAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID)
+				if err != nil {
+					if errors.Is(err, service.ErrNotFound) {
+						server.closeStaleAgentSession(ctx, conn, authResult)
+						return
+					}
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "MONITOR_CONFIG_COMPILE_FAILED"})
+					continue
+				}
+				_ = writeAgentEnvelope(ctx, conn, "monitor_config_snapshot", config)
 			}
 		case "config_ack":
 			var payload struct {
@@ -284,6 +305,20 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 			if authResult.AgentType == "NODE" {
 				if err := server.controlService.AcknowledgeNodeAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID, payload.ConfigVersion, payload.Status, payload.ErrorMessage); err != nil {
 					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "CONFIG_ACK_FAILED"})
+				}
+			}
+		case "monitor_config_ack":
+			var payload struct {
+				ConfigVersion int    `json:"config_version"`
+				Status        string `json:"status"`
+			}
+			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_MONITOR_CONFIG_ACK"})
+				continue
+			}
+			if authResult.AgentType == "MONITOR" && strings.ToUpper(strings.TrimSpace(payload.Status)) == "APPLIED" {
+				if err := server.controlService.AcknowledgeMonitorAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID, payload.ConfigVersion); err != nil {
+					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "MONITOR_CONFIG_ACK_FAILED"})
 				}
 			}
 		case "agent_update_result":
@@ -322,6 +357,35 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 			if authResult.AgentType == "NODE" && payload.TrafficReportID != "" && len(payload.TrafficDeltas) > 0 {
 				_ = writeAgentEnvelope(ctx, conn, "metrics_ack", map[string]any{"traffic_report_id": payload.TrafficReportID})
 			}
+		case "health_results":
+			var payload struct {
+				Results []agent.HealthResultPayload `json:"results"`
+			}
+			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_HEALTH_RESULTS"})
+				continue
+			}
+			if authResult.AgentType != "MONITOR" {
+				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "UNSUPPORTED_AGENT_MESSAGE"})
+				continue
+			}
+			results := make([]service.HealthResultInput, 0, len(payload.Results))
+			for _, result := range payload.Results {
+				results = append(results, service.HealthResultInput{
+					HealthCheckID:       result.HealthCheckID,
+					HealthCheckTargetID: result.HealthCheckTargetID,
+					TargetID:            result.TargetID,
+					Status:              result.Status,
+					LatencyMS:           result.LatencyMS,
+					ErrorMessage:        result.ErrorMessage,
+					ObservedAt:          result.ObservedAt,
+				})
+			}
+			if err := server.controlService.RecordMonitorHealthResults(ctx, authResult.OrganizationID, authResult.AgentID, results); err != nil {
+				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "HEALTH_RESULTS_FAILED"})
+				continue
+			}
+			_ = writeAgentEnvelope(ctx, conn, "health_results_ack", map[string]any{"count": len(results)})
 		}
 	}
 }

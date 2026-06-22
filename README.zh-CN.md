@@ -126,6 +126,24 @@ sudo /opt/prism-node-agent/current/node-agent upgrade --version vX.Y.Z
 (tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/uninstall-node-agent.sh -o "$tmp" && sudo sh "$tmp" --purge; status=$?; rm -f "${tmp:-}"; exit "$status")
 ```
 
+## 安装 Monitor Agent
+
+创建 Monitor 后，可以复制控制台生成的注册命令，也可以在监控节点上以 root 运行 Release helper：
+
+```sh
+(tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install-monitor-agent.sh -o "$tmp" && sudo env APP_NAME='OSS Control Console' sh "$tmp" --version latest --control-url http://YOUR_CONTROL_PLANE:8080 --registration-token YOUR_MONITOR_REGISTRATION_TOKEN; status=$?; rm -f "${tmp:-}"; exit "$status")
+```
+
+helper 会下载 `monitor-agent-linux-<arch>.tar.gz`，校验 `SHA256SUMS`，调用 `monitor-agent install`，注册并启动 `prism-monitor-agent.service`。卸载 Monitor Agent service：
+
+```sh
+(tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/uninstall-monitor-agent.sh -o "$tmp" && sudo sh "$tmp"; status=$?; rm -f "${tmp:-}"; exit "$status")
+```
+
+升级 Monitor Agent 时重新运行 install helper 并指定目标 `--version` 即可。如果同一台主机要对接多个控制面，可以用 `--service-name`、`--install-dir`、`--config-file` 和 `--credential-file` 隔离服务与状态。
+
+主动健康检查和 DNS failover 依赖 Monitor Agent。Compose 安装器会自动生成 `DNS_SECRET_ENCRYPTION_KEY`；自定义部署需要在控制面配置稳定的 32 字节随机密钥，重启后必须保持不变，否则已加密的 DNS provider token 无法解密。
+
 ## Docker Compose 运维
 
 配置、升级、备份、日志和重置步骤见 [Docker Compose 运维](./docs/docker-compose.zh-CN.md)。

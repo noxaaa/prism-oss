@@ -576,6 +576,19 @@ func (store *PostgresStore) MarkMonitorAgentDisconnected(ctx context.Context, or
 	return requireAffected(result)
 }
 
+func (store *PostgresStore) RecordMonitorConfigAck(ctx context.Context, organizationID string, monitorID string, configVersion int, now string) error {
+	result, err := store.db.ExecContext(ctx, `
+		UPDATE monitors
+		SET applied_config_version = ?,
+		    updated_at = ?
+		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
+	`, configVersion, now, organizationID, monitorID)
+	if err != nil {
+		return mapWriteError(err)
+	}
+	return requireAffected(result)
+}
+
 func (store *PostgresStore) DeleteMonitor(ctx context.Context, organizationID string, monitorID string, deletedAt string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE monitors

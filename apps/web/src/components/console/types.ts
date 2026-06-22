@@ -143,6 +143,66 @@ export type RegistrationToken = {
   install_command?: string;
 };
 
+export type HealthCheck = {
+  id: string;
+  name: string;
+  probe_type: "ICMP" | "TCP_PORT" | "HTTP" | string;
+  interval_seconds: number;
+  timeout_seconds: number;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  targets: HealthCheckTarget[];
+  monitor_scopes: HealthMonitorScope[];
+};
+
+export type HealthCheckTarget = {
+  id: string;
+  scope_type: string;
+  target_id: string;
+  target_group_id?: string;
+  target_name: string;
+  target_host: string;
+  target_port: number;
+};
+
+export type HealthMonitorScope = {
+  id: string;
+  scope_type: string;
+  monitor_id?: string;
+  monitor_group_id?: string;
+};
+
+export type HealthResult = {
+  id: string;
+  health_check_id: string;
+  health_check_target_id: string;
+  monitor_id: string;
+  target_id: string;
+  status: string;
+  latency_ms?: number;
+  error_message?: string;
+  observed_at: string;
+  created_at: string;
+};
+
+export type DNSCredential = {
+  id: string;
+  name: string;
+  provider: string;
+};
+
+export type DNSRecord = {
+  id: string;
+  dns_credential_id: string;
+  zone: string;
+  record_name: string;
+  record_type: string;
+  managed_mode: string;
+  desired_values: string[];
+  last_applied_values: string[];
+  last_applied_at?: string;
+};
+
 export type Target = {
   id: string;
   name: string;

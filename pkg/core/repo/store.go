@@ -164,6 +164,18 @@ func (store *PostgresStore) Monitors() MonitorRepository {
 	return store
 }
 
+func (store *PostgresStore) HealthChecks() HealthCheckRepository {
+	return store
+}
+
+func (store *PostgresStore) DNSCredentials() DNSCredentialRepository {
+	return store
+}
+
+func (store *PostgresStore) DNSRecords() DNSRecordRepository {
+	return store
+}
+
 func (store *PostgresStore) Targets() TargetRepository {
 	return store
 }

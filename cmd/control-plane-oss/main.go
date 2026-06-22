@@ -45,6 +45,7 @@ func main() {
 		ControlPlaneURL:         cfg.ControlPlaneURL,
 		AgentReleaseVersion:     cfg.AgentReleaseVersion,
 		AgentTokenSigningSecret: []byte(cfg.AgentTokenSigningSecret),
+		DNSSecretEncryptionKey:  cfg.DNSSecretEncryptionKey,
 		Edition:                 controlEdition,
 	})
 

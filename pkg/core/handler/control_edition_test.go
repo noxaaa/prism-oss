@@ -22,7 +22,7 @@ import (
 	"github.com/noxaaa/prism-oss/pkg/edition"
 )
 
-func TestOSSControlServerDoesNotRegisterRBACOrMonitorRoutes(t *testing.T) {
+func TestOSSControlServerDoesNotRegisterRBACRoutes(t *testing.T) {
 	signer := auth.HMACInternalTokenSigner{Secret: []byte("test-secret")}
 	server := NewControlServer(ControlServerOptions{
 		TokenVerifier: signer,
@@ -40,36 +40,27 @@ func TestOSSControlServerDoesNotRegisterRBACOrMonitorRoutes(t *testing.T) {
 	for _, path := range []string{
 		"/internal/v1/organizations/current/members",
 		"/internal/v1/organizations/current/roles",
-		"/internal/v1/monitor-groups",
-		"/internal/v1/monitors",
-		"/internal/v1/monitors/monitor_1/registration-token",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Authorization", "Bearer "+token)
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)
 		if response.Code != http.StatusNotFound {
-			t.Fatalf("expected OSS route %s to be unregistered, got %d body=%s", path, response.Code, response.Body.String())
+			t.Fatalf("expected RBAC route %s to be unregistered in OSS, got %d body=%s", path, response.Code, response.Body.String())
 		}
 	}
 }
 
-func TestOSSControlServerRejectsMonitorAgentConnect(t *testing.T) {
-	server := NewControlServer(ControlServerOptions{
-		ControlService: service.NewControlServiceWithOptions(nil, service.ControlServiceOptions{
-			AgentTokenSigningSecret: []byte("agent-secret"),
-			Edition:                 edition.OSSProvider(),
-		}),
-		Edition: edition.OSSProvider(),
-	})
-
-	request := httptest.NewRequest(http.MethodGet, "/agent/v1/connect", nil)
-	request.Header.Set("Authorization", "Bearer monitor-token")
-	request.Header.Set("X-Agent-Type", "MONITOR")
-	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("expected OSS monitor agent connect to be rejected, got %d body=%s", response.Code, response.Body.String())
+func TestOSSProviderEnablesMonitorHealthAndDNSCapabilities(t *testing.T) {
+	provider := edition.OSSProvider()
+	for _, capability := range []edition.Capability{
+		edition.CapabilityMonitors,
+		edition.CapabilityHealthChecks,
+		edition.CapabilityDNS,
+	} {
+		if !provider.Has(capability) {
+			t.Fatalf("expected OSS provider to enable %s", capability)
+		}
 	}
 }
 
@@ -149,12 +140,14 @@ func TestOSSControlServerBootstrapsWithCoreOnlySchema(t *testing.T) {
 	}
 	assertPermission(t, bootstrapResponse.Data.Permissions, string(domain.PermissionOrganizationUpdate))
 	assertPermission(t, bootstrapResponse.Data.Permissions, string(domain.PermissionNodesManage))
+	assertPermission(t, bootstrapResponse.Data.Permissions, string(domain.PermissionMonitorsRead))
+	assertPermission(t, bootstrapResponse.Data.Permissions, string(domain.PermissionMonitorsManage))
+	assertPermission(t, bootstrapResponse.Data.Permissions, string(domain.PermissionDNSRead))
+	assertPermission(t, bootstrapResponse.Data.Permissions, string(domain.PermissionDNSManage))
+	assertPermission(t, bootstrapResponse.Data.Permissions, string(domain.PermissionHealthChecksRead))
+	assertPermission(t, bootstrapResponse.Data.Permissions, string(domain.PermissionHealthChecksManage))
 	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "members.manage")
 	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "roles.manage")
-	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "monitors.read")
-	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "monitors.manage")
-	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "dns.manage")
-	assertMissingPermission(t, bootstrapResponse.Data.Permissions, "health_checks.manage")
 	assertScope(t, bootstrapResponse.Data.ResourceScopes, "NODE_GROUP", "*", "MANAGE")
 
 	sessionToken := signWebUserToken(t, webSigner, auth.WebUserTokenPurposeSession, "user_owner", "owner@example.com", "Owner")
@@ -219,6 +212,7 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 		ControlPlaneURL:         "http://127.0.0.1:8080",
 		AgentReleaseVersion:     "v0.0.0-test",
 		AgentTokenSigningSecret: []byte("agent-token-secret-32-byte-test-key"),
+		DNSSecretEncryptionKey:  "test-dns-secret-key",
 	})
 
 	bootstrap := postBootstrap(t, server, webSigner, "user_owner", "owner@example.com")
@@ -238,19 +232,30 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 			string(domain.PermissionOrganizationRead),
 			string(domain.PermissionNodesRead),
 			string(domain.PermissionNodesManage),
+			string(domain.PermissionMonitorsRead),
+			string(domain.PermissionMonitorsManage),
 			string(domain.PermissionTargetsRead),
 			string(domain.PermissionTargetsManage),
 			string(domain.PermissionRulesReadAll),
 			string(domain.PermissionRulesManageAll),
 			string(domain.PermissionTrafficReadAll),
+			string(domain.PermissionHealthChecksRead),
+			string(domain.PermissionHealthChecksManage),
+			string(domain.PermissionDNSRead),
+			string(domain.PermissionDNSManage),
 		},
 		ResourceScopes: []auth.ResourceScopeClaim{{ResourceType: string(domain.ResourceTypeNodeGroup), ResourceID: "*", AccessLevel: string(domain.AccessLevelManage)}},
 		ExpiresAt:      time.Now().Add(time.Minute),
 	})
 	group := createOSSNodeGroupViaAPI(t, server, token, "OSS API Group")
 	node := createOSSNodeViaAPI(t, server, token, group.ID, "OSS API Node")
+	monitorGroup := createOSSMonitorGroupViaAPI(t, server, token, "OSS API Monitor Group")
+	monitor := createOSSMonitorViaAPI(t, server, token, monitorGroup.ID, "OSS API Monitor")
 	target := createOSSTargetViaAPI(t, server, token, "OSS API Target")
 	targetGroup := createOSSTargetGroupViaAPI(t, server, token, target.ID, "OSS API Target Group")
+	healthCheck := createOSSHealthCheckViaAPI(t, server, token, target.ID, monitor.ID, "OSS API Health")
+	dnsCredential := createOSSDNSCredentialViaAPI(t, server, token, "OSS API Cloudflare")
+	dnsRecord := createOSSDNSRecordViaAPI(t, server, token, dnsCredential.ID, "OSS API DNS")
 	controlService := service.NewControlServiceWithOptions(store, service.ControlServiceOptions{
 		Edition:                 edition.OSSProvider(),
 		AppName:                 "OSS Control Console",
@@ -283,6 +288,7 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 	}
 	rule := createOSSRuleViaAPI(t, server, token, group.ID, targetGroup.ID, "OSS API Rule")
 	registrationToken := createOSSNodeRegistrationTokenViaAPI(t, server, token, node.ID)
+	monitorRegistrationToken := createOSSMonitorRegistrationTokenViaAPI(t, server, token, monitor.ID)
 	if _, err := store.Nodes().ListNodesByOrganization(context.Background(), bootstrapResponse.Data.Organization.ID); err != nil {
 		t.Fatalf("expected direct Postgres node listing to succeed: %v", err)
 	}
@@ -302,6 +308,10 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 		"/internal/v1/nodes",
 		"/internal/v1/nodes/" + node.ID,
 		"/internal/v1/nodes/" + node.ID + "/registration-tokens",
+		"/internal/v1/monitor-groups",
+		"/internal/v1/monitors",
+		"/internal/v1/monitors/" + monitor.ID,
+		"/internal/v1/monitors/" + monitor.ID + "/registration-tokens",
 		"/internal/v1/resource-options/node-groups",
 		"/internal/v1/resource-options/node-group-listen-ips?node_group_id=" + group.ID,
 		"/internal/v1/resource-options/node-group-listen-ips?node_group_id=" + group.ID + "&protocol=TCP&port=10000",
@@ -313,6 +323,10 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 		"/internal/v1/rules/" + rule.ID,
 		"/internal/v1/rules/" + rule.ID + "/traffic",
 		"/internal/v1/rules/" + rule.ID + "/diagnostics",
+		"/internal/v1/health-checks",
+		"/internal/v1/health-checks/" + healthCheck.ID + "/results",
+		"/internal/v1/dns/credentials",
+		"/internal/v1/dns/records",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Authorization", "Bearer "+token)
@@ -323,6 +337,9 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 		}
 	}
 	revokeNodeRegistrationTokenViaAPI(t, server, token, node.ID, registrationToken.TokenID)
+	revokeMonitorRegistrationTokenViaAPI(t, server, token, monitor.ID, monitorRegistrationToken.TokenID)
+	deleteOSSDNSRecordViaAPI(t, server, token, dnsRecord.ID)
+	deleteOSSDNSCredentialViaAPI(t, server, token, dnsCredential.ID)
 }
 
 type testControlRouteExtension struct {
@@ -411,6 +428,14 @@ type ossNodePayload struct {
 	ID string `json:"id"`
 }
 
+type ossMonitorGroupPayload struct {
+	ID string `json:"id"`
+}
+
+type ossMonitorPayload struct {
+	ID string `json:"id"`
+}
+
 type ossTargetPayload struct {
 	ID string `json:"id"`
 }
@@ -420,6 +445,18 @@ type ossTargetGroupPayload struct {
 }
 
 type ossRulePayload struct {
+	ID string `json:"id"`
+}
+
+type ossHealthCheckPayload struct {
+	ID string `json:"id"`
+}
+
+type ossDNSCredentialPayload struct {
+	ID string `json:"id"`
+}
+
+type ossDNSRecordPayload struct {
 	ID string `json:"id"`
 }
 
@@ -465,6 +502,43 @@ func createOSSNodeViaAPI(t *testing.T, server http.Handler, token string, groupI
 	}
 	var response struct {
 		Data ossNodePayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func createOSSMonitorGroupViaAPI(t *testing.T, server http.Handler, token string, name string) ossMonitorGroupPayload {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/monitor-groups", bytes.NewBufferString(`{"name":"`+name+`","description":"OSS monitor group"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS monitor group create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossMonitorGroupPayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func createOSSMonitorViaAPI(t *testing.T, server http.Handler, token string, groupID string, name string) ossMonitorPayload {
+	t.Helper()
+
+	body := `{"name":"` + name + `","group_ids":["` + groupID + `"]}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/monitors", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS monitor create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossMonitorPayload `json:"data"`
 	}
 	decodeJSON(t, recorder, &response)
 	return response.Data
@@ -544,6 +618,81 @@ func createOSSRuleViaAPI(t *testing.T, server http.Handler, token string, nodeGr
 	return response.Data
 }
 
+func createOSSHealthCheckViaAPI(t *testing.T, server http.Handler, token string, targetID string, monitorID string, name string) ossHealthCheckPayload {
+	t.Helper()
+
+	body := `{
+		"name":"` + name + `",
+		"probe_type":"TCP_PORT",
+		"interval_seconds":30,
+		"timeout_seconds":5,
+		"enabled":true,
+		"target_scope":{"type":"TARGETS","target_ids":["` + targetID + `"]},
+		"monitor_scope":{"type":"MONITOR","monitor_id":"` + monitorID + `"},
+		"config":{}
+	}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/health-checks", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS health check create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossHealthCheckPayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func createOSSDNSCredentialViaAPI(t *testing.T, server http.Handler, token string, name string) ossDNSCredentialPayload {
+	t.Helper()
+
+	body := `{"name":"` + name + `","provider":"CLOUDFLARE","secret":"test-token"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/dns/credentials", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS DNS credential create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "test-token") {
+		t.Fatalf("DNS credential response must not expose the secret: %s", recorder.Body.String())
+	}
+	var response struct {
+		Data ossDNSCredentialPayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func createOSSDNSRecordViaAPI(t *testing.T, server http.Handler, token string, credentialID string, name string) ossDNSRecordPayload {
+	t.Helper()
+
+	body := `{
+		"dns_credential_id":"` + credentialID + `",
+		"zone":"example.com",
+		"record_name":"health.example.com",
+		"record_type":"A",
+		"desired_values":["192.0.2.1"]
+	}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/dns/records", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS DNS record create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossDNSRecordPayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
 func createOSSNodeRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, nodeID string) ossRegistrationTokenPayload {
 	t.Helper()
 
@@ -571,6 +720,60 @@ func revokeNodeRegistrationTokenViaAPI(t *testing.T, server http.Handler, token 
 	server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected OSS node registration token revoke 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func createOSSMonitorRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, monitorID string) ossRegistrationTokenPayload {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/monitors/"+monitorID+"/registration-token", bytes.NewBufferString(`{"ttl_hours":1}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS monitor registration token create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossRegistrationTokenPayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func revokeMonitorRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, monitorID string, tokenID string) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/monitors/"+monitorID+"/registration-tokens/"+tokenID, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected OSS monitor registration token revoke 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func deleteOSSDNSRecordViaAPI(t *testing.T, server http.Handler, token string, recordID string) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/dns/records/"+recordID, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected OSS DNS record delete 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func deleteOSSDNSCredentialViaAPI(t *testing.T, server http.Handler, token string, credentialID string) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/dns/credentials/"+credentialID, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected OSS DNS credential delete 200, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

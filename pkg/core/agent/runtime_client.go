@@ -47,6 +47,9 @@ type NodeRuntime struct {
 	trafficPending       []RuleTrafficDelta
 	trafficInFlightID    string
 	trafficInFlight      []RuleTrafficDelta
+	monitorMu            sync.Mutex
+	monitorSnapshot      MonitorConfigSnapshot
+	monitorLastProbe     map[string]time.Time
 }
 
 type runtimeEnvelope struct {
@@ -68,6 +71,7 @@ func NewNodeRuntime(config RuntimeConfig, applier ConfigApplier) *NodeRuntime {
 		bootTime:          time.Now().UTC(),
 		metricsInterval:   5 * time.Second,
 		heartbeatInterval: 5 * time.Second,
+		monitorLastProbe:  map[string]time.Time{},
 	}
 }
 
@@ -78,6 +82,7 @@ func NewMonitorRuntime(config RuntimeConfig) *NodeRuntime {
 		bootTime:          time.Now().UTC(),
 		metricsInterval:   5 * time.Second,
 		heartbeatInterval: 5 * time.Second,
+		monitorLastProbe:  map[string]time.Time{},
 	}
 }
 
@@ -171,6 +176,25 @@ func (runtime *NodeRuntime) runOnce(ctx context.Context) error {
 				"config_version": snapshot.ConfigVersion,
 				"status":         status,
 				"error_message":  nullableString(errorMessage),
+			}); err != nil {
+				return err
+			}
+		case "monitor_config_snapshot":
+			var snapshot MonitorConfigSnapshot
+			if err := json.Unmarshal(envelope.Payload, &snapshot); err != nil {
+				_ = runtime.write(ctx, conn, "monitor_config_ack", map[string]any{
+					"config_version": snapshot.ConfigVersion,
+					"status":         "FAILED",
+					"error_message":  "invalid monitor config snapshot",
+				})
+				continue
+			}
+			runtime.setMonitorSnapshot(snapshot)
+			runtime.setAppliedConfigVersion(snapshot.ConfigVersion)
+			if err := runtime.write(ctx, conn, "monitor_config_ack", map[string]any{
+				"config_version": snapshot.ConfigVersion,
+				"status":         "APPLIED",
+				"error_message":  nil,
 			}); err != nil {
 				return err
 			}
@@ -462,6 +486,11 @@ func (runtime *NodeRuntime) reportRuntime(ctx context.Context, conn *websocket.C
 			})
 		case <-metricsTicker.C:
 			_ = runtime.write(ctx, conn, "metrics", runtime.collectMetrics())
+			if runtime.getAgentType() == "MONITOR" {
+				if results := runtime.collectDueHealthResults(ctx); len(results) > 0 {
+					_ = runtime.write(ctx, conn, "health_results", map[string]any{"results": results})
+				}
+			}
 		}
 	}
 }

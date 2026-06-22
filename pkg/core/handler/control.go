@@ -27,6 +27,7 @@ type ControlServerOptions struct {
 	ControlPlaneURL         string
 	AgentReleaseVersion     string
 	AgentTokenSigningSecret []byte
+	DNSSecretEncryptionKey  string
 	AgentStateRegistry      *AgentStateRegistry
 	Edition                 edition.Provider
 	RouteExtensions         []ControlRouteExtension
@@ -54,6 +55,7 @@ func NewControlServer(options ControlServerOptions) *ControlServer {
 			ControlPlaneURL:         options.ControlPlaneURL,
 			AgentReleaseVersion:     options.AgentReleaseVersion,
 			AgentTokenSigningSecret: options.AgentTokenSigningSecret,
+			DNSSecretEncryptionKey:  options.DNSSecretEncryptionKey,
 			Edition:                 provider,
 		})
 	}
@@ -137,6 +139,23 @@ func (server *ControlServer) routes() {
 		server.mux.HandleFunc("GET /internal/v1/monitors/{monitor_id}/registration-tokens", server.withInternalIdentity(server.handleListMonitorRegistrationTokens))
 		server.mux.HandleFunc("POST /internal/v1/monitors/{monitor_id}/registration-token", server.withInternalIdentity(server.handleCreateMonitorRegistrationToken))
 		server.mux.HandleFunc("DELETE /internal/v1/monitors/{monitor_id}/registration-tokens/{token_id}", server.withInternalIdentity(server.handleRevokeMonitorRegistrationToken))
+	}
+	if server.edition.Has(edition.CapabilityHealthChecks) {
+		server.mux.HandleFunc("GET /internal/v1/health-checks", server.withInternalIdentity(server.handleListHealthChecks))
+		server.mux.HandleFunc("POST /internal/v1/health-checks", server.withInternalIdentity(server.handleCreateHealthCheck))
+		server.mux.HandleFunc("PATCH /internal/v1/health-checks/{health_check_id}", server.withInternalIdentity(server.handleUpdateHealthCheck))
+		server.mux.HandleFunc("DELETE /internal/v1/health-checks/{health_check_id}", server.withInternalIdentity(server.handleDeleteHealthCheck))
+		server.mux.HandleFunc("GET /internal/v1/health-checks/{health_check_id}/results", server.withInternalIdentity(server.handleListHealthCheckResults))
+	}
+	if server.edition.Has(edition.CapabilityDNS) {
+		server.mux.HandleFunc("GET /internal/v1/dns/credentials", server.withInternalIdentity(server.handleListDNSCredentials))
+		server.mux.HandleFunc("POST /internal/v1/dns/credentials", server.withInternalIdentity(server.handleCreateDNSCredential))
+		server.mux.HandleFunc("PATCH /internal/v1/dns/credentials/{credential_id}", server.withInternalIdentity(server.handleUpdateDNSCredential))
+		server.mux.HandleFunc("DELETE /internal/v1/dns/credentials/{credential_id}", server.withInternalIdentity(server.handleDeleteDNSCredential))
+		server.mux.HandleFunc("GET /internal/v1/dns/records", server.withInternalIdentity(server.handleListDNSRecords))
+		server.mux.HandleFunc("POST /internal/v1/dns/records", server.withInternalIdentity(server.handleCreateDNSRecord))
+		server.mux.HandleFunc("PATCH /internal/v1/dns/records/{record_id}", server.withInternalIdentity(server.handleUpdateDNSRecord))
+		server.mux.HandleFunc("DELETE /internal/v1/dns/records/{record_id}", server.withInternalIdentity(server.handleDeleteDNSRecord))
 	}
 	server.mux.HandleFunc("GET /internal/v1/targets", server.withInternalIdentity(server.handleListTargets))
 	server.mux.HandleFunc("POST /internal/v1/targets", server.withInternalIdentity(server.handleCreateTarget))

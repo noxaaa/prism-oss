@@ -80,7 +80,16 @@ func (repositories trafficReportTestRepositories) MonitorGroups() repo.MonitorGr
 	return nil
 }
 func (repositories trafficReportTestRepositories) Monitors() repo.MonitorRepository { return nil }
-func (repositories trafficReportTestRepositories) Targets() repo.TargetRepository   { return nil }
+func (repositories trafficReportTestRepositories) HealthChecks() repo.HealthCheckRepository {
+	return nil
+}
+func (repositories trafficReportTestRepositories) DNSCredentials() repo.DNSCredentialRepository {
+	return nil
+}
+func (repositories trafficReportTestRepositories) DNSRecords() repo.DNSRecordRepository {
+	return nil
+}
+func (repositories trafficReportTestRepositories) Targets() repo.TargetRepository { return nil }
 func (repositories trafficReportTestRepositories) TargetGroups() repo.TargetGroupRepository {
 	return nil
 }

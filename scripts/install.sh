@@ -289,6 +289,7 @@ services:
       AGENT_RELEASE_VERSION: ${AGENT_RELEASE_VERSION:-latest}
       CONTROL_PLANE_INTERNAL_JWT_SECRET: ${CONTROL_PLANE_INTERNAL_JWT_SECRET:?set CONTROL_PLANE_INTERNAL_JWT_SECRET in .env}
       AGENT_TOKEN_SIGNING_SECRET: ${AGENT_TOKEN_SIGNING_SECRET:?set AGENT_TOKEN_SIGNING_SECRET in .env}
+      DNS_SECRET_ENCRYPTION_KEY: ${DNS_SECRET_ENCRYPTION_KEY:?set DNS_SECRET_ENCRYPTION_KEY in .env}
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       QUEUE_REDIS_URL: ${QUEUE_REDIS_URL:-redis://redis:6379/0}
       CACHE_REDIS_URL: ${CACHE_REDIS_URL:-redis://redis:6379/0}
@@ -354,6 +355,7 @@ services:
       AGENT_RELEASE_VERSION: ${AGENT_RELEASE_VERSION:-latest}
       CONTROL_PLANE_INTERNAL_JWT_SECRET: ${CONTROL_PLANE_INTERNAL_JWT_SECRET:?set CONTROL_PLANE_INTERNAL_JWT_SECRET in .env}
       AGENT_TOKEN_SIGNING_SECRET: ${AGENT_TOKEN_SIGNING_SECRET:?set AGENT_TOKEN_SIGNING_SECRET in .env}
+      DNS_SECRET_ENCRYPTION_KEY: ${DNS_SECRET_ENCRYPTION_KEY:?set DNS_SECRET_ENCRYPTION_KEY in .env}
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       QUEUE_REDIS_URL: ${QUEUE_REDIS_URL:-redis://redis:6379/0}
       CACHE_REDIS_URL: ${CACHE_REDIS_URL:-redis://redis:6379/0}
@@ -534,7 +536,7 @@ SH
 is_prism_install_dir() {
   env_file="$1/.env"
   [ -f "$env_file" ] || return 1
-  grep -Eq '^(PRISM_EDITION=oss|PRISM_IMAGE_TAG=|AGENT_RELEASE_VERSION=|OSS_SETUP_TOKEN=|AGENT_TOKEN_SIGNING_SECRET=|CONTROL_PLANE_INTERNAL_JWT_SECRET=)' "$env_file"
+  grep -Eq '^(PRISM_EDITION=oss|PRISM_IMAGE_TAG=|AGENT_RELEASE_VERSION=|OSS_SETUP_TOKEN=|AGENT_TOKEN_SIGNING_SECRET=|CONTROL_PLANE_INTERNAL_JWT_SECRET=|DNS_SECRET_ENCRYPTION_KEY=)' "$env_file"
 }
 
 validate_install_dir() {
@@ -658,6 +660,7 @@ if [ ! -f ".env" ]; then
     printf 'OSS_SETUP_TOKEN=%s\n' "$(generate_url_safe_secret)"
     printf 'CONTROL_PLANE_INTERNAL_JWT_SECRET=%s\n' "$(generate_secret)"
     printf 'AGENT_TOKEN_SIGNING_SECRET=%s\n' "$(generate_secret)"
+    printf 'DNS_SECRET_ENCRYPTION_KEY=%s\n' "$(generate_secret)"
   } > .env
   chmod 600 .env
   echo "Created .env"
@@ -680,6 +683,7 @@ else
   set_env_value_if_requested_or_missing DATABASE_URL "$resolved_database_url" "$database_url_provided"
   set_env_value_if_requested_or_missing BETTER_AUTH_URL "$resolved_public_url" "$public_web_url_provided"
   set_env_value_if_requested_or_missing BETTER_AUTH_TRUSTED_ORIGINS "$trusted_origins" "$trusted_origins_requested"
+  set_env_value_if_requested_or_missing DNS_SECRET_ENCRYPTION_KEY "$(generate_secret)" 0
 fi
 
 docker compose pull

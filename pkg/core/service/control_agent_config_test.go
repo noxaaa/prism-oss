@@ -401,7 +401,16 @@ func (repositories agentHelloTestRepositories) MonitorGroups() repo.MonitorGroup
 	return nil
 }
 func (repositories agentHelloTestRepositories) Monitors() repo.MonitorRepository { return nil }
-func (repositories agentHelloTestRepositories) Targets() repo.TargetRepository   { return nil }
+func (repositories agentHelloTestRepositories) HealthChecks() repo.HealthCheckRepository {
+	return nil
+}
+func (repositories agentHelloTestRepositories) DNSCredentials() repo.DNSCredentialRepository {
+	return nil
+}
+func (repositories agentHelloTestRepositories) DNSRecords() repo.DNSRecordRepository {
+	return nil
+}
+func (repositories agentHelloTestRepositories) Targets() repo.TargetRepository { return nil }
 func (repositories agentHelloTestRepositories) TargetGroups() repo.TargetGroupRepository {
 	return nil
 }

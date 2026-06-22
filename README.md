@@ -92,6 +92,22 @@ Uninstall the node Agent service:
 
 Add `--purge` to remove the Agent config and credential state as well.
 
+Install a monitor Agent as a Linux systemd service after creating a monitor in the console and copying its registration token command:
+
+```sh
+(tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install-monitor-agent.sh -o "$tmp" && sudo env APP_NAME='OSS Control Console' sh "$tmp" --version latest --control-url http://YOUR_CONTROL_PLANE:8080 --registration-token YOUR_MONITOR_REGISTRATION_TOKEN; status=$?; rm -f "${tmp:-}"; exit "$status")
+```
+
+The helper downloads `monitor-agent-linux-<arch>.tar.gz`, verifies `SHA256SUMS`, calls `monitor-agent install`, registers `prism-monitor-agent.service`, and exits. Uninstall the monitor Agent service with:
+
+```sh
+(tmp=$(mktemp) && curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/uninstall-monitor-agent.sh -o "$tmp" && sudo sh "$tmp"; status=$?; rm -f "${tmp:-}"; exit "$status")
+```
+
+Upgrade a monitor Agent by rerunning the install helper with the target version. Use `--service-name`, `--install-dir`, `--config-file`, and `--credential-file` when one host connects to multiple control planes.
+
+Active health checks and DNS failover use monitor Agents. The Compose installer generates `DNS_SECRET_ENCRYPTION_KEY`; custom deployments must set a stable 32-byte secret so encrypted DNS provider tokens remain decryptable after restarts.
+
 See [Docker Compose operations](./docs/docker-compose.md) for configuration, upgrades, backups, logs, and reset steps.
 
 ## Local Development

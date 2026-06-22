@@ -121,6 +121,46 @@ type MonitorPatchRequest struct {
 	GroupIDs *[]string `json:"group_ids"`
 }
 
+type HealthCheckRequest struct {
+	Name            string                    `json:"name"`
+	ProbeType       string                    `json:"probe_type"`
+	IntervalSeconds int                       `json:"interval_seconds"`
+	TimeoutSeconds  int                       `json:"timeout_seconds"`
+	Enabled         bool                      `json:"enabled"`
+	TargetScope     HealthTargetScopeRequest  `json:"target_scope"`
+	MonitorScope    HealthMonitorScopeRequest `json:"monitor_scope"`
+	Config          map[string]any            `json:"config"`
+}
+
+type HealthTargetScopeRequest struct {
+	Type          string   `json:"type"`
+	TargetIDs     []string `json:"target_ids"`
+	TargetGroupID string   `json:"target_group_id"`
+}
+
+type HealthMonitorScopeRequest struct {
+	Type           string `json:"type"`
+	MonitorID      string `json:"monitor_id"`
+	MonitorGroupID string `json:"monitor_group_id"`
+}
+
+type DNSCredentialRequest struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Secret   string `json:"secret"`
+}
+
+type DNSRecordRequest struct {
+	DNSCredentialID string   `json:"dns_credential_id"`
+	Zone            string   `json:"zone"`
+	RecordName      string   `json:"record_name"`
+	RecordType      string   `json:"record_type"`
+	DesiredValues   []string `json:"desired_values"`
+	HealthCheckID   string   `json:"health_check_id"`
+	EventType       string   `json:"event_type"`
+	FailoverValues  []string `json:"failover_values"`
+}
+
 type RegistrationTokenRequest struct {
 	TTLHours int `json:"ttl_hours"`
 }
@@ -349,6 +389,128 @@ func ValidateMonitorPatchRequest(request MonitorPatchRequest) (MonitorPatchReque
 	if request.GroupIDs != nil {
 		groupIDs := normalizeIDs(*request.GroupIDs)
 		request.GroupIDs = &groupIDs
+	}
+	return request, nil
+}
+
+func ValidateHealthCheckRequest(request HealthCheckRequest) (HealthCheckRequest, error) {
+	request.Name = strings.TrimSpace(request.Name)
+	request.ProbeType = strings.ToUpper(strings.TrimSpace(request.ProbeType))
+	if request.Name == "" || len(request.Name) > 120 {
+		return HealthCheckRequest{}, ErrInvalidRequest
+	}
+	if request.ProbeType != "ICMP" && request.ProbeType != "TCP_PORT" && request.ProbeType != "HTTP" {
+		return HealthCheckRequest{}, ErrInvalidRequest
+	}
+	if request.IntervalSeconds <= 0 || request.TimeoutSeconds <= 0 || request.TimeoutSeconds > request.IntervalSeconds {
+		return HealthCheckRequest{}, ErrInvalidRequest
+	}
+	targetScope, err := validateHealthTargetScope(request.TargetScope)
+	if err != nil {
+		return HealthCheckRequest{}, err
+	}
+	monitorScope, err := validateHealthMonitorScope(request.MonitorScope)
+	if err != nil {
+		return HealthCheckRequest{}, err
+	}
+	if request.Config == nil {
+		request.Config = map[string]any{}
+	}
+	request.TargetScope = targetScope
+	request.MonitorScope = monitorScope
+	return request, nil
+}
+
+func validateHealthTargetScope(scope HealthTargetScopeRequest) (HealthTargetScopeRequest, error) {
+	scope.Type = strings.ToUpper(strings.TrimSpace(scope.Type))
+	scope.TargetIDs = normalizeIDs(scope.TargetIDs)
+	scope.TargetGroupID = strings.TrimSpace(scope.TargetGroupID)
+	switch scope.Type {
+	case "TARGETS":
+		if len(scope.TargetIDs) == 0 || scope.TargetGroupID != "" {
+			return HealthTargetScopeRequest{}, ErrInvalidRequest
+		}
+	case "TARGET_GROUP":
+		if scope.TargetGroupID == "" || len(scope.TargetIDs) != 0 {
+			return HealthTargetScopeRequest{}, ErrInvalidRequest
+		}
+	default:
+		return HealthTargetScopeRequest{}, ErrInvalidRequest
+	}
+	return scope, nil
+}
+
+func validateHealthMonitorScope(scope HealthMonitorScopeRequest) (HealthMonitorScopeRequest, error) {
+	scope.Type = strings.ToUpper(strings.TrimSpace(scope.Type))
+	scope.MonitorID = strings.TrimSpace(scope.MonitorID)
+	scope.MonitorGroupID = strings.TrimSpace(scope.MonitorGroupID)
+	switch scope.Type {
+	case "MONITOR":
+		if scope.MonitorID == "" || scope.MonitorGroupID != "" {
+			return HealthMonitorScopeRequest{}, ErrInvalidRequest
+		}
+	case "MONITOR_GROUP":
+		if scope.MonitorGroupID == "" || scope.MonitorID != "" {
+			return HealthMonitorScopeRequest{}, ErrInvalidRequest
+		}
+	default:
+		return HealthMonitorScopeRequest{}, ErrInvalidRequest
+	}
+	return scope, nil
+}
+
+func ValidateDNSCredentialRequest(request DNSCredentialRequest, secretRequired bool) (DNSCredentialRequest, error) {
+	request.Name = strings.TrimSpace(request.Name)
+	request.Provider = strings.ToUpper(strings.TrimSpace(request.Provider))
+	request.Secret = strings.TrimSpace(request.Secret)
+	if request.Name == "" || len(request.Name) > 120 || request.Provider != "CLOUDFLARE" {
+		return DNSCredentialRequest{}, ErrInvalidRequest
+	}
+	if secretRequired && request.Secret == "" {
+		return DNSCredentialRequest{}, ErrInvalidRequest
+	}
+	return request, nil
+}
+
+func ValidateDNSRecordRequest(request DNSRecordRequest) (DNSRecordRequest, error) {
+	request.DNSCredentialID = strings.TrimSpace(request.DNSCredentialID)
+	request.Zone = strings.TrimSpace(request.Zone)
+	request.RecordName = strings.TrimSpace(request.RecordName)
+	request.RecordType = strings.ToUpper(strings.TrimSpace(request.RecordType))
+	request.HealthCheckID = strings.TrimSpace(request.HealthCheckID)
+	request.EventType = strings.ToUpper(strings.TrimSpace(request.EventType))
+	values := make([]string, 0, len(request.DesiredValues))
+	for _, value := range request.DesiredValues {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	request.DesiredValues = values
+	if request.DNSCredentialID == "" || request.Zone == "" || request.RecordName == "" || len(values) == 0 {
+		return DNSRecordRequest{}, ErrInvalidRequest
+	}
+	if request.RecordType != "A" && request.RecordType != "AAAA" && request.RecordType != "CNAME" {
+		return DNSRecordRequest{}, ErrInvalidRequest
+	}
+	failoverValues := make([]string, 0, len(request.FailoverValues))
+	for _, value := range request.FailoverValues {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			failoverValues = append(failoverValues, value)
+		}
+	}
+	request.FailoverValues = failoverValues
+	if request.HealthCheckID != "" {
+		if request.EventType == "" {
+			request.EventType = "DNS_FAILOVER"
+		}
+		if request.EventType != "DNS_FAILOVER" && request.EventType != "DNS_DELETE_OFFLINE" && request.EventType != "DNS_DELETE_ALL" && request.EventType != "DNS_RESTORE" {
+			return DNSRecordRequest{}, ErrInvalidRequest
+		}
+		if request.EventType == "DNS_FAILOVER" && len(request.FailoverValues) == 0 {
+			return DNSRecordRequest{}, ErrInvalidRequest
+		}
 	}
 	return request, nil
 }

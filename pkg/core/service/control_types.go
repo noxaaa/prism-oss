@@ -122,6 +122,56 @@ type MonitorMutationInput struct {
 	GroupIDsProvided bool
 }
 
+type HealthCheckMutationInput struct {
+	Name            string
+	ProbeType       string
+	IntervalSeconds int
+	TimeoutSeconds  int
+	Enabled         bool
+	TargetScope     HealthTargetScopeInput
+	MonitorScope    HealthMonitorScopeInput
+	ConfigJSON      string
+}
+
+type HealthTargetScopeInput struct {
+	Type          string
+	TargetIDs     []string
+	TargetGroupID string
+}
+
+type HealthMonitorScopeInput struct {
+	Type           string
+	MonitorID      string
+	MonitorGroupID string
+}
+
+type HealthResultInput struct {
+	HealthCheckID       string
+	HealthCheckTargetID string
+	TargetID            string
+	Status              string
+	LatencyMS           int
+	ErrorMessage        string
+	ObservedAt          string
+}
+
+type DNSCredentialMutationInput struct {
+	Name     string
+	Provider string
+	Secret   string
+}
+
+type DNSRecordMutationInput struct {
+	DNSCredentialID string
+	Zone            string
+	RecordName      string
+	RecordType      string
+	DesiredValues   []string
+	HealthCheckID   string
+	EventType       string
+	FailoverValues  []string
+}
+
 type RegistrationTokenInput struct {
 	TTLHours int
 }
@@ -308,6 +358,66 @@ type MonitorPayload struct {
 	LastSeenAt           string   `json:"last_seen_at,omitempty"`
 	RegisteredAt         string   `json:"registered_at,omitempty"`
 	GroupIDs             []string `json:"group_ids"`
+}
+
+type HealthCheckPayload struct {
+	ID              string                      `json:"id"`
+	Name            string                      `json:"name"`
+	ProbeType       string                      `json:"probe_type"`
+	IntervalSeconds int                         `json:"interval_seconds"`
+	TimeoutSeconds  int                         `json:"timeout_seconds"`
+	Config          map[string]any              `json:"config"`
+	Enabled         bool                        `json:"enabled"`
+	Targets         []HealthCheckTargetPayload  `json:"targets"`
+	MonitorScopes   []HealthMonitorScopePayload `json:"monitor_scopes"`
+}
+
+type HealthCheckTargetPayload struct {
+	ID            string `json:"id"`
+	ScopeType     string `json:"scope_type"`
+	TargetID      string `json:"target_id"`
+	TargetGroupID string `json:"target_group_id,omitempty"`
+	TargetName    string `json:"target_name"`
+	TargetHost    string `json:"target_host"`
+	TargetPort    int    `json:"target_port"`
+}
+
+type HealthMonitorScopePayload struct {
+	ID             string `json:"id"`
+	ScopeType      string `json:"scope_type"`
+	MonitorID      string `json:"monitor_id,omitempty"`
+	MonitorGroupID string `json:"monitor_group_id,omitempty"`
+}
+
+type HealthResultPayload struct {
+	ID                  string `json:"id"`
+	HealthCheckID       string `json:"health_check_id"`
+	HealthCheckTargetID string `json:"health_check_target_id"`
+	MonitorID           string `json:"monitor_id"`
+	TargetID            string `json:"target_id"`
+	Status              string `json:"status"`
+	LatencyMS           int    `json:"latency_ms,omitempty"`
+	ErrorMessage        string `json:"error_message,omitempty"`
+	ObservedAt          string `json:"observed_at"`
+	CreatedAt           string `json:"created_at"`
+}
+
+type DNSCredentialPayload struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+}
+
+type DNSRecordPayload struct {
+	ID                string   `json:"id"`
+	DNSCredentialID   string   `json:"dns_credential_id"`
+	Zone              string   `json:"zone"`
+	RecordName        string   `json:"record_name"`
+	RecordType        string   `json:"record_type"`
+	ManagedMode       string   `json:"managed_mode"`
+	DesiredValues     []string `json:"desired_values"`
+	LastAppliedValues []string `json:"last_applied_values"`
+	LastAppliedAt     string   `json:"last_applied_at,omitempty"`
 }
 
 type RegistrationTokenPayload struct {

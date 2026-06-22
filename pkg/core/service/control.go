@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/noxaaa/prism-oss/pkg/core/dns"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 	"github.com/noxaaa/prism-oss/pkg/edition"
@@ -37,6 +38,8 @@ type ControlService struct {
 	sessionBackend          SessionBackend
 	rbacBackend             RBACBackend
 	targetGroupSchedulers   TargetGroupSchedulerSupportFunc
+	dnsSecretEncryptionKey  string
+	dnsProviders            dns.ProviderRegistry
 }
 
 func NewControlService(store repo.UnitOfWork) *ControlService {
@@ -53,6 +56,8 @@ type ControlServiceOptions struct {
 	SessionBackend          SessionBackend
 	RBACBackend             RBACBackend
 	TargetGroupSchedulers   TargetGroupSchedulerSupportFunc
+	DNSSecretEncryptionKey  string
+	DNSProviders            dns.ProviderRegistry
 }
 
 type TargetGroupSchedulerSupportFunc func(scheduler string) bool
@@ -75,9 +80,14 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 		sessionBackend:          options.SessionBackend,
 		rbacBackend:             options.RBACBackend,
 		targetGroupSchedulers:   options.TargetGroupSchedulers,
+		dnsSecretEncryptionKey:  options.DNSSecretEncryptionKey,
+		dnsProviders:            options.DNSProviders,
 	}
 	if service.authorizer == nil {
 		service.authorizer = defaultControlAuthorizer()
+	}
+	if service.dnsProviders == nil {
+		service.dnsProviders = dns.DefaultProviderRegistry()
 	}
 	return service
 }

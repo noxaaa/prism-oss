@@ -10,6 +10,40 @@ type ConfigSnapshot struct {
 	Rules                []RuleConfig    `json:"rules"`
 }
 
+type MonitorConfigSnapshot struct {
+	MonitorID      string               `json:"monitor_id"`
+	ConfigVersion  int                  `json:"config_version"`
+	GeneratedAtUTC string               `json:"generated_at"`
+	HealthChecks   []MonitorHealthCheck `json:"health_checks"`
+}
+
+type MonitorHealthCheck struct {
+	ID              string                `json:"id"`
+	ProbeType       string                `json:"probe_type"`
+	IntervalSeconds int                   `json:"interval_seconds"`
+	TimeoutSeconds  int                   `json:"timeout_seconds"`
+	ConfigJSON      string                `json:"config_json"`
+	Targets         []MonitorHealthTarget `json:"targets"`
+}
+
+type MonitorHealthTarget struct {
+	HealthCheckTargetID string `json:"health_check_target_id"`
+	TargetID            string `json:"target_id"`
+	Name                string `json:"name"`
+	Host                string `json:"host"`
+	Port                int    `json:"port"`
+}
+
+type HealthResultPayload struct {
+	HealthCheckID       string `json:"health_check_id"`
+	HealthCheckTargetID string `json:"health_check_target_id"`
+	TargetID            string `json:"target_id"`
+	Status              string `json:"status"`
+	LatencyMS           int    `json:"latency_ms,omitempty"`
+	ErrorMessage        string `json:"error_message,omitempty"`
+	ObservedAt          string `json:"observed_at"`
+}
+
 type RuleConfig struct {
 	ID               string                `json:"id"`
 	ConfigVersion    int                   `json:"config_version"`

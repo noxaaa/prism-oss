@@ -36,6 +36,8 @@ jobs:
           cp scripts/uninstall.sh "$assets_dir/uninstall.sh"
           cp scripts/install-node-agent.sh "$assets_dir/install-node-agent.sh"
           cp scripts/uninstall-node-agent.sh "$assets_dir/uninstall-node-agent.sh"
+          cp scripts/install-monitor-agent.sh "$assets_dir/install-monitor-agent.sh"
+          cp scripts/uninstall-monitor-agent.sh "$assets_dir/uninstall-monitor-agent.sh"
           cp scripts/upgrade.sh "$assets_dir/upgrade.sh"
           for arch in amd64 arm64; do
             out_dir=".release/docker/linux-${arch}"
@@ -43,8 +45,10 @@ jobs:
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/control-plane-oss" ./cmd/control-plane-oss
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/migrate" ./cmd/migrate
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/node-agent" ./cmd/node-agent
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/monitor-agent" ./cmd/monitor-agent
             cp "$out_dir/control-plane-oss" "$assets_dir/control-plane-oss-linux-${arch}"
             tar -C "$out_dir" -czf "$assets_dir/node-agent-linux-${arch}.tar.gz" node-agent
+            tar -C "$out_dir" -czf "$assets_dir/monitor-agent-linux-${arch}.tar.gz" monitor-agent
             tar -czf "$assets_dir/migrate-linux-${arch}.tar.gz" -C "$out_dir" migrate -C "$GITHUB_WORKSPACE" migrations/auth migrations/core
           done
           (cd "$assets_dir" && sha256sum * > SHA256SUMS)
@@ -172,8 +176,12 @@ jobs:
             .release/assets/upgrade.sh
             .release/assets/install-node-agent.sh
             .release/assets/uninstall-node-agent.sh
+            .release/assets/install-monitor-agent.sh
+            .release/assets/uninstall-monitor-agent.sh
             .release/assets/node-agent-linux-amd64.tar.gz
             .release/assets/node-agent-linux-arm64.tar.gz
+            .release/assets/monitor-agent-linux-amd64.tar.gz
+            .release/assets/monitor-agent-linux-arm64.tar.gz
             .release/assets/control-plane-oss-linux-amd64
             .release/assets/control-plane-oss-linux-arm64
             .release/assets/migrate-linux-amd64.tar.gz

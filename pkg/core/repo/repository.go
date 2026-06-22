@@ -21,6 +21,9 @@ type Repositories interface {
 	Nodes() NodeRepository
 	MonitorGroups() MonitorGroupRepository
 	Monitors() MonitorRepository
+	HealthChecks() HealthCheckRepository
+	DNSCredentials() DNSCredentialRepository
+	DNSRecords() DNSRecordRepository
 	Targets() TargetRepository
 	TargetGroups() TargetGroupRepository
 	Rules() RuleRepository
@@ -106,7 +109,38 @@ type MonitorRepository interface {
 	UpdateMonitor(ctx context.Context, monitor MonitorRecord, replaceGroups bool, groupIDs []string, now string, nextID func() string) error
 	MarkMonitorAgentConnected(ctx context.Context, organizationID string, monitorID string, now string) error
 	MarkMonitorAgentDisconnected(ctx context.Context, organizationID string, monitorID string, now string) error
+	RecordMonitorConfigAck(ctx context.Context, organizationID string, monitorID string, configVersion int, now string) error
 	DeleteMonitor(ctx context.Context, organizationID string, monitorID string, deletedAt string) error
+}
+
+type HealthCheckRepository interface {
+	ListHealthChecksByOrganization(ctx context.Context, organizationID string) ([]HealthCheckRecord, error)
+	FindHealthCheckByID(ctx context.Context, organizationID string, healthCheckID string) (HealthCheckRecord, error)
+	CreateHealthCheck(ctx context.Context, healthCheck HealthCheckRecord, targets []HealthCheckTargetRecord, monitorScopes []HealthCheckMonitorScopeRecord, now string, nextID func() string) error
+	UpdateHealthCheck(ctx context.Context, healthCheck HealthCheckRecord, targets []HealthCheckTargetRecord, monitorScopes []HealthCheckMonitorScopeRecord, now string, nextID func() string) error
+	DeleteHealthCheck(ctx context.Context, organizationID string, healthCheckID string, deletedAt string) error
+	ListHealthResults(ctx context.Context, organizationID string, healthCheckID string, limit int) ([]HealthResultRecord, error)
+	RecordHealthResults(ctx context.Context, organizationID string, results []HealthResultRecord) error
+	ListHealthEvaluationRulesByCheck(ctx context.Context, organizationID string, healthCheckID string) ([]HealthEvaluationRuleRecord, error)
+	CreateHealthEvaluationRule(ctx context.Context, rule HealthEvaluationRuleRecord, events []HealthEventRecord) error
+	DeleteHealthEvaluationRulesForDNSRecord(ctx context.Context, organizationID string, dnsRecordID string, deletedAt string) error
+}
+
+type DNSCredentialRepository interface {
+	ListDNSCredentialsByOrganization(ctx context.Context, organizationID string) ([]DNSCredentialRecord, error)
+	FindDNSCredentialByID(ctx context.Context, organizationID string, credentialID string) (DNSCredentialRecord, error)
+	CreateDNSCredential(ctx context.Context, credential DNSCredentialRecord) error
+	UpdateDNSCredential(ctx context.Context, credential DNSCredentialRecord, replaceSecret bool) error
+	DeleteDNSCredential(ctx context.Context, organizationID string, credentialID string, deletedAt string) error
+}
+
+type DNSRecordRepository interface {
+	ListDNSRecordsByOrganization(ctx context.Context, organizationID string) ([]DNSRecordRecord, error)
+	FindDNSRecordByID(ctx context.Context, organizationID string, recordID string) (DNSRecordRecord, error)
+	CreateDNSRecord(ctx context.Context, record DNSRecordRecord) error
+	UpdateDNSRecord(ctx context.Context, record DNSRecordRecord) error
+	UpdateDNSRecordLastApplied(ctx context.Context, organizationID string, recordID string, lastAppliedValuesJSON string, lastAppliedAt string) error
+	DeleteDNSRecord(ctx context.Context, organizationID string, recordID string, deletedAt string) error
 }
 
 type TargetRepository interface {
@@ -312,6 +346,111 @@ type MonitorRecord struct {
 	UpdatedAt            string
 	DeletedAt            string
 	GroupIDs             []string
+}
+
+type HealthCheckRecord struct {
+	ID              string
+	OrganizationID  string
+	Name            string
+	ProbeType       string
+	IntervalSeconds int
+	TimeoutSeconds  int
+	ConfigJSON      string
+	Enabled         bool
+	CreatedAt       string
+	UpdatedAt       string
+	DeletedAt       string
+	Targets         []HealthCheckTargetRecord
+	MonitorScopes   []HealthCheckMonitorScopeRecord
+}
+
+type HealthCheckTargetRecord struct {
+	ID             string
+	OrganizationID string
+	HealthCheckID  string
+	ScopeType      string
+	TargetID       string
+	TargetGroupID  string
+	TargetName     string
+	TargetHost     string
+	TargetPort     int
+	CreatedAt      string
+}
+
+type HealthCheckMonitorScopeRecord struct {
+	ID             string
+	OrganizationID string
+	HealthCheckID  string
+	ScopeType      string
+	MonitorID      string
+	MonitorGroupID string
+	CreatedAt      string
+}
+
+type HealthResultRecord struct {
+	ID                  string
+	OrganizationID      string
+	HealthCheckID       string
+	HealthCheckTargetID string
+	MonitorID           string
+	TargetID            string
+	Status              string
+	LatencyMS           int
+	ErrorMessage        string
+	ObservedAt          string
+	CreatedAt           string
+}
+
+type HealthEvaluationRuleRecord struct {
+	ID             string
+	OrganizationID string
+	HealthCheckID  string
+	Name           string
+	Enabled        bool
+	ExpressionJSON string
+	Events         []HealthEventRecord
+	CreatedAt      string
+	UpdatedAt      string
+	DeletedAt      string
+}
+
+type HealthEventRecord struct {
+	ID                     string
+	OrganizationID         string
+	HealthEvaluationRuleID string
+	EventType              string
+	ConfigJSON             string
+	Enabled                bool
+	CreatedAt              string
+	UpdatedAt              string
+	DeletedAt              string
+}
+
+type DNSCredentialRecord struct {
+	ID              string
+	OrganizationID  string
+	Provider        string
+	Name            string
+	EncryptedSecret string
+	CreatedAt       string
+	UpdatedAt       string
+	DeletedAt       string
+}
+
+type DNSRecordRecord struct {
+	ID                    string
+	OrganizationID        string
+	DNSCredentialID       string
+	Zone                  string
+	RecordName            string
+	RecordType            string
+	ManagedMode           string
+	DesiredValuesJSON     string
+	LastAppliedValuesJSON string
+	LastAppliedAt         string
+	CreatedAt             string
+	UpdatedAt             string
+	DeletedAt             string
 }
 
 type TargetRecord struct {

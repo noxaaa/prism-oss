@@ -189,6 +189,15 @@ func (repositories targetGroupServiceTestRepositories) MonitorGroups() repo.Moni
 func (repositories targetGroupServiceTestRepositories) Monitors() repo.MonitorRepository {
 	return nil
 }
+func (repositories targetGroupServiceTestRepositories) HealthChecks() repo.HealthCheckRepository {
+	return nil
+}
+func (repositories targetGroupServiceTestRepositories) DNSCredentials() repo.DNSCredentialRepository {
+	return nil
+}
+func (repositories targetGroupServiceTestRepositories) DNSRecords() repo.DNSRecordRepository {
+	return nil
+}
 func (repositories targetGroupServiceTestRepositories) Targets() repo.TargetRepository {
 	return targetGroupServiceTestTargetRepository(repositories)
 }

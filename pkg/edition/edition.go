@@ -23,17 +23,17 @@ var (
 type Capability string
 
 const (
-	CapabilityCoreForwarding   Capability = "core_forwarding"
-	CapabilityTargets          Capability = "targets"
-	CapabilityRules            Capability = "rules"
-	CapabilityNodes            Capability = "nodes"
-	CapabilityMonitors         Capability = "monitors"
-	CapabilityBasicMetrics     Capability = "basic_metrics"
-	CapabilitySingleUserAuth   Capability = "single_user_auth"
-	CapabilityRBAC             Capability = "rbac"
-	CapabilityMultiUser        Capability = "multi_user"
-	CapabilityCommercialHealth Capability = "commercial_health"
-	CapabilityDNS              Capability = "dns"
+	CapabilityCoreForwarding Capability = "core_forwarding"
+	CapabilityTargets        Capability = "targets"
+	CapabilityRules          Capability = "rules"
+	CapabilityNodes          Capability = "nodes"
+	CapabilityMonitors       Capability = "monitors"
+	CapabilityBasicMetrics   Capability = "basic_metrics"
+	CapabilitySingleUserAuth Capability = "single_user_auth"
+	CapabilityRBAC           Capability = "rbac"
+	CapabilityMultiUser      Capability = "multi_user"
+	CapabilityHealthChecks   Capability = "health_checks"
+	CapabilityDNS            Capability = "dns"
 )
 
 type Provider interface {
@@ -57,8 +57,11 @@ func OSSProvider() Provider {
 			CapabilityTargets,
 			CapabilityRules,
 			CapabilityNodes,
+			CapabilityMonitors,
 			CapabilityBasicMetrics,
 			CapabilitySingleUserAuth,
+			CapabilityHealthChecks,
+			CapabilityDNS,
 		},
 		migrationDirs: []string{"migrations/auth", "migrations/core"},
 	}
