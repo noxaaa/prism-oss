@@ -1,0 +1,93 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+
+const monitorSource = () => readFileSync(join(process.cwd(), "src/components/console/features/monitors.tsx"), "utf8");
+const dnsSource = () => readFileSync(join(process.cwd(), "src/components/console/features/dns.tsx"), "utf8");
+const nodesSource = () => readFileSync(join(process.cwd(), "src/components/console/features/nodes.tsx"), "utf8");
+
+describe("monitor health DNS console source", () => {
+  it("keeps monitor, health, and DNS mutation forms inside drawers", () => {
+    const text = monitorSource();
+    const dnsText = dnsSource();
+
+    expect(text).toContain("MonitorGroupCreateDrawer");
+    expect(text).toContain("MonitorGroupEditDrawer");
+    expect(text).toContain("MonitorCreateDrawer");
+    expect(text).toContain("MonitorEditDrawer");
+    expect(text).toContain("HealthCheckCreateDrawer");
+    expect(text).toContain("HealthCheckEditDrawer");
+    expect(dnsText).toContain("DNSCredentialCreateDrawer");
+    expect(dnsText).toContain("DNSCredentialEditDrawer");
+    expect(dnsText).toContain("DNSManagedRecordCreateDrawer");
+    expect(dnsText).toContain("DNSManagedRecordEditDrawer");
+    expect(dnsText).toContain("DNSInstanceCreateDrawer");
+    expect(dnsText).toContain("DNSInstanceEditDrawer");
+    expect(dnsText).toContain("NotificationChannelCreateDrawer");
+    expect(dnsText).toContain("NotificationChannelEditDrawer");
+    expect(text).not.toContain("<CardTitle>{t(\"monitors.createGroup\")}</CardTitle>");
+    expect(text).not.toContain("<CardTitle>{t(\"health.create\")}</CardTitle>");
+    expect(dnsText).not.toContain("<CardTitle>{t(\"dns.createCredential\")}</CardTitle>");
+    expect(dnsText).not.toContain("<CardTitle>{t(\"dns.createRecord\")}</CardTitle>");
+  });
+
+  it("exposes health check result details and credential zone refresh actions", () => {
+    const text = monitorSource();
+    const dnsText = dnsSource();
+
+    expect(text).toContain("/results");
+    expect(text).toContain("latest_results");
+    expect(dnsText).toContain("/zones/refresh");
+    expect(dnsText).toContain("credential.zones");
+  });
+
+  it("uses smart DNS managed records, instances, and notification policy payloads", () => {
+    const text = monitorSource();
+    const dnsText = dnsSource();
+
+    expect(text).toContain("target_scope");
+    expect(text).toContain("summarizeHealthResults");
+    expect(text).toContain("formatHealthLatencyMs");
+    expect(text).toContain("formatHealthCheckTargets");
+    expect(text).toContain("MultiSelectField");
+    expect(text).toContain("form.getAll(\"target_id\")");
+    expect(text).toContain("form.getAll(\"group_id\")");
+    expect(text).not.toContain("existing_target_id");
+    expect(text).toContain("<HealthCheckForm key={props.check?.id ?? \"empty\"}");
+    expect(text).toContain("{canRead ? <Button");
+    expect(text).toContain("{canUseEditor ? <Button");
+    expect(text).toContain("{canManage ? <Button");
+    expect(dnsText).toContain("/api/control/dns/managed-records");
+    expect(dnsText).toContain("/api/control/dns/instances");
+    expect(dnsText).toContain("/api/control/notification-channels");
+    expect(dnsText).toContain("<NotificationChannelForm key={channel?.id ?? \"empty\"}");
+    expect(dnsText).toContain("node_group_ids");
+    expect(dnsText).toContain("name=\"node_group_id\" options={nodeGroups");
+    expect(dnsText).toContain("name=\"notification_channel_id\" options={channels");
+    expect(dnsText).toContain("required={false}");
+    expect(dnsText).toContain("answer_count");
+    expect(dnsText).toContain("condition_json");
+    expect(dnsText).toContain("function defaultDNSCondition() {\n  return {};\n}");
+    expect(dnsText).toContain("ROTATE_ONLINE_NODES");
+    expect(dnsText).toContain("SET_STATIC_ADDRESSES");
+    expect(dnsText).toContain("SET_STATIC_CNAME");
+    expect(dnsText).toContain("USE_INSTANCE_OUTPUT");
+    expect(dnsText).not.toContain("failover" + "_values");
+    expect(dnsText).not.toContain("preserve_health_binding");
+    expect(dnsText).not.toContain("dns-" + "record-form");
+    expect(existsSync(join(process.cwd(), "src/components/console/dns-" + "record-form.ts"))).toBe(false);
+  });
+
+  it("preserves non-destructive edit state for DNS zones and harmless node publish address edits", () => {
+    const dnsText = dnsSource();
+    const nodesText = nodesSource();
+
+    expect(dnsText).toContain("zone.id === currentZoneID");
+    expect(dnsText).toContain("candidate.id === nextCurrentZoneID");
+    expect(nodesText).toContain("publishAddressChanged");
+    expect(nodesText).toContain("payload.dns_publish_addresses = nodeDNSPublishAddressPayload(node, publishAddress)");
+    expect(nodesText).toContain("address.source === \"MANUAL\" && address.address === primaryAddress");
+    expect(nodesText).not.toContain("...rest");
+    expect(nodesText).not.toContain("rest.map(nodeDNSPublishAddressPayloadItem)");
+  });
+});

@@ -365,8 +365,23 @@ function NodeAgentDetails({ node }: { node: NodeResource }) {
         <div className="text-xs text-muted-foreground">{t("nodes.agentUpdateStatus")}</div>
         <StatusBadge value={node.agent_update_status || "IDLE"} />
       </div>
+      <div>
+        <div className="text-xs text-muted-foreground">{t("nodes.dnsPublishAddress")}</div>
+        <div>{formatDNSPublishAddresses(node)}</div>
+      </div>
     </div>
   );
+}
+
+function formatDNSPublishAddresses(node: NodeResource) {
+  const addresses = node.dns_publish_addresses ?? [];
+  if (addresses.length === 0) {
+    return "-";
+  }
+  return addresses
+    .filter((address) => address.enabled)
+    .map((address) => `${address.address} ${address.source === "AUTO" ? "(auto)" : ""}`.trim())
+    .join(", ") || "-";
 }
 
 function NodeGroupCreateDrawer({ onCreated, onOpenChange, open }: { onCreated: () => Promise<void>; onOpenChange: (open: boolean) => void; open: boolean }) {
@@ -544,13 +559,19 @@ function NodeMutationForm({ groups, node, onSaved }: { groups: NodeGroup[]; node
       ? node.port_ranges.map((range) => ({ protocol: range.protocol, start_port: range.start_port, end_port: range.end_port }))
       : nodePortRangesForSelection(protocol, Number(startPortValue || 10000), Number(endPortValue || 20000));
     try {
-      const payload = {
+      const publishAddress = String(form.get("dns_publish_address") ?? "").trim();
+      const initialManualPublishAddress = node?.dns_publish_addresses?.find((address) => address.source === "MANUAL")?.address ?? "";
+      const publishAddressChanged = !node || publishAddress !== initialManualPublishAddress;
+      const payload: Record<string, unknown> = {
         name: form.get("name"),
         public_description: form.get("public_description"),
         group_ids: nodeGroupIDs,
         listen_ips: normalizedListenIPs,
         port_ranges: portRanges,
       };
+      if (publishAddressChanged) {
+        payload.dns_publish_addresses = nodeDNSPublishAddressPayload(node, publishAddress);
+      }
       if (node) {
         await controlPatch<NodeResource>(`/api/control/nodes/${node.id}`, payload);
       } else {
@@ -570,6 +591,7 @@ function NodeMutationForm({ groups, node, onSaved }: { groups: NodeGroup[]; node
       <FieldGroup>
         <TextField defaultValue={node?.name ?? ""} label={t("field.name")} name="name" placeholder="entry-node-a" />
         <ResourceMultiSelect label={t("nodes.nodeGroups")} onValueChange={setNodeGroupIDs} options={groupOptions} values={nodeGroupIDs} />
+        <TextField defaultValue={node?.dns_publish_addresses?.find((address) => address.source === "MANUAL")?.address ?? ""} label={t("nodes.dnsPublishAddress")} name="dns_publish_address" placeholder="203.0.113.10" required={false} />
         <FieldSet>
           <FieldLegend>{t("nodes.listenIPs")}</FieldLegend>
           <FieldDescription>{t("nodes.listenIPsDescription")}</FieldDescription>
@@ -608,6 +630,18 @@ function NodeMutationForm({ groups, node, onSaved }: { groups: NodeGroup[]; node
       </Button>
     </form>
   );
+}
+
+function nodeDNSPublishAddressPayload(node: NodeResource | undefined, primaryAddress: string) {
+  if (!primaryAddress) {
+    return [];
+  }
+  const existing = (node?.dns_publish_addresses ?? []).find((address) => address.source === "MANUAL" && address.address === primaryAddress);
+  return [{
+    address_type: existing?.address_type ?? "",
+    address: primaryAddress,
+    enabled: existing?.enabled ?? true,
+  }];
 }
 
 function initialPortProtocol(node?: NodeResource) {

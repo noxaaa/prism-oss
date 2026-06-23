@@ -69,8 +69,8 @@ func NewNodeRuntime(config RuntimeConfig, applier ConfigApplier) *NodeRuntime {
 		agentType:         "NODE",
 		applier:           applier,
 		bootTime:          time.Now().UTC(),
-		metricsInterval:   5 * time.Second,
-		heartbeatInterval: 5 * time.Second,
+		metricsInterval:   time.Second,
+		heartbeatInterval: time.Second,
 		monitorLastProbe:  map[string]time.Time{},
 	}
 }
@@ -81,7 +81,7 @@ func NewMonitorRuntime(config RuntimeConfig) *NodeRuntime {
 		agentType:         "MONITOR",
 		bootTime:          time.Now().UTC(),
 		metricsInterval:   time.Second,
-		heartbeatInterval: 5 * time.Second,
+		heartbeatInterval: time.Second,
 		monitorLastProbe:  map[string]time.Time{},
 	}
 }

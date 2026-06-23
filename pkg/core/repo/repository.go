@@ -122,29 +122,47 @@ type HealthCheckRepository interface {
 	DeleteHealthCheck(ctx context.Context, organizationID string, healthCheckID string, deletedAt string) error
 	ListHealthResults(ctx context.Context, organizationID string, healthCheckID string, limit int) ([]HealthResultRecord, error)
 	ListLatestHealthResultsByCheck(ctx context.Context, organizationID string, healthCheckID string) ([]HealthResultRecord, error)
+	ListLatestHealthResultsByChecks(ctx context.Context, organizationID string, healthCheckIDs []string) (map[string][]HealthResultRecord, error)
 	RecordHealthResults(ctx context.Context, organizationID string, results []HealthResultRecord) error
 	ListHealthEvaluationRulesByCheck(ctx context.Context, organizationID string, healthCheckID string) ([]HealthEvaluationRuleRecord, error)
 	CreateHealthEvaluationRule(ctx context.Context, rule HealthEvaluationRuleRecord, events []HealthEventRecord) error
-	DeleteHealthEvaluationRulesForDNSRecord(ctx context.Context, organizationID string, dnsRecordID string, deletedAt string) error
 }
 
 type DNSCredentialRepository interface {
 	ListDNSCredentialsByOrganization(ctx context.Context, organizationID string) ([]DNSCredentialRecord, error)
 	FindDNSCredentialByID(ctx context.Context, organizationID string, credentialID string) (DNSCredentialRecord, error)
+	ListDNSCredentialZonesByOrganization(ctx context.Context, organizationID string) ([]DNSCredentialZoneRecord, error)
+	ListDNSCredentialZonesByCredential(ctx context.Context, organizationID string, credentialID string) ([]DNSCredentialZoneRecord, error)
+	FindDNSCredentialZoneByID(ctx context.Context, organizationID string, credentialZoneID string) (DNSCredentialZoneRecord, error)
 	CreateDNSCredential(ctx context.Context, credential DNSCredentialRecord) error
 	UpdateDNSCredential(ctx context.Context, credential DNSCredentialRecord, replaceSecret bool) error
+	ReplaceDNSCredentialZones(ctx context.Context, organizationID string, credentialID string, zones []DNSCredentialZoneRecord, now string, nextID func() string) error
 	DeleteDNSCredential(ctx context.Context, organizationID string, credentialID string, deletedAt string) error
 }
 
 type DNSRecordRepository interface {
-	ListDNSRecordsByOrganization(ctx context.Context, organizationID string) ([]DNSRecordRecord, error)
-	FindDNSRecordByID(ctx context.Context, organizationID string, recordID string) (DNSRecordRecord, error)
-	CreateDNSRecord(ctx context.Context, record DNSRecordRecord) error
-	UpdateDNSRecord(ctx context.Context, record DNSRecordRecord) error
-	UpdateDNSRecordLastApplied(ctx context.Context, organizationID string, recordID string, lastAppliedValuesJSON string, lastAppliedAt string) error
-	ClearDNSRecordPendingRetire(ctx context.Context, organizationID string, recordID string, updatedAt string) error
-	MarkDNSRecordProviderDeletePending(ctx context.Context, organizationID string, recordID string, pendingAt string) error
-	DeleteDNSRecord(ctx context.Context, organizationID string, recordID string, deletedAt string) error
+	ListDNSManagedRecordsByOrganization(ctx context.Context, organizationID string) ([]DNSManagedRecordRecord, error)
+	FindDNSManagedRecordByID(ctx context.Context, organizationID string, recordID string) (DNSManagedRecordRecord, error)
+	LockDNSManagedRecordEvaluation(ctx context.Context, organizationID string, recordID string) error
+	CreateDNSManagedRecord(ctx context.Context, record DNSManagedRecordRecord) error
+	UpdateDNSManagedRecord(ctx context.Context, record DNSManagedRecordRecord) error
+	DeleteDNSManagedRecord(ctx context.Context, organizationID string, recordID string, deletedAt string) error
+	ListDNSInstancesByOrganization(ctx context.Context, organizationID string) ([]DNSInstanceRecord, error)
+	ListDNSInstancesByManagedRecord(ctx context.Context, organizationID string, recordID string) ([]DNSInstanceRecord, error)
+	FindDNSInstanceByID(ctx context.Context, organizationID string, instanceID string) (DNSInstanceRecord, error)
+	LockDNSInstanceMutation(ctx context.Context, organizationID string, instanceID string) error
+	CreateDNSInstance(ctx context.Context, instance DNSInstanceRecord) error
+	UpdateDNSInstance(ctx context.Context, instance DNSInstanceRecord) error
+	DeleteDNSInstance(ctx context.Context, organizationID string, instanceID string, deletedAt string) error
+	ClearDNSManagedRecordActiveInstance(ctx context.Context, organizationID string, instanceID string, updatedAt string) error
+	UpdateDNSManagedRecordEvaluation(ctx context.Context, record DNSManagedRecordRecord) error
+	UpdateDNSInstanceEvaluation(ctx context.Context, instance DNSInstanceRecord) error
+	ListNotificationChannelsByOrganization(ctx context.Context, organizationID string) ([]NotificationChannelRecord, error)
+	FindNotificationChannelByID(ctx context.Context, organizationID string, channelID string) (NotificationChannelRecord, error)
+	CreateNotificationChannel(ctx context.Context, channel NotificationChannelRecord) error
+	UpdateNotificationChannel(ctx context.Context, channel NotificationChannelRecord, replaceSecret bool) error
+	DeleteNotificationChannel(ctx context.Context, organizationID string, channelID string, deletedAt string) error
+	CreateNotificationDelivery(ctx context.Context, delivery NotificationDeliveryRecord) error
 }
 
 type TargetRepository interface {
@@ -306,6 +324,7 @@ type NodeRecord struct {
 	GroupIDs                  []string
 	ListenIPs                 []NodeListenIPRecord
 	PortRanges                []NodePortRangeRecord
+	DNSPublishAddresses       []NodeDNSPublishAddressRecord
 }
 
 type NodeConfigAckRecord struct {
@@ -341,6 +360,19 @@ type NodePortRangeRecord struct {
 	StartPort      int
 	EndPort        int
 	Enabled        bool
+	CreatedAt      string
+	UpdatedAt      string
+}
+
+type NodeDNSPublishAddressRecord struct {
+	ID             string
+	OrganizationID string
+	NodeID         string
+	AddressType    string
+	Address        string
+	Source         string
+	Enabled        bool
+	ObservedAt     string
 	CreatedAt      string
 	UpdatedAt      string
 }
@@ -442,6 +474,7 @@ type HealthEventRecord struct {
 	HealthEvaluationRuleID string
 	EventType              string
 	ConfigJSON             string
+	EncryptedSecret        string
 	Enabled                bool
 	CreatedAt              string
 	UpdatedAt              string
@@ -459,27 +492,90 @@ type DNSCredentialRecord struct {
 	DeletedAt       string
 }
 
-type DNSRecordRecord struct {
-	ID                           string
-	OrganizationID               string
-	DNSCredentialID              string
-	Zone                         string
-	RecordName                   string
-	RecordType                   string
-	ManagedMode                  string
-	DesiredValuesJSON            string
-	LastAppliedValuesJSON        string
-	LastAppliedAt                string
-	PendingRetireDNSCredentialID string
-	PendingRetireZone            string
-	PendingRetireRecordName      string
-	PendingRetireRecordType      string
-	PendingRetireValuesJSON      string
-	PendingRetireAt              string
-	ProviderDeletePendingAt      string
-	CreatedAt                    string
-	UpdatedAt                    string
-	DeletedAt                    string
+type DNSCredentialZoneRecord struct {
+	ID              string
+	OrganizationID  string
+	DNSCredentialID string
+	ZoneID          string
+	ZoneName        string
+	Status          string
+	LastSyncedAt    string
+	CreatedAt       string
+	UpdatedAt       string
+}
+
+type DNSManagedRecordRecord struct {
+	ID                      string
+	OrganizationID          string
+	DNSCredentialID         string
+	CredentialZoneID        string
+	ZoneID                  string
+	ZoneName                string
+	RecordHost              string
+	RecordName              string
+	RecordType              string
+	TTL                     int
+	Proxied                 bool
+	ActiveInstanceID        string
+	LastAppliedValuesJSON   string
+	ProviderRetirementsJSON string
+	LastEvaluationStatus    string
+	LastEvaluationError     string
+	LastDiagnosticsJSON     string
+	LastEvaluatedAt         string
+	LastAppliedAt           string
+	CreatedAt               string
+	UpdatedAt               string
+	DeletedAt               string
+	Instances               []DNSInstanceRecord
+}
+
+type DNSInstanceRecord struct {
+	ID                         string
+	OrganizationID             string
+	ManagedRecordID            string
+	Name                       string
+	Priority                   int
+	Enabled                    bool
+	NodeGroupIDsJSON           string
+	AnswerCount                int
+	ConditionJSON              string
+	ActionJSON                 string
+	NotificationChannelIDsJSON string
+	LastOutputValuesJSON       string
+	LastStatus                 string
+	LastDiagnosticsJSON        string
+	LastEvaluatedAt            string
+	CreatedAt                  string
+	UpdatedAt                  string
+	DeletedAt                  string
+}
+
+type NotificationChannelRecord struct {
+	ID              string
+	OrganizationID  string
+	Name            string
+	ChannelType     string
+	ConfigJSON      string
+	EncryptedSecret string
+	Enabled         bool
+	CreatedAt       string
+	UpdatedAt       string
+	DeletedAt       string
+}
+
+type NotificationDeliveryRecord struct {
+	ID                 string
+	OrganizationID     string
+	ChannelID          string
+	DNSManagedRecordID string
+	DNSInstanceID      string
+	EventType          string
+	Status             string
+	ErrorMessage       string
+	PayloadJSON        string
+	CreatedAt          string
+	DeliveredAt        string
 }
 
 type TargetRecord struct {

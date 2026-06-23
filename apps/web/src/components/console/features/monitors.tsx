@@ -2,30 +2,37 @@
 
 import {
   CopyIcon,
-  GlobeIcon,
+  Edit3Icon,
+  EyeIcon,
   HeartPulseIcon,
   PlusIcon,
   RadarIcon,
   RefreshCwIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { controlDelete, controlPost, shortDate } from "@/components/console/control-api";
-import { canUseDNSHealthSelector, dnsPageResourceState } from "@/components/console/dns-page-state";
+import { ConfirmDeleteDialog } from "@/components/console/confirm-delete-dialog";
+import { controlDelete, controlGet, controlPatch, controlPost, shortDate } from "@/components/console/control-api";
+import { formatHealthCheckTargets } from "@/components/console/health-check-targets";
+import { countHealthResultsByStatus, formatHealthLatencyMs, summarizeHealthResults } from "@/components/console/health-result-summary";
 import { canReadHealthChecks, canUseHealthCheckEditor, healthPageResourceState } from "@/components/console/health-page-state";
 import { localizeControlError, useI18n } from "@/components/console/i18n";
+import { MultiSelectField } from "@/components/console/multi-select-field";
 import { hasPermission } from "@/components/console/permissions";
 import { useConsoleSession } from "@/components/console/shell";
 import { DataState, EnumSelect, PageStack, StatusBadge, SummaryCard, SummaryGrid, copyText, useControlList } from "@/components/console/shared";
-import type { DNSCredential, DNSRecord, HealthCheck, Monitor, MonitorGroup, RegistrationToken, ResourceOption, Target, TargetGroup } from "@/components/console/types";
+import type { HealthCheck, HealthResult, Monitor, MonitorGroup, RegistrationToken, ResourceOption, Target, TargetGroup } from "@/components/console/types";
+
+type DrawerMode = "create" | "edit" | "detail";
 
 export function MonitorsPage() {
   const { locale, t } = useI18n();
@@ -33,48 +40,12 @@ export function MonitorsPage() {
   const canManage = hasPermission(session, "monitors.manage");
   const monitorGroups = useControlList<MonitorGroup>("/api/control/monitor-groups");
   const monitors = useControlList<Monitor>("/api/control/monitors");
-  const [creating, setCreating] = useState(false);
+  const [groupDrawer, setGroupDrawer] = useState<{ mode: DrawerMode; group?: MonitorGroup } | null>(null);
+  const [monitorDrawer, setMonitorDrawer] = useState<{ mode: DrawerMode; monitor?: Monitor } | null>(null);
+  const [deleteRequest, setDeleteRequest] = useState<{ kind: "group"; item: MonitorGroup } | { kind: "monitor"; item: Monitor } | null>(null);
 
   async function refreshAll() {
     await Promise.all([monitorGroups.refresh(), monitors.refresh()]);
-  }
-
-  async function createGroup(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setCreating(true);
-    const form = new FormData(event.currentTarget);
-    try {
-      await controlPost<MonitorGroup>("/api/control/monitor-groups", {
-        name: String(form.get("name") ?? ""),
-        description: String(form.get("description") ?? ""),
-      });
-      event.currentTarget.reset();
-      toast.success(t("monitors.groupCreated"));
-      await refreshAll();
-    } catch (error) {
-      toast.error(localizeControlError(error, locale));
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function createMonitor(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setCreating(true);
-    const form = new FormData(event.currentTarget);
-    try {
-      await controlPost<Monitor>("/api/control/monitors", {
-        name: String(form.get("name") ?? ""),
-        group_ids: [String(form.get("group_id") ?? "")].filter(Boolean),
-      });
-      event.currentTarget.reset();
-      toast.success(t("monitors.created"));
-      await refreshAll();
-    } catch (error) {
-      toast.error(localizeControlError(error, locale));
-    } finally {
-      setCreating(false);
-    }
   }
 
   async function copyInstallCommand(monitor: Monitor) {
@@ -90,6 +61,26 @@ export function MonitorsPage() {
     }
   }
 
+  async function deleteGroup(group: MonitorGroup) {
+    try {
+      await controlDelete<{ deleted: boolean }>(`/api/control/monitor-groups/${group.id}`);
+      toast.success(t("common.deleted"));
+      await refreshAll();
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    }
+  }
+
+  async function deleteMonitor(monitor: Monitor) {
+    try {
+      await controlDelete<{ deleted: boolean }>(`/api/control/monitors/${monitor.id}`);
+      toast.success(t("common.deleted"));
+      await refreshAll();
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    }
+  }
+
   return (
     <PageStack>
       <SummaryGrid>
@@ -98,59 +89,50 @@ export function MonitorsPage() {
         <SummaryCard icon={<RadarIcon />} label={t("nodes.online")} value={monitors.data.filter((monitor) => monitor.status === "ONLINE").length} />
       </SummaryGrid>
 
-      {canManage ? (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card>
-            <CardHeader>
-              <CardTitle>{t("monitors.createGroup")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form className="grid gap-4" onSubmit={createGroup}>
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel htmlFor="monitor-group-name">{t("field.name")}</FieldLabel>
-                    <Input id="monitor-group-name" name="name" required />
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="monitor-group-description">{t("field.description")}</FieldLabel>
-                    <Input id="monitor-group-description" name="description" />
-                  </Field>
-                </FieldGroup>
-                <Button disabled={creating} type="submit"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button>
-              </form>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>{t("monitors.createMonitor")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form className="grid gap-4" onSubmit={createMonitor}>
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel htmlFor="monitor-name">{t("field.name")}</FieldLabel>
-                    <Input id="monitor-name" name="name" required />
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="monitor-group-id">{t("monitors.group")}</FieldLabel>
-                    <select className="h-9 rounded-md border bg-background px-3 text-sm" id="monitor-group-id" name="group_id" required>
-                      <option value="">{t("resource.selectResource")}</option>
-                      {monitorGroups.data.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
-                    </select>
-                  </Field>
-                </FieldGroup>
-                <Button disabled={creating || monitorGroups.data.length === 0} type="submit"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button>
-              </form>
-            </CardContent>
-          </Card>
-        </div>
-      ) : null}
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("monitors.groups")}</CardTitle>
+          <CardAction className="flex gap-2">
+            {canManage ? <Button onClick={() => setGroupDrawer({ mode: "create" })} size="sm" type="button"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button> : null}
+            <Button onClick={refreshAll} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button>
+          </CardAction>
+        </CardHeader>
+        <CardContent>
+          <DataState loading={monitorGroups.loading} error={monitorGroups.error}>
+            <Table>
+              <TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("field.description")}</TableHead><TableHead>{t("monitors.monitors")}</TableHead>{canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
+              <TableBody>
+                {monitorGroups.data.map((group) => {
+                  const members = monitors.data.filter((monitor) => monitor.group_ids.includes(group.id));
+                  return (
+                    <TableRow key={group.id}>
+                      <TableCell>{group.name}</TableCell>
+                      <TableCell>{group.description || t("common.none")}</TableCell>
+                      <TableCell>{members.length}</TableCell>
+                      {canManage ? (
+                        <TableCell className="flex gap-2">
+                          <Button onClick={() => setGroupDrawer({ mode: "detail", group })} size="icon-sm" type="button" variant="outline"><EyeIcon /></Button>
+                          <Button onClick={() => setGroupDrawer({ mode: "edit", group })} size="icon-sm" type="button" variant="outline"><Edit3Icon /></Button>
+                          <Button onClick={() => setDeleteRequest({ kind: "group", item: group })} size="icon-sm" type="button" variant="outline"><Trash2Icon /></Button>
+                        </TableCell>
+                      ) : null}
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </DataState>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
           <CardTitle>{t("monitors.monitors")}</CardTitle>
           <CardDescription>{t("monitors.description")}</CardDescription>
-          <CardAction><Button onClick={refreshAll} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button></CardAction>
+          <CardAction className="flex gap-2">
+            {canManage ? <Button disabled={monitorGroups.data.length === 0} onClick={() => setMonitorDrawer({ mode: "create" })} size="sm" type="button"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button> : null}
+            <Button onClick={refreshAll} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button>
+          </CardAction>
         </CardHeader>
         <CardContent>
           <DataState loading={monitors.loading || monitorGroups.loading} error={monitors.error || monitorGroups.error}>
@@ -163,7 +145,14 @@ export function MonitorsPage() {
                     <TableCell><StatusBadge value={monitor.status} /></TableCell>
                     <TableCell>{monitor.group_ids.map((id) => monitorGroups.data.find((group) => group.id === id)?.name ?? id).join(", ") || t("common.none")}</TableCell>
                     <TableCell>{shortDate(monitor.last_seen_at, locale)}</TableCell>
-                    {canManage ? <TableCell><Button onClick={() => copyInstallCommand(monitor)} size="sm" type="button" variant="outline"><CopyIcon data-icon="inline-start" />{t("nodes.copyInstallCommand")}</Button></TableCell> : null}
+                    {canManage ? (
+                      <TableCell className="flex gap-2">
+                        <Button onClick={() => copyInstallCommand(monitor)} size="icon-sm" type="button" variant="outline"><CopyIcon /></Button>
+                        <Button onClick={() => setMonitorDrawer({ mode: "detail", monitor })} size="icon-sm" type="button" variant="outline"><EyeIcon /></Button>
+                        <Button onClick={() => setMonitorDrawer({ mode: "edit", monitor })} size="icon-sm" type="button" variant="outline"><Edit3Icon /></Button>
+                        <Button onClick={() => setDeleteRequest({ kind: "monitor", item: monitor })} size="icon-sm" type="button" variant="outline"><Trash2Icon /></Button>
+                      </TableCell>
+                    ) : null}
                   </TableRow>
                 ))}
               </TableBody>
@@ -171,6 +160,23 @@ export function MonitorsPage() {
           </DataState>
         </CardContent>
       </Card>
+
+      <MonitorGroupCreateDrawer open={groupDrawer?.mode === "create"} onOpenChange={(open) => !open && setGroupDrawer(null)} onSaved={refreshAll} />
+      <MonitorGroupEditDrawer group={groupDrawer?.mode === "edit" ? groupDrawer.group : undefined} onOpenChange={(open) => !open && setGroupDrawer(null)} onSaved={refreshAll} />
+      <MonitorGroupDetailDrawer group={groupDrawer?.mode === "detail" ? groupDrawer.group : undefined} monitors={monitors.data} onOpenChange={(open) => !open && setGroupDrawer(null)} />
+      <MonitorCreateDrawer groups={monitorGroups.data} open={monitorDrawer?.mode === "create"} onOpenChange={(open) => !open && setMonitorDrawer(null)} onSaved={refreshAll} />
+      <MonitorEditDrawer groups={monitorGroups.data} monitor={monitorDrawer?.mode === "edit" ? monitorDrawer.monitor : undefined} onOpenChange={(open) => !open && setMonitorDrawer(null)} onSaved={refreshAll} />
+      <MonitorDetailDrawer groups={monitorGroups.data} monitor={monitorDrawer?.mode === "detail" ? monitorDrawer.monitor : undefined} onOpenChange={(open) => !open && setMonitorDrawer(null)} />
+      <ConfirmDeleteDialog
+        label={deleteRequest ? dnsDeleteLabel(deleteRequest) : ""}
+        open={Boolean(deleteRequest)}
+        onConfirm={async () => {
+          if (deleteRequest?.kind === "group") await deleteGroup(deleteRequest.item);
+          if (deleteRequest?.kind === "monitor") await deleteMonitor(deleteRequest.item);
+          setDeleteRequest(null);
+        }}
+        onOpenChange={(open) => !open && setDeleteRequest(null)}
+      />
     </PageStack>
   );
 }
@@ -186,18 +192,10 @@ export function HealthChecksPage() {
   const targetGroups = useControlList<TargetGroup>(canUseEditor ? "/api/control/target-groups" : "");
   const monitors = useControlList<Monitor>(canUseEditor ? "/api/control/monitors" : "");
   const monitorGroups = useControlList<MonitorGroup>(canUseEditor ? "/api/control/monitor-groups" : "");
-  const [targetScopeType, setTargetScopeType] = useState("TARGETS");
-  const [monitorScopeType, setMonitorScopeType] = useState("MONITOR");
-  const [probeType, setProbeType] = useState("TCP_PORT");
-  const [enabled, setEnabled] = useState(true);
-  const resourceState = healthPageResourceState({
-    checks,
-    targets,
-    targetGroups,
-    monitors,
-    monitorGroups,
-    includeEditorDependencies: canUseEditor,
-  });
+  const [drawer, setDrawer] = useState<{ mode: DrawerMode; check?: HealthCheck } | null>(null);
+  const [deleteRequest, setDeleteRequest] = useState<HealthCheck | null>(null);
+  const showActions = canRead || canUseEditor || canManage;
+  const resourceState = healthPageResourceState({ checks, targets, targetGroups, monitors, monitorGroups, includeEditorDependencies: canUseEditor });
 
   async function refreshAll() {
     await Promise.all([
@@ -207,33 +205,6 @@ export function HealthChecksPage() {
       canUseEditor ? monitors.refresh() : Promise.resolve(),
       canUseEditor ? monitorGroups.refresh() : Promise.resolve(),
     ]);
-  }
-
-  async function createCheck(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    try {
-      const configText = String(form.get("config") ?? "{}").trim() || "{}";
-      await controlPost<HealthCheck>("/api/control/health-checks", {
-        name: String(form.get("name") ?? ""),
-        probe_type: probeType,
-        interval_seconds: Number(form.get("interval_seconds") ?? 30),
-        timeout_seconds: Number(form.get("timeout_seconds") ?? 5),
-        enabled,
-        target_scope: targetScopeType === "TARGETS"
-          ? { type: "TARGETS", target_ids: [String(form.get("target_id") ?? "")].filter(Boolean) }
-          : { type: "TARGET_GROUP", target_group_id: String(form.get("target_group_id") ?? "") },
-        monitor_scope: monitorScopeType === "MONITOR"
-          ? { type: "MONITOR", monitor_id: String(form.get("monitor_id") ?? "") }
-          : { type: "MONITOR_GROUP", monitor_group_id: String(form.get("monitor_group_id") ?? "") },
-        config: JSON.parse(configText),
-      });
-      event.currentTarget.reset();
-      toast.success(t("health.created"));
-      await checks.refresh();
-    } catch (error) {
-      toast.error(localizeControlError(error, locale));
-    }
   }
 
   async function deleteCheck(check: HealthCheck) {
@@ -252,40 +223,33 @@ export function HealthChecksPage() {
         <SummaryCard icon={<HeartPulseIcon />} label={t("health.checks")} value={checks.data.length} />
         <SummaryCard icon={<HeartPulseIcon />} label={t("common.enabled")} value={checks.data.filter((check) => check.enabled).length} />
       </SummaryGrid>
-      {canManage && canUseEditor ? (
-        <Card>
-          <CardHeader><CardTitle>{t("health.create")}</CardTitle></CardHeader>
-          <CardContent>
-            <form className="grid gap-4 lg:grid-cols-2" onSubmit={createCheck}>
-              <Field><FieldLabel htmlFor="health-name">{t("field.name")}</FieldLabel><Input id="health-name" name="name" required /></Field>
-              <EnumSelect label={t("health.probeType")} onValueChange={setProbeType} options={[{ value: "TCP_PORT", label: "TCP_PORT" }, { value: "HTTP", label: "HTTP" }, { value: "ICMP", label: "ICMP" }]} value={probeType} />
-              <Field><FieldLabel htmlFor="health-interval">{t("health.interval")}</FieldLabel><Input defaultValue="30" id="health-interval" min="1" name="interval_seconds" required type="number" /></Field>
-              <Field><FieldLabel htmlFor="health-timeout">{t("health.timeout")}</FieldLabel><Input defaultValue="5" id="health-timeout" min="1" name="timeout_seconds" required type="number" /></Field>
-              <EnumSelect label={t("health.targetScope")} onValueChange={setTargetScopeType} options={[{ value: "TARGETS", label: t("targets.targets") }, { value: "TARGET_GROUP", label: t("targets.targetGroup") }]} value={targetScopeType} />
-              {targetScopeType === "TARGETS" ? <SelectField label={t("field.target_id")} name="target_id" options={targets.data.map((target) => ({ value: target.id, label: `${target.name} (${target.host}:${target.port})` }))} /> : <SelectField label={t("field.target_group_id")} name="target_group_id" options={targetGroups.data.map((group) => ({ value: group.id, label: group.name }))} />}
-              <EnumSelect label={t("health.monitorScope")} onValueChange={setMonitorScopeType} options={[{ value: "MONITOR", label: t("monitors.monitor") }, { value: "MONITOR_GROUP", label: t("monitors.group") }]} value={monitorScopeType} />
-              {monitorScopeType === "MONITOR" ? <SelectField label={t("field.monitor_id")} name="monitor_id" options={monitors.data.map((monitor) => ({ value: monitor.id, label: monitor.name }))} /> : <SelectField label={t("field.monitor_group_id")} name="monitor_group_id" options={monitorGroups.data.map((group) => ({ value: group.id, label: group.name }))} />}
-              <Field className="lg:col-span-2"><FieldLabel htmlFor="health-config">{t("health.config")}</FieldLabel><Textarea defaultValue="{}" id="health-config" name="config" /></Field>
-              <Field orientation="horizontal"><Switch checked={enabled} onCheckedChange={setEnabled} /> <FieldLabel>{t("common.enabled")}</FieldLabel></Field>
-              <Button className="lg:col-span-2" type="submit"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button>
-            </form>
-          </CardContent>
-        </Card>
-      ) : null}
       <Card>
-        <CardHeader><CardTitle>{t("health.checks")}</CardTitle><CardAction><Button onClick={refreshAll} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button></CardAction></CardHeader>
+        <CardHeader>
+          <CardTitle>{t("health.checks")}</CardTitle>
+          <CardAction className="flex gap-2">
+            {canManage && canUseEditor ? <Button onClick={() => setDrawer({ mode: "create" })} size="sm" type="button"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button> : null}
+            <Button onClick={refreshAll} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button>
+          </CardAction>
+        </CardHeader>
         <CardContent>
           <DataState loading={resourceState.loading} error={resourceState.error}>
             <Table>
-              <TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("health.probeType")}</TableHead><TableHead>{t("targets.targets")}</TableHead><TableHead>{t("common.enabled")}</TableHead>{canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
+              <TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("health.probeType")}</TableHead><TableHead>{t("targets.targets")}</TableHead><TableHead>{t("health.latestResult")}</TableHead><TableHead>{t("common.enabled")}</TableHead>{showActions ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
               <TableBody>
                 {checks.data.map((check) => (
                   <TableRow key={check.id}>
                     <TableCell>{check.name}</TableCell>
                     <TableCell>{check.probe_type}</TableCell>
-                    <TableCell>{check.targets.map((target) => `${target.target_name} (${target.target_host}:${target.target_port})`).join(", ")}</TableCell>
+                    <TableCell>{formatHealthCheckTargets(check.targets, targetGroups.data, check.target_scope)}</TableCell>
+                    <TableCell><LatestHealthSummary check={check} locale={locale} /></TableCell>
                     <TableCell><StatusBadge value={check.enabled ? "ENABLED" : "DISABLED"} /></TableCell>
-                    {canManage ? <TableCell><Button onClick={() => deleteCheck(check)} size="sm" type="button" variant="outline"><Trash2Icon data-icon="inline-start" />{t("common.delete")}</Button></TableCell> : null}
+                    {showActions ? (
+                      <TableCell className="flex gap-2">
+                        {canRead ? <Button onClick={() => setDrawer({ mode: "detail", check })} size="icon-sm" type="button" variant="outline"><EyeIcon /></Button> : null}
+                        {canUseEditor ? <Button onClick={() => setDrawer({ mode: "edit", check })} size="icon-sm" type="button" variant="outline"><Edit3Icon /></Button> : null}
+                        {canManage ? <Button onClick={() => setDeleteRequest(check)} size="icon-sm" type="button" variant="outline"><Trash2Icon /></Button> : null}
+                      </TableCell>
+                    ) : null}
                   </TableRow>
                 ))}
               </TableBody>
@@ -293,150 +257,340 @@ export function HealthChecksPage() {
           </DataState>
         </CardContent>
       </Card>
+      <HealthCheckCreateDrawer checks={checks.data} targets={targets.data} targetGroups={targetGroups.data} monitors={monitors.data} monitorGroups={monitorGroups.data} open={drawer?.mode === "create"} onOpenChange={(open) => !open && setDrawer(null)} onSaved={checks.refresh} />
+      <HealthCheckEditDrawer check={drawer?.mode === "edit" ? drawer.check : undefined} targets={targets.data} targetGroups={targetGroups.data} monitors={monitors.data} monitorGroups={monitorGroups.data} onOpenChange={(open) => !open && setDrawer(null)} onSaved={checks.refresh} />
+      <HealthCheckDetailDrawer check={drawer?.mode === "detail" ? drawer.check : undefined} onOpenChange={(open) => !open && setDrawer(null)} />
+      <ConfirmDeleteDialog
+        label={deleteRequest?.name ?? ""}
+        open={Boolean(deleteRequest)}
+        onConfirm={async () => {
+          if (deleteRequest) await deleteCheck(deleteRequest);
+          setDeleteRequest(null);
+        }}
+        onOpenChange={(open) => !open && setDeleteRequest(null)}
+      />
     </PageStack>
   );
 }
 
-export function DNSPage() {
+function MonitorGroupCreateDrawer({ open, onOpenChange, onSaved }: { open: boolean; onOpenChange: (open: boolean) => void; onSaved: () => Promise<void> }) {
   const { locale, t } = useI18n();
-  const { session } = useConsoleSession();
-  const canManage = hasPermission(session, "dns.manage");
-  const canSelectHealthCheck = canUseDNSHealthSelector(session);
-  const credentials = useControlList<DNSCredential>("/api/control/dns/credentials");
-  const records = useControlList<DNSRecord>("/api/control/dns/records");
-  const checks = useControlList<HealthCheck>(canSelectHealthCheck ? "/api/control/health-checks" : "");
-  const [eventType, setEventType] = useState("DNS_FAILOVER");
-  const resourceState = dnsPageResourceState({
-    credentials,
-    records,
-    healthChecks: checks,
-    includeHealthChecks: canSelectHealthCheck,
-  });
-
-  async function refreshAll() {
-    await Promise.all([credentials.refresh(), records.refresh(), canSelectHealthCheck ? checks.refresh() : Promise.resolve()]);
-  }
-
-  async function createCredential(event: FormEvent<HTMLFormElement>) {
+  const [saving, setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setSaving(true);
     try {
-      await controlPost<DNSCredential>("/api/control/dns/credentials", { name: String(form.get("name") ?? ""), provider: "CLOUDFLARE", secret: String(form.get("secret") ?? "") });
-      event.currentTarget.reset();
-      toast.success(t("dns.credentialCreated"));
-      await credentials.refresh();
+      await controlPost<MonitorGroup>("/api/control/monitor-groups", { name: String(form.get("name") ?? ""), description: String(form.get("description") ?? "") });
+      formElement.reset();
+      toast.success(t("monitors.groupCreated"));
+      await onSaved();
+      onOpenChange(false);
     } catch (error) {
       toast.error(localizeControlError(error, locale));
+    } finally {
+      setSaving(false);
     }
   }
+  return <MonitorGroupDrawerShell title={t("monitors.createGroup")} open={open} onOpenChange={onOpenChange}><MonitorGroupForm saving={saving} onSubmit={submit} /></MonitorGroupDrawerShell>;
+}
 
-  async function createRecord(event: FormEvent<HTMLFormElement>) {
+function MonitorGroupEditDrawer({ group, onOpenChange, onSaved }: { group?: MonitorGroup; onOpenChange: (open: boolean) => void; onSaved: () => Promise<void> }) {
+  const { locale, t } = useI18n();
+  const [saving, setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    if (!group) return;
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setSaving(true);
     try {
-      await controlPost<DNSRecord>("/api/control/dns/records", {
-        dns_credential_id: String(form.get("dns_credential_id") ?? ""),
-        zone: String(form.get("zone") ?? ""),
-        record_name: String(form.get("record_name") ?? ""),
-        record_type: String(form.get("record_type") ?? "A"),
-        desired_values: String(form.get("desired_values") ?? "").split(/\s*,\s*/).filter(Boolean),
-        health_check_id: String(form.get("health_check_id") ?? ""),
-        event_type: eventType,
-        failover_values: String(form.get("failover_values") ?? "").split(/\s*,\s*/).filter(Boolean),
-      });
-      event.currentTarget.reset();
-      toast.success(t("dns.recordCreated"));
-      await records.refresh();
+      await controlPatch<MonitorGroup>(`/api/control/monitor-groups/${group.id}`, { name: String(form.get("name") ?? ""), description: String(form.get("description") ?? "") });
+      toast.success(t("common.saved"));
+      await onSaved();
+      onOpenChange(false);
     } catch (error) {
       toast.error(localizeControlError(error, locale));
+    } finally {
+      setSaving(false);
     }
   }
+  return <MonitorGroupDrawerShell title={t("common.edit")} open={Boolean(group)} onOpenChange={onOpenChange}><MonitorGroupForm group={group} saving={saving} onSubmit={submit} /></MonitorGroupDrawerShell>;
+}
 
-  async function deleteRecord(record: DNSRecord) {
-    try {
-      await controlDelete<{ deleted: boolean }>(`/api/control/dns/records/${record.id}`);
-      toast.success(t("dns.recordDeleted"));
-      await records.refresh();
-    } catch (error) {
-      toast.error(localizeControlError(error, locale));
-    }
-  }
-
+function MonitorGroupDetailDrawer({ group, monitors, onOpenChange }: { group?: MonitorGroup; monitors: Monitor[]; onOpenChange: (open: boolean) => void }) {
+  const { locale, t } = useI18n();
+  const members = monitors.filter((monitor) => group && monitor.group_ids.includes(group.id));
   return (
-    <PageStack>
-      <SummaryGrid>
-        <SummaryCard icon={<GlobeIcon />} label={t("dns.credentials")} value={credentials.data.length} />
-        <SummaryCard icon={<GlobeIcon />} label={t("dns.records")} value={records.data.length} />
-      </SummaryGrid>
-      {canManage ? (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card>
-            <CardHeader><CardTitle>{t("dns.createCredential")}</CardTitle></CardHeader>
-            <CardContent>
-              <form className="grid gap-4" onSubmit={createCredential}>
-                <Field><FieldLabel htmlFor="dns-credential-name">{t("field.name")}</FieldLabel><Input id="dns-credential-name" name="name" required /></Field>
-                <Field><FieldLabel htmlFor="dns-secret">Cloudflare token</FieldLabel><Input id="dns-secret" name="secret" required type="password" /></Field>
-                <Button type="submit"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button>
-              </form>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader><CardTitle>{t("dns.createRecord")}</CardTitle></CardHeader>
-            <CardContent>
-              <form className="grid gap-4" onSubmit={createRecord}>
-                <SelectField label={t("field.dns_credential_id")} name="dns_credential_id" options={credentials.data.map((credential) => ({ value: credential.id, label: credential.name }))} />
-                <Field><FieldLabel htmlFor="dns-zone">{t("dns.zone")}</FieldLabel><Input id="dns-zone" name="zone" required /></Field>
-                <Field><FieldLabel htmlFor="dns-record-name">{t("dns.record")}</FieldLabel><Input id="dns-record-name" name="record_name" required /></Field>
-                <Field><FieldLabel htmlFor="dns-record-type">{t("dns.type")}</FieldLabel><Input defaultValue="A" id="dns-record-type" name="record_type" required /></Field>
-                <Field><FieldLabel htmlFor="dns-values">{t("dns.values")}</FieldLabel><Input id="dns-values" name="desired_values" placeholder="192.0.2.1, 192.0.2.2" required /></Field>
-                {canSelectHealthCheck ? (
-                  <>
-                    <OptionalSelectField label={t("field.health_check_id")} name="health_check_id" options={checks.data.map((check) => ({ value: check.id, label: check.name }))} />
-                    <EnumSelect label={t("dns.eventType")} onValueChange={setEventType} options={[{ value: "DNS_FAILOVER", label: "DNS_FAILOVER" }, { value: "DNS_DELETE_OFFLINE", label: "DNS_DELETE_OFFLINE" }, { value: "DNS_DELETE_ALL", label: "DNS_DELETE_ALL" }, { value: "DNS_RESTORE", label: "DNS_RESTORE" }]} value={eventType} />
-                    <Field><FieldLabel htmlFor="dns-failover-values">{t("dns.failoverValues")}</FieldLabel><Input id="dns-failover-values" name="failover_values" placeholder="198.51.100.10" /></Field>
-                  </>
-                ) : null}
-                <Button disabled={credentials.data.length === 0} type="submit"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button>
-              </form>
-            </CardContent>
-          </Card>
+    <MonitorGroupDrawerShell title={group?.name ?? t("monitors.group")} open={Boolean(group)} onOpenChange={onOpenChange}>
+      <div className="grid gap-3 px-4 text-sm">
+        <DetailRow label={t("field.description")} value={group?.description || t("common.none")} />
+        <div className="grid gap-2">
+          {members.map((monitor) => <DetailRow key={monitor.id} label={monitor.name} value={`${monitor.status} · ${shortDate(monitor.last_seen_at, locale)}`} />)}
+          {members.length === 0 ? <p className="text-muted-foreground">{t("common.none")}</p> : null}
         </div>
-      ) : null}
-      <Card>
-        <CardHeader><CardTitle>{t("dns.records")}</CardTitle><CardAction><Button onClick={refreshAll} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button></CardAction></CardHeader>
-        <CardContent>
-          <DataState loading={resourceState.loading} error={resourceState.error}>
-            <Table>
-              <TableHeader><TableRow><TableHead>{t("dns.record")}</TableHead><TableHead>{t("dns.type")}</TableHead><TableHead>{t("dns.values")}</TableHead><TableHead>{t("dns.credential")}</TableHead>{canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
-              <TableBody>
-                {records.data.map((record) => (
-                  <TableRow key={record.id}>
-                    <TableCell>{record.record_name}</TableCell>
-                    <TableCell>{record.record_type}</TableCell>
-                    <TableCell>{record.desired_values.join(", ")}</TableCell>
-                    <TableCell>{credentials.data.find((credential) => credential.id === record.dns_credential_id)?.name ?? record.dns_credential_id}</TableCell>
-                    {canManage ? <TableCell><Button onClick={() => deleteRecord(record)} size="sm" type="button" variant="outline"><Trash2Icon data-icon="inline-start" />{t("common.delete")}</Button></TableCell> : null}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </DataState>
-        </CardContent>
-      </Card>
-    </PageStack>
+      </div>
+    </MonitorGroupDrawerShell>
   );
 }
 
-function SelectField({ label, name, options }: { label: string; name: string; options: ResourceOption[] }) {
+function MonitorCreateDrawer({ groups, open, onOpenChange, onSaved }: { groups: MonitorGroup[]; open: boolean; onOpenChange: (open: boolean) => void; onSaved: () => Promise<void> }) {
+  const { locale, t } = useI18n();
+  const [saving, setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setSaving(true);
+    try {
+      await controlPost<Monitor>("/api/control/monitors", { name: String(form.get("name") ?? ""), group_ids: form.getAll("group_id").map(String).filter(Boolean) });
+      formElement.reset();
+      toast.success(t("monitors.created"));
+      await onSaved();
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return <MonitorDrawerShell title={t("monitors.createMonitor")} open={open} onOpenChange={onOpenChange}><MonitorForm groups={groups} saving={saving} onSubmit={submit} /></MonitorDrawerShell>;
+}
+
+function MonitorEditDrawer({ groups, monitor, onOpenChange, onSaved }: { groups: MonitorGroup[]; monitor?: Monitor; onOpenChange: (open: boolean) => void; onSaved: () => Promise<void> }) {
+  const { locale, t } = useI18n();
+  const [saving, setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!monitor) return;
+    const form = new FormData(event.currentTarget);
+    setSaving(true);
+    try {
+      await controlPatch<Monitor>(`/api/control/monitors/${monitor.id}`, { name: String(form.get("name") ?? ""), group_ids: form.getAll("group_id").map(String).filter(Boolean) });
+      toast.success(t("common.saved"));
+      await onSaved();
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return <MonitorDrawerShell title={t("common.edit")} open={Boolean(monitor)} onOpenChange={onOpenChange}><MonitorForm groups={groups} monitor={monitor} saving={saving} onSubmit={submit} /></MonitorDrawerShell>;
+}
+
+function MonitorDetailDrawer({ groups, monitor, onOpenChange }: { groups: MonitorGroup[]; monitor?: Monitor; onOpenChange: (open: boolean) => void }) {
+  const { locale, t } = useI18n();
+  return (
+    <MonitorDrawerShell title={monitor?.name ?? t("monitors.monitor")} open={Boolean(monitor)} onOpenChange={onOpenChange}>
+      <div className="grid gap-3 px-4 text-sm">
+        <DetailRow label={t("field.status")} value={monitor?.status ?? ""} />
+        <DetailRow label={t("monitors.groups")} value={monitor?.group_ids.map((id) => groups.find((group) => group.id === id)?.name ?? id).join(", ") || t("common.none")} />
+        <DetailRow label={t("overview.lastSeen")} value={shortDate(monitor?.last_seen_at, locale)} />
+        <DetailRow label={t("nodes.config")} value={`${monitor?.applied_config_version ?? 0}/${monitor?.desired_config_version ?? 0}`} />
+      </div>
+    </MonitorDrawerShell>
+  );
+}
+
+function HealthCheckCreateDrawer(props: HealthCheckDrawerProps & { checks: HealthCheck[]; open: boolean }) {
+  const { locale, t } = useI18n();
+  const [saving, setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    setSaving(true);
+    try {
+      await controlPost<HealthCheck>("/api/control/health-checks", healthCheckPayloadFromForm(formElement));
+      formElement.reset();
+      toast.success(t("health.created"));
+      await props.onSaved();
+      props.onOpenChange(false);
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return <HealthDrawerShell title={t("health.create")} open={props.open} onOpenChange={props.onOpenChange}><HealthCheckForm key="create" {...props} saving={saving} onSubmit={submit} /></HealthDrawerShell>;
+}
+
+function HealthCheckEditDrawer(props: HealthCheckDrawerProps & { check?: HealthCheck }) {
+  const { locale, t } = useI18n();
+  const [saving, setSaving] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!props.check) return;
+    const formElement = event.currentTarget;
+    setSaving(true);
+    try {
+      await controlPatch<HealthCheck>(`/api/control/health-checks/${props.check.id}`, healthCheckPayloadFromForm(formElement));
+      toast.success(t("common.saved"));
+      await props.onSaved();
+      props.onOpenChange(false);
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return <HealthDrawerShell title={t("common.edit")} open={Boolean(props.check)} onOpenChange={props.onOpenChange}><HealthCheckForm key={props.check?.id ?? "empty"} {...props} saving={saving} onSubmit={submit} /></HealthDrawerShell>;
+}
+
+function HealthCheckDetailDrawer({ check, onOpenChange }: { check?: HealthCheck; onOpenChange: (open: boolean) => void }) {
+  const { locale, t } = useI18n();
+  const [results, setResults] = useState<HealthResult[]>([]);
+  useEffect(() => {
+    let active = true;
+    setResults([]);
+    if (!check) return () => { active = false; };
+    const checkID = check.id;
+    controlGet<HealthResult[]>(`/api/control/health-checks/${checkID}/results`).then((next) => {
+      if (active) setResults(next);
+    }).catch(() => {
+      if (active) setResults([]);
+    });
+    return () => { active = false; };
+  }, [check?.id]);
+  return (
+    <HealthDrawerShell title={check?.name ?? t("health.checks")} open={Boolean(check)} onOpenChange={onOpenChange}>
+      <div className="grid gap-4 px-4 text-sm">
+        <DetailRow label={t("health.probeType")} value={check?.probe_type ?? ""} />
+        <DetailRow label={t("common.enabled")} value={check?.enabled ? t("common.enabled") : t("common.disabled")} />
+        <div className="grid gap-2">
+          <p className="font-medium">{t("health.latestResult")}</p>
+          {(results.length ? results : check?.latest_results ?? []).slice(0, 12).map((result) => (
+            <div className="rounded-md border p-2" key={result.id}>
+              <div className="flex items-center justify-between"><StatusBadge value={result.status} /><span className="text-muted-foreground">{shortDate(result.observed_at, locale)}</span></div>
+              <p className="text-muted-foreground">{formatHealthLatencyMs(result.latency_ms, t("common.none"))}{result.error_message ? ` · ${result.error_message}` : ""}</p>
+            </div>
+          ))}
+          {(results.length === 0 && (check?.latest_results?.length ?? 0) === 0) ? <p className="text-muted-foreground">{t("health.notRun")}</p> : null}
+        </div>
+      </div>
+    </HealthDrawerShell>
+  );
+}
+
+function MonitorGroupForm({ group, saving, onSubmit }: { group?: MonitorGroup; saving: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
+  const { t } = useI18n();
+  return (
+    <form className="grid gap-4 px-4" onSubmit={onSubmit}>
+      <FieldGroup>
+        <Field><FieldLabel htmlFor="monitor-group-name">{t("field.name")}</FieldLabel><Input defaultValue={group?.name ?? ""} id="monitor-group-name" name="name" required /></Field>
+        <Field><FieldLabel htmlFor="monitor-group-description">{t("field.description")}</FieldLabel><Input defaultValue={group?.description ?? ""} id="monitor-group-description" name="description" /></Field>
+      </FieldGroup>
+      <Button disabled={saving} type="submit">{t("common.save")}</Button>
+    </form>
+  );
+}
+function MonitorForm({ groups, monitor, saving, onSubmit }: { groups: MonitorGroup[]; monitor?: Monitor; saving: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
+  const { t } = useI18n();
+  return (
+    <form className="grid gap-4 px-4" onSubmit={onSubmit}>
+      <Field><FieldLabel htmlFor="monitor-name">{t("field.name")}</FieldLabel><Input defaultValue={monitor?.name ?? ""} id="monitor-name" name="name" required /></Field>
+      <MultiSelectField defaultValues={monitor?.group_ids ?? []} label={t("monitors.groups")} name="group_id" options={groups.map((group) => ({ value: group.id, label: group.name }))} />
+      <Button disabled={saving || (!monitor && groups.length === 0)} type="submit">{t("common.save")}</Button>
+    </form>
+  );
+}
+type HealthCheckDrawerProps = {
+  targets: Target[];
+  targetGroups: TargetGroup[];
+  monitors: Monitor[];
+  monitorGroups: MonitorGroup[];
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => Promise<void>;
+};
+function HealthCheckForm({ check, targets, targetGroups, monitors, monitorGroups, saving, onSubmit }: HealthCheckDrawerProps & { check?: HealthCheck; saving: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
+  const { t } = useI18n();
+  const [targetScopeType, setTargetScopeType] = useState(check?.target_scope?.type === "TARGET_GROUP" ? "TARGET_GROUP" : "TARGETS");
+  const [monitorScopeType, setMonitorScopeType] = useState(check?.monitor_scopes[0]?.scope_type === "MONITOR_GROUP" ? "MONITOR_GROUP" : "MONITOR");
+  const [probeType, setProbeType] = useState(check?.probe_type ?? "TCP_PORT");
+  const [enabled, setEnabled] = useState(check?.enabled ?? true);
+  const directTargets = check?.targets.filter((target) => target.scope_type === "TARGET") ?? [];
+  const directTargetIDs = directTargets.map((target) => target.target_id).filter(Boolean);
+  const defaultTargetIDs = directTargetIDs.length > 0 ? directTargetIDs : check?.target_scope?.target_ids ?? [];
+  return (
+    <form className="grid gap-4 px-4" onSubmit={onSubmit}>
+      <Field><FieldLabel htmlFor="health-name">{t("field.name")}</FieldLabel><Input defaultValue={check?.name ?? ""} id="health-name" name="name" required /></Field>
+      <EnumSelect label={t("health.probeType")} onValueChange={setProbeType} options={[{ value: "TCP_PORT", label: "TCP_PORT" }, { value: "HTTP", label: "HTTP" }, { value: "ICMP", label: "ICMP" }]} value={probeType} />
+      <input name="probe_type" type="hidden" value={probeType} />
+      <Field><FieldLabel htmlFor="health-interval">{t("health.interval")}</FieldLabel><Input defaultValue={String(check?.interval_seconds ?? 30)} id="health-interval" min="1" name="interval_seconds" required type="number" /></Field>
+      <Field><FieldLabel htmlFor="health-timeout">{t("health.timeout")}</FieldLabel><Input defaultValue={String(check?.timeout_seconds ?? 5)} id="health-timeout" min="1" name="timeout_seconds" required type="number" /></Field>
+      <EnumSelect label={t("health.targetScope")} onValueChange={setTargetScopeType} options={[{ value: "TARGETS", label: t("targets.targets") }, { value: "TARGET_GROUP", label: t("targets.targetGroup") }]} value={targetScopeType} />
+      <input name="target_scope_type" type="hidden" value={targetScopeType} />
+      {targetScopeType === "TARGETS" ? (
+        <MultiSelectField defaultValues={defaultTargetIDs} label={t("targets.targets")} name="target_id" options={targets.map((target) => ({ value: target.id, label: `${target.name} (${target.host}:${target.port})` }))} />
+      ) : <SelectField defaultValue={check?.target_scope?.target_group_id ?? check?.targets.find((target) => target.target_group_id)?.target_group_id ?? ""} label={t("field.target_group_id")} name="target_group_id" options={targetGroups.map((group) => ({ value: group.id, label: group.name }))} />}
+      <EnumSelect label={t("health.monitorScope")} onValueChange={setMonitorScopeType} options={[{ value: "MONITOR", label: t("monitors.monitor") }, { value: "MONITOR_GROUP", label: t("monitors.group") }]} value={monitorScopeType} />
+      <input name="monitor_scope_type" type="hidden" value={monitorScopeType} />
+      {monitorScopeType === "MONITOR" ? <SelectField defaultValue={check?.monitor_scopes[0]?.monitor_id ?? ""} label={t("field.monitor_id")} name="monitor_id" options={monitors.map((monitor) => ({ value: monitor.id, label: monitor.name }))} /> : <SelectField defaultValue={check?.monitor_scopes[0]?.monitor_group_id ?? ""} label={t("field.monitor_group_id")} name="monitor_group_id" options={monitorGroups.map((group) => ({ value: group.id, label: group.name }))} />}
+      <Field><FieldLabel htmlFor="health-config">{t("health.config")}</FieldLabel><Textarea defaultValue={JSON.stringify(check?.config ?? {}, null, 2)} id="health-config" name="config" /></Field>
+      <Field orientation="horizontal"><Switch checked={enabled} onCheckedChange={setEnabled} /> <FieldLabel>{t("common.enabled")}</FieldLabel></Field>
+      <input name="enabled" type="hidden" value={enabled ? "true" : "false"} />
+      <Button disabled={saving} type="submit">{t("common.save")}</Button>
+    </form>
+  );
+}
+function LatestHealthSummary({ check, locale }: { check: HealthCheck; locale: Parameters<typeof shortDate>[1] }) {
+  const { t } = useI18n();
+  const results = check.latest_results ?? [];
+  const latest = summarizeHealthResults(results);
+  if (!latest) {
+    return <span className="text-muted-foreground">{t("health.notRun")}</span>;
+  }
+  const statusLabel = results.length > 1 ? `${latest.status} ${countHealthResultsByStatus(results, latest.status)}/${results.length}` : latest.status;
+  return <span>{statusLabel} · {formatHealthLatencyMs(latest.latency_ms, t("common.none"))} · {shortDate(latest.observed_at, locale)}</span>;
+}
+
+function MonitorGroupDrawerShell({ title, open, onOpenChange, children }: DrawerShellProps) {
+  return <BaseDrawer title={title} description="" open={open} onOpenChange={onOpenChange}>{children}</BaseDrawer>;
+}
+
+function MonitorDrawerShell({ title, open, onOpenChange, children }: DrawerShellProps) {
+  return <BaseDrawer title={title} description="" open={open} onOpenChange={onOpenChange}>{children}</BaseDrawer>;
+}
+
+function HealthDrawerShell({ title, open, onOpenChange, children }: DrawerShellProps) {
+  return <BaseDrawer title={title} description="" open={open} onOpenChange={onOpenChange}>{children}</BaseDrawer>;
+}
+
+
+type DrawerShellProps = {
+  title: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  children: ReactNode;
+};
+
+function BaseDrawer({ title, description, open, onOpenChange, children }: DrawerShellProps & { description: string }) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="overflow-y-auto sm:max-w-lg">
+        <SheetHeader>
+          <SheetTitle>{title}</SheetTitle>
+          {description ? <SheetDescription>{description}</SheetDescription> : null}
+        </SheetHeader>
+        {children}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return <div className="grid gap-1"><span className="text-muted-foreground">{label}</span><span className="break-words">{value}</span></div>;
+}
+
+function SelectField({ label, name, options, defaultValue, value, onChange }: { label: string; name: string; options: ResourceOption[]; defaultValue?: string; value?: string; onChange?: (value: string) => void }) {
   const { t } = useI18n();
   return (
     <Field>
       <FieldLabel htmlFor={name}>{label}</FieldLabel>
-      <select className="h-9 rounded-md border bg-background px-3 text-sm" id={name} name={name} required>
+      <select className="h-9 rounded-md border bg-background px-3 text-sm" defaultValue={value === undefined ? defaultValue : undefined} id={name} name={name} onChange={(event) => onChange?.(event.currentTarget.value)} required value={value}>
         <option value="">{t("resource.selectResource")}</option>
-        {options.map((option) => (
-          <option disabled={option.disabled} key={option.value} value={option.value}>{option.label}</option>
-        ))}
+        {options.map((option) => <option disabled={option.disabled} key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     </Field>
   );
@@ -449,10 +603,43 @@ function OptionalSelectField({ label, name, options }: { label: string; name: st
       <FieldLabel htmlFor={name}>{label}</FieldLabel>
       <select className="h-9 rounded-md border bg-background px-3 text-sm" id={name} name={name}>
         <option value="">{t("common.none")}</option>
-        {options.map((option) => (
-          <option disabled={option.disabled} key={option.value} value={option.value}>{option.label}</option>
-        ))}
+        {options.map((option) => <option disabled={option.disabled} key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     </Field>
   );
+}
+
+function healthCheckPayloadFromForm(formElement: HTMLFormElement) {
+  const form = new FormData(formElement);
+  const targetScopeType = String(form.get("target_scope_type") ?? "TARGETS");
+  const monitorScopeType = String(form.get("monitor_scope_type") ?? "MONITOR");
+  return {
+    name: String(form.get("name") ?? ""),
+    probe_type: String(form.get("probe_type") ?? "TCP_PORT"),
+    interval_seconds: Number(form.get("interval_seconds") ?? 30),
+    timeout_seconds: Number(form.get("timeout_seconds") ?? 5),
+    enabled: String(form.get("enabled") ?? "true") === "true",
+    target_scope: targetScopeType === "TARGET_GROUP"
+      ? { type: "TARGET_GROUP", target_group_id: String(form.get("target_group_id") ?? "") }
+      : { type: "TARGETS", target_ids: form.getAll("target_id").map(String).filter(Boolean) },
+    monitor_scope: monitorScopeType === "MONITOR_GROUP"
+      ? { type: "MONITOR_GROUP", monitor_group_id: String(form.get("monitor_group_id") ?? "") }
+      : { type: "MONITOR", monitor_id: String(form.get("monitor_id") ?? "") },
+    config: parseJSONFormField(form, "config", {}),
+  };
+}
+
+function parseJSONFormField(form: FormData, field: string, fallback: Record<string, unknown>) {
+  const raw = String(form.get(field) ?? "").trim();
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function dnsDeleteLabel(request: { kind: "group"; item: MonitorGroup } | { kind: "monitor"; item: Monitor }) {
+  return request.item.name;
 }

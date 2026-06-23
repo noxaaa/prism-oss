@@ -72,6 +72,22 @@ func (service *ControlService) ensureCanManageNodeGroups(identity InternalIdenti
 	return nil
 }
 
+func (service *ControlService) ensureCanUseNodeGroups(identity InternalIdentity, groupIDs []string) error {
+	allowed := service.allowedNodeGroupIDs(identity, string(domain.AccessLevelUse))
+	if allowed["*"] {
+		return nil
+	}
+	if len(groupIDs) == 0 {
+		return ErrForbidden
+	}
+	for _, groupID := range groupIDs {
+		if !allowed[groupID] {
+			return ErrForbidden
+		}
+	}
+	return nil
+}
+
 func stringSliceHas(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {

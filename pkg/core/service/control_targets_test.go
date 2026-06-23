@@ -546,6 +546,9 @@ func (healthChecks targetGroupServiceTestHealthRepository) ListHealthResults(con
 func (healthChecks targetGroupServiceTestHealthRepository) ListLatestHealthResultsByCheck(context.Context, string, string) ([]repo.HealthResultRecord, error) {
 	return nil, nil
 }
+func (healthChecks targetGroupServiceTestHealthRepository) ListLatestHealthResultsByChecks(context.Context, string, []string) (map[string][]repo.HealthResultRecord, error) {
+	return nil, nil
+}
 func (healthChecks targetGroupServiceTestHealthRepository) RecordHealthResults(context.Context, string, []repo.HealthResultRecord) error {
 	return nil
 }
@@ -553,9 +556,6 @@ func (healthChecks targetGroupServiceTestHealthRepository) ListHealthEvaluationR
 	return nil, nil
 }
 func (healthChecks targetGroupServiceTestHealthRepository) CreateHealthEvaluationRule(context.Context, repo.HealthEvaluationRuleRecord, []repo.HealthEventRecord) error {
-	return nil
-}
-func (healthChecks targetGroupServiceTestHealthRepository) DeleteHealthEvaluationRulesForDNSRecord(context.Context, string, string, string) error {
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package arch
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,18 +34,20 @@ func TestOSSMigrationsIncludeMonitorHealthAndDNSTables(t *testing.T) {
 		"'WEBHOOK'",
 		"'EMAIL'",
 		"CREATE TABLE dns_credentials",
-		"CREATE TABLE dns_records",
-		"CREATE UNIQUE INDEX uniq_dns_records_active_name",
-		"ON dns_records(organization_id, zone, record_name, record_type)",
-		"WHERE deleted_at IS NULL",
 		"validate_monitor_agent_auth",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("OSS core migration must include monitor/health/DNS foundation; missing %q", required)
 		}
 	}
-	if strings.Contains(source, "commercial_health") {
-		t.Fatalf("OSS core migration must not reference commercial health capability names")
+	for _, forbidden := range []string{
+		"commercial_health",
+		"dns_record_id",
+		"failover_values",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("OSS core migration must not include commercial or legacy action config leakage; found %q", forbidden)
+		}
 	}
 }
 
@@ -139,35 +142,154 @@ func TestHealthCheckTargetsSupportEmptyTargetGroupBindings(t *testing.T) {
 	}
 }
 
-func TestDNSRecordUpdatePersistsAppliedProviderState(t *testing.T) {
+func TestLegacyDNSRecordsAreRemovedFromOSSCore(t *testing.T) {
 	root := repoRoot(t)
-	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "health_dns.go"))
-	updateIndex := strings.Index(source, "func (store *PostgresStore) UpdateDNSRecord(")
-	if updateIndex == -1 {
-		t.Fatalf("UpdateDNSRecord implementation not found")
-	}
-	lastAppliedValuesIndex := strings.Index(source[updateIndex:], "last_applied_values_json = ?::jsonb")
-	lastAppliedAtIndex := strings.Index(source[updateIndex:], "last_applied_at = NULLIF(?, '')::timestamptz")
-	if lastAppliedValuesIndex == -1 || lastAppliedAtIndex == -1 {
-		t.Fatalf("UpdateDNSRecord must persist last_applied_values_json and last_applied_at")
+	for _, relative := range []string{
+		"pkg/core/handler/control.go",
+		"pkg/core/handler/control_health_dns.go",
+		"pkg/core/service/control_health_dns.go",
+		"pkg/core/repo/health_dns.go",
+		"pkg/core/repo/repository.go",
+		"pkg/core/validator/control.go",
+	} {
+		source := readText(t, filepath.Join(root, filepath.FromSlash(relative)))
+		for _, forbidden := range []string{
+			"/dns/records",
+			"DNSRecordRequest",
+			"DNSRecordMutationInput",
+			"DNSRecordPayload",
+			"DNSRecordRecord",
+			"CreateDNSRecord",
+			"UpdateDNSRecord",
+			"DeleteDNSRecord",
+			"ListDNSRecords",
+		} {
+			if strings.Contains(source, forbidden) {
+				t.Fatalf("%s must not retain legacy DNS record API or storage code; found %q", relative, forbidden)
+			}
+		}
 	}
 }
 
-func TestDNSRecordWritesMapConstraintErrorsToConflicts(t *testing.T) {
+func TestLegacyDNSRecordsHaveForwardCleanupMigration(t *testing.T) {
 	root := repoRoot(t)
-	source := readText(t, filepath.Join(root, "pkg", "core", "repo", "health_dns.go"))
-	createIndex := strings.Index(source, "func (store *PostgresStore) CreateDNSRecord(")
-	updateIndex := strings.Index(source, "func (store *PostgresStore) UpdateDNSRecord(")
-	if createIndex == -1 || updateIndex == -1 {
-		t.Fatalf("DNS record write implementations not found")
+	source := readText(t, filepath.Join(root, "migrations", "core", "00009_dns_policy_post_release_constraint_repair.sql"))
+	for _, required := range []string{
+		"DROP TABLE IF EXISTS dns_records",
+		"event_type IN ('DNS_FAILOVER', 'DNS_DELETE_OFFLINE', 'DNS_DELETE_ALL', 'DNS_RESTORE')",
+		"ADD CONSTRAINT health_events_event_type_check",
+		"CHECK (event_type IN ('WEBHOOK', 'EMAIL'))",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("post-release DNS cleanup must live in a forward migration; missing %q", required)
+		}
 	}
-	createSource := source[createIndex:updateIndex]
-	updateSource := source[updateIndex:]
-	if !strings.Contains(createSource, "return mapWriteError(err)") {
-		t.Fatalf("CreateDNSRecord must map unique constraint failures to repo.ErrConflict")
+	for _, forbidden := range []string{
+		"event_type NOT IN ('WEBHOOK', 'EMAIL')",
+		"CHECK (event_type NOT IN ('DNS_FAILOVER', 'DNS_DELETE_OFFLINE', 'DNS_DELETE_ALL', 'DNS_RESTORE'))",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("post-release DNS cleanup must allow only supported health action executors; found %q", forbidden)
+		}
 	}
-	if !strings.Contains(updateSource, "return mapWriteError(err)") {
-		t.Fatalf("UpdateDNSRecord must map unique constraint failures to repo.ErrConflict")
+}
+
+func TestLegacyDNSRecordCleanupStateIsMigratedBeforeDrop(t *testing.T) {
+	root := repoRoot(t)
+	cleanup := readText(t, filepath.Join(root, "migrations", "core", "00007_remove_legacy_dns_records.sql"))
+	for _, required := range []string{
+		"provider_retirements_json",
+		"pending_retire_dns_credential_id",
+		"pending_retire_zone",
+		"pending_retire_record_name",
+		"pending_retire_record_type",
+		"pending_retire_values_json",
+		"pending_retire_at",
+		"provider_delete_pending_at",
+		"records.record_type = 'CNAME'",
+		"cname.record_type = 'CNAME'",
+		"dns_credentials retire_credentials",
+		"dns_credentials delete_credentials",
+		"jsonb_build_object(",
+		"'provider',",
+	} {
+		if !strings.Contains(cleanup, required) {
+			t.Fatalf("legacy DNS cleanup migration must preserve retryable provider cleanup state before dropping dns_records; missing %q", required)
+		}
+	}
+	dropIndex := strings.LastIndex(cleanup, "DROP TABLE IF EXISTS dns_records")
+	retirementIndex := strings.Index(cleanup, "provider_retirements_json")
+	if retirementIndex == -1 || dropIndex == -1 || retirementIndex > dropIndex {
+		t.Fatalf("legacy DNS cleanup state must be migrated before dropping dns_records")
+	}
+
+	repair := readText(t, filepath.Join(root, "migrations", "core", "00011_dns_policy_retryable_legacy_cleanup_repair.sql"))
+	for _, required := range []string{
+		"ADD COLUMN IF NOT EXISTS provider_retirements_json",
+		"to_regclass('dns_records')",
+		"pending_retire_dns_credential_id",
+		"provider_delete_pending_at",
+	} {
+		if !strings.Contains(repair, required) {
+			t.Fatalf("post-release DNS retryable cleanup repair migration must be present; missing %q", required)
+		}
+	}
+}
+
+func TestPostReleaseDNSCleanupDownDoesNotDropPublishedRetirementColumn(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "migrations", "core", "00010_dns_policy_retryable_cleanup_and_health_secrets.sql"))
+	downIndex := strings.Index(source, "-- +goose Down")
+	if downIndex == -1 {
+		t.Fatalf("00010 migration must include a down section")
+	}
+	down := source[downIndex:]
+	if strings.Contains(down, "provider_retirements_json") {
+		t.Fatalf("00010 down must not drop provider_retirements_json; the column belongs to the earlier published DNS policy cleanup migration")
+	}
+}
+
+func TestDNSCleanupMigrationsAllowOnlySupportedHealthActions(t *testing.T) {
+	root := repoRoot(t)
+	for _, migration := range []string{
+		"00007_remove_legacy_dns_records.sql",
+		"00008_dns_policy_post_release_repair.sql",
+		"00009_dns_policy_post_release_constraint_repair.sql",
+	} {
+		source := readText(t, filepath.Join(root, "migrations", "core", migration))
+		for _, forbidden := range []string{
+			"event_type NOT IN ('WEBHOOK', 'EMAIL')",
+			"CHECK (event_type NOT IN ('DNS_FAILOVER', 'DNS_DELETE_OFFLINE', 'DNS_DELETE_ALL', 'DNS_RESTORE'))",
+		} {
+			if strings.Contains(source, forbidden) {
+				t.Fatalf("%s must allow only supported health action executors; found %q", migration, forbidden)
+			}
+		}
+		if !strings.Contains(source, "CHECK (event_type IN ('WEBHOOK', 'EMAIL'))") {
+			t.Fatalf("%s must constrain health actions to supported executors", migration)
+		}
+		if !strings.Contains(source, "event_type IN ('DNS_FAILOVER', 'DNS_DELETE_OFFLINE', 'DNS_DELETE_ALL', 'DNS_RESTORE')") {
+			t.Fatalf("%s must only remove legacy DNS health actions", migration)
+		}
+	}
+}
+
+func TestDNSManagedRecordTypeCompatibilityIsSerialized(t *testing.T) {
+	root := repoRoot(t)
+	source := readText(t, filepath.Join(root, "migrations", "core", "00006_dns_policy.sql"))
+	functionIndex := strings.Index(source, "CREATE OR REPLACE FUNCTION enforce_dns_managed_record_type_compatibility()")
+	if functionIndex == -1 {
+		t.Fatalf("DNS managed record compatibility trigger function not found")
+	}
+	functionSource := source[functionIndex:]
+	for _, required := range []string{
+		"pg_advisory_xact_lock",
+		"NEW.organization_id::text",
+		"NEW.zone_id || ':' || lower(NEW.record_name)",
+	} {
+		if !strings.Contains(functionSource, required) {
+			t.Fatalf("DNS managed record compatibility checks must serialize same-name writes; missing %q", required)
+		}
 	}
 }
 
@@ -230,6 +352,21 @@ func TestHealthEvaluationUsesActionRegistryBoundary(t *testing.T) {
 	for _, required := range []string{"type HealthActionRegistry", "SupportedHealthActionTypes", "HealthActionTypes"} {
 		if !strings.Contains(executorSource, required) {
 			t.Fatalf("health action layer must expose an extension registry for future Webhook/Email executors; missing %q", required)
+		}
+	}
+	for _, relative := range []string{
+		"pkg/core/service/health_action_dns.go",
+		"pkg/core/service/control_health_dns.go",
+	} {
+		source := ""
+		path := filepath.Join(root, filepath.FromSlash(relative))
+		if _, err := os.Stat(path); err == nil {
+			source = readText(t, path)
+		}
+		for _, forbidden := range []string{"DNS_FAILOVER", "DNS_DELETE_OFFLINE", "DNS_DELETE_ALL", "DNS_RESTORE", "dns_record_id", "failover_values"} {
+			if strings.Contains(source, forbidden) {
+				t.Fatalf("health service must not retain direct DNS action behavior in %s; found %q", relative, forbidden)
+			}
 		}
 	}
 }

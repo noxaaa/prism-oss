@@ -71,6 +71,28 @@ func TestRecordNodeRuleTrafficAssignmentsUpsertsUniqueRules(t *testing.T) {
 	}
 }
 
+func TestUpsertAutoNodeDNSPublishAddressDisablesOtherAutoAddressesForSameFamily(t *testing.T) {
+	executor := &recordingDBExecutor{affected: 1}
+	store := &PostgresStore{db: executor}
+
+	err := store.UpsertAutoNodeDNSPublishAddress(context.Background(), "org_1", "node_1", "AAAA", "2001:db8::1", "2026-01-01T00:00:00Z", func() string { return "address_1" })
+	if err != nil {
+		t.Fatalf("upsert auto DNS publish address: %v", err)
+	}
+	if len(executor.execs) != 2 {
+		t.Fatalf("expected stale-disable update and upsert, got %d execs", len(executor.execs))
+	}
+	staleDisable := executor.execs[0]
+	for _, required := range []string{"source = 'AUTO'", "address <> ?", "enabled = true", "address_type = ?"} {
+		if !strings.Contains(staleDisable.query, required) {
+			t.Fatalf("stale AUTO cleanup missing %q in query:\n%s", required, staleDisable.query)
+		}
+	}
+	if len(staleDisable.args) != 5 || staleDisable.args[3] != "AAAA" {
+		t.Fatalf("stale AUTO cleanup should be scoped to the new address family, args: %#v", staleDisable.args)
+	}
+}
+
 type recordedExec struct {
 	query string
 	args  []any

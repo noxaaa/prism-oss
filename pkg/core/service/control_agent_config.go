@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"net"
 	"sort"
 	"strings"
 	"time"
@@ -12,25 +13,150 @@ import (
 )
 
 type AgentHelloInput struct {
-	Version   string
-	Commit    string
-	BuildTime string
+	Version    string
+	Commit     string
+	BuildTime  string
+	RemoteAddr string
 }
 
 func (service *ControlService) MarkNodeAgentConnected(ctx context.Context, organizationID string, nodeID string) error {
+	var affectedDNSRecordIDs []string
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
-		return repositories.Nodes().MarkNodeAgentConnected(ctx, organizationID, nodeID, service.timestamp())
+		node, err := repositories.Nodes().FindNodeByID(ctx, organizationID, nodeID)
+		if err != nil {
+			return err
+		}
+		now := service.timestamp()
+		if err := repositories.Nodes().MarkNodeAgentConnected(ctx, organizationID, nodeID, now); err != nil {
+			return err
+		}
+		if strings.ToUpper(strings.TrimSpace(node.Status)) != "ONLINE" {
+			affectedDNSRecordIDs, err = service.markDNSRecordsDependingOnNodeGroupsPending(ctx, repositories, organizationID, node.GroupIDs, now)
+			return err
+		}
+		return nil
 	})
+	if err == nil {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, organizationID, affectedDNSRecordIDs)
+	}
 	return mapServiceError(err)
+}
+
+func (service *ControlService) MarkNodeAgentConnectedFromRemote(ctx context.Context, organizationID string, nodeID string, remoteAddr string) error {
+	var affectedDNSRecordIDs []string
+	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		now := service.timestamp()
+		node, err := repositories.Nodes().FindNodeByID(ctx, organizationID, nodeID)
+		if err != nil {
+			return err
+		}
+		if err := repositories.Nodes().MarkNodeAgentConnected(ctx, organizationID, nodeID, now); err != nil {
+			return err
+		}
+		ip := publicRemoteIP(remoteAddr)
+		dnsInputChanged := strings.ToUpper(strings.TrimSpace(node.Status)) != "ONLINE"
+		if ip != nil {
+			publisher, ok := repositories.Nodes().(interface {
+				UpsertAutoNodeDNSPublishAddress(context.Context, string, string, string, string, string, func() string) error
+			})
+			if ok {
+				addressType := "A"
+				if ip.To4() == nil {
+					addressType = "AAAA"
+				}
+				if !nodeHasEnabledDNSPublishAddress(node, addressType, ip.String(), "AUTO") || nodeHasOtherEnabledAutoDNSPublishAddress(node, addressType, ip.String()) {
+					dnsInputChanged = true
+				}
+				if err := publisher.UpsertAutoNodeDNSPublishAddress(ctx, organizationID, nodeID, addressType, ip.String(), now, service.newID); err != nil {
+					return err
+				}
+			}
+		} else if nodeHasEnabledAutoDNSPublishAddress(node) {
+			disabler, ok := repositories.Nodes().(interface {
+				DisableAutoNodeDNSPublishAddresses(context.Context, string, string, string) error
+			})
+			if ok {
+				dnsInputChanged = true
+				if err := disabler.DisableAutoNodeDNSPublishAddresses(ctx, organizationID, nodeID, now); err != nil {
+					return err
+				}
+			}
+		}
+		if dnsInputChanged {
+			affectedDNSRecordIDs, err = service.markDNSRecordsDependingOnNodeGroupsPending(ctx, repositories, organizationID, node.GroupIDs, now)
+			return err
+		}
+		return nil
+	})
+	if err == nil {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, organizationID, affectedDNSRecordIDs)
+	}
+	return mapServiceError(err)
+}
+
+func publicRemoteIP(remoteAddr string) net.IP {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(remoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(remoteAddr)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || isCarrierGradeNATIP(ip) {
+		return nil
+	}
+	return ip
+}
+
+func isCarrierGradeNATIP(ip net.IP) bool {
+	v4 := ip.To4()
+	return v4 != nil && v4[0] == 100 && v4[1]&0xc0 == 0x40
 }
 
 func (service *ControlService) RecordNodeAgentHello(ctx context.Context, organizationID string, nodeID string, input AgentHelloInput) (NodePayload, bool, error) {
 	var result NodePayload
 	shouldUpdate := false
+	var affectedDNSRecordIDs []string
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		now := service.timestamp()
+		nodeBefore, err := repositories.Nodes().FindNodeByID(ctx, organizationID, nodeID)
+		if err != nil {
+			return err
+		}
 		if err := repositories.Nodes().MarkNodeAgentConnected(ctx, organizationID, nodeID, now); err != nil {
 			return err
+		}
+		dnsInputChanged := strings.ToUpper(strings.TrimSpace(nodeBefore.Status)) != "ONLINE"
+		if ip := publicRemoteIP(input.RemoteAddr); ip != nil {
+			publisher, ok := repositories.Nodes().(interface {
+				UpsertAutoNodeDNSPublishAddress(context.Context, string, string, string, string, string, func() string) error
+			})
+			if ok {
+				addressType := "A"
+				if ip.To4() == nil {
+					addressType = "AAAA"
+				}
+				if !nodeHasEnabledDNSPublishAddress(nodeBefore, addressType, ip.String(), "AUTO") || nodeHasOtherEnabledAutoDNSPublishAddress(nodeBefore, addressType, ip.String()) {
+					dnsInputChanged = true
+				}
+				if err := publisher.UpsertAutoNodeDNSPublishAddress(ctx, organizationID, nodeID, addressType, ip.String(), now, service.newID); err != nil {
+					return err
+				}
+			}
+		} else if nodeHasEnabledAutoDNSPublishAddress(nodeBefore) {
+			disabler, ok := repositories.Nodes().(interface {
+				DisableAutoNodeDNSPublishAddresses(context.Context, string, string, string) error
+			})
+			if ok {
+				dnsInputChanged = true
+				if err := disabler.DisableAutoNodeDNSPublishAddresses(ctx, organizationID, nodeID, now); err != nil {
+					return err
+				}
+			}
+		}
+		if dnsInputChanged {
+			affectedDNSRecordIDs, err = service.markDNSRecordsDependingOnNodeGroupsPending(ctx, repositories, organizationID, nodeBefore.GroupIDs, now)
+			if err != nil {
+				return err
+			}
 		}
 		if err := repositories.Nodes().UpdateNodeAgentVersion(ctx, organizationID, nodeID, repo.NodeAgentVersionRecord{Version: input.Version, Commit: input.Commit, BuildTime: input.BuildTime}, now); err != nil {
 			return err
@@ -66,6 +192,9 @@ func (service *ControlService) RecordNodeAgentHello(ctx context.Context, organiz
 		result = toNodePayload(node)
 		return nil
 	})
+	if err == nil {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, organizationID, affectedDNSRecordIDs)
+	}
 	return result, shouldUpdate, mapServiceError(err)
 }
 
@@ -288,10 +417,58 @@ func agentUpdateTargetIsConcrete(version string) bool {
 }
 
 func (service *ControlService) MarkNodeAgentDisconnected(ctx context.Context, organizationID string, nodeID string) error {
+	var affectedDNSRecordIDs []string
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
-		return repositories.Nodes().MarkNodeAgentDisconnected(ctx, organizationID, nodeID, service.timestamp())
+		node, err := repositories.Nodes().FindNodeByID(ctx, organizationID, nodeID)
+		if err != nil {
+			return err
+		}
+		now := service.timestamp()
+		if err := repositories.Nodes().MarkNodeAgentDisconnected(ctx, organizationID, nodeID, now); err != nil {
+			return err
+		}
+		if strings.ToUpper(strings.TrimSpace(node.Status)) != "OFFLINE" {
+			affectedDNSRecordIDs, err = service.markDNSRecordsDependingOnNodeGroupsPending(ctx, repositories, organizationID, node.GroupIDs, now)
+			return err
+		}
+		return nil
 	})
+	if err == nil {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, organizationID, affectedDNSRecordIDs)
+	}
 	return mapServiceError(err)
+}
+
+func nodeHasEnabledDNSPublishAddress(node repo.NodeRecord, addressType string, address string, source string) bool {
+	for _, candidate := range node.DNSPublishAddresses {
+		if !candidate.Enabled || candidate.AddressType != addressType || candidate.Address != address {
+			continue
+		}
+		if source != "" && candidate.Source != source {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func nodeHasEnabledAutoDNSPublishAddress(node repo.NodeRecord) bool {
+	for _, candidate := range node.DNSPublishAddresses {
+		if candidate.Enabled && candidate.Source == "AUTO" {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeHasOtherEnabledAutoDNSPublishAddress(node repo.NodeRecord, addressType string, address string) bool {
+	for _, candidate := range node.DNSPublishAddresses {
+		if !candidate.Enabled || candidate.Source != "AUTO" || candidate.AddressType != addressType || candidate.Address == address {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (service *ControlService) MarkMonitorAgentConnected(ctx context.Context, organizationID string, monitorID string) error {

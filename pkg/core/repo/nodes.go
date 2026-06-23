@@ -639,9 +639,14 @@ func (store *PostgresStore) loadNodeDetails(ctx context.Context, node *NodeRecor
 	if err != nil {
 		return err
 	}
+	dnsPublishAddresses, err := store.ListNodeDNSPublishAddresses(ctx, node.OrganizationID, node.ID)
+	if err != nil {
+		return err
+	}
 	node.GroupIDs = groupIDs
 	node.ListenIPs = listenIPs
 	node.PortRanges = portRanges
+	node.DNSPublishAddresses = dnsPublishAddresses
 	return nil
 }
 
@@ -716,6 +721,86 @@ func (store *PostgresStore) listNodePortRanges(ctx context.Context, organization
 		portRanges = append(portRanges, portRange)
 	}
 	return portRanges, rows.Err()
+}
+
+func (store *PostgresStore) ListNodeDNSPublishAddresses(ctx context.Context, organizationID string, nodeID string) ([]NodeDNSPublishAddressRecord, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, organization_id, node_id, address_type, address, source, enabled, COALESCE(observed_at::text, ''), created_at, updated_at
+		FROM dns_publish_addresses
+		WHERE organization_id = ? AND node_id = ?
+		ORDER BY source, address_type, address, id
+	`, organizationID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	addresses := make([]NodeDNSPublishAddressRecord, 0)
+	for rows.Next() {
+		address, err := scanNodeDNSPublishAddressRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		addresses = append(addresses, address)
+	}
+	return addresses, rows.Err()
+}
+
+func (store *PostgresStore) ReplaceManualNodeDNSPublishAddresses(ctx context.Context, organizationID string, nodeID string, addresses []NodeDNSPublishAddressRecord, now string, nextID func() string) error {
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM dns_publish_addresses WHERE organization_id = ? AND node_id = ? AND source = 'MANUAL'`, organizationID, nodeID); err != nil {
+		return mapWriteError(err)
+	}
+	for _, address := range addresses {
+		id := address.ID
+		if id == "" {
+			id = nextID()
+		}
+		if _, err := store.db.ExecContext(ctx, `
+			INSERT INTO dns_publish_addresses (id, organization_id, node_id, address_type, address, source, enabled, observed_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, 'MANUAL', ?, NULLIF(?, '')::timestamptz, ?, ?)
+		`, id, organizationID, nodeID, address.AddressType, address.Address, boolToDB(address.Enabled), address.ObservedAt, now, now); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	return nil
+}
+
+func (store *PostgresStore) UpsertAutoNodeDNSPublishAddress(ctx context.Context, organizationID string, nodeID string, addressType string, address string, now string, nextID func() string) error {
+	if _, err := store.db.ExecContext(ctx, `
+		UPDATE dns_publish_addresses
+		SET enabled = false, updated_at = ?
+		WHERE organization_id = ?
+		  AND node_id = ?
+		  AND source = 'AUTO'
+		  AND address_type = ?
+		  AND address <> ?
+		  AND enabled = true
+	`, now, organizationID, nodeID, addressType, address); err != nil {
+		return mapWriteError(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO dns_publish_addresses (id, organization_id, node_id, address_type, address, source, enabled, observed_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'AUTO', true, ?, ?, ?)
+		ON CONFLICT (organization_id, node_id, source, address_type, address)
+		DO UPDATE SET enabled = true, observed_at = EXCLUDED.observed_at, updated_at = EXCLUDED.updated_at
+	`, nextID(), organizationID, nodeID, addressType, address, now, now, now); err != nil {
+		return mapWriteError(err)
+	}
+	return nil
+}
+
+func (store *PostgresStore) DisableAutoNodeDNSPublishAddresses(ctx context.Context, organizationID string, nodeID string, now string) error {
+	if _, err := store.db.ExecContext(ctx, `
+		UPDATE dns_publish_addresses
+		SET enabled = false, updated_at = ?
+		WHERE organization_id = ?
+		  AND node_id = ?
+		  AND source = 'AUTO'
+		  AND enabled = true
+	`, now, organizationID, nodeID); err != nil {
+		return mapWriteError(err)
+	}
+	return nil
 }
 
 func (store *PostgresStore) replaceNodeGroups(ctx context.Context, organizationID string, nodeID string, groupIDs []string, now string, nextID func() string) error {

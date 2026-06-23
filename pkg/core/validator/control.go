@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
 	"regexp"
@@ -85,19 +86,21 @@ type GroupRequest struct {
 }
 
 type NodeRequest struct {
-	Name              string          `json:"name"`
-	GroupIDs          []string        `json:"group_ids"`
-	ListenIPs         []NodeListenIP  `json:"listen_ips"`
-	PortRanges        []NodePortRange `json:"port_ranges"`
-	PublicDescription string          `json:"public_description"`
+	Name                string                  `json:"name"`
+	GroupIDs            []string                `json:"group_ids"`
+	ListenIPs           []NodeListenIP          `json:"listen_ips"`
+	PortRanges          []NodePortRange         `json:"port_ranges"`
+	DNSPublishAddresses []NodeDNSPublishAddress `json:"dns_publish_addresses"`
+	PublicDescription   string                  `json:"public_description"`
 }
 
 type NodePatchRequest struct {
-	Name              *string          `json:"name"`
-	GroupIDs          *[]string        `json:"group_ids"`
-	ListenIPs         *[]NodeListenIP  `json:"listen_ips"`
-	PortRanges        *[]NodePortRange `json:"port_ranges"`
-	PublicDescription *string          `json:"public_description"`
+	Name                *string                  `json:"name"`
+	GroupIDs            *[]string                `json:"group_ids"`
+	ListenIPs           *[]NodeListenIP          `json:"listen_ips"`
+	PortRanges          *[]NodePortRange         `json:"port_ranges"`
+	DNSPublishAddresses *[]NodeDNSPublishAddress `json:"dns_publish_addresses"`
+	PublicDescription   *string                  `json:"public_description"`
 }
 
 type NodeListenIP struct {
@@ -109,6 +112,30 @@ type NodePortRange struct {
 	Protocol  string `json:"protocol"`
 	StartPort int    `json:"start_port"`
 	EndPort   int    `json:"end_port"`
+}
+
+type NodeDNSPublishAddress struct {
+	AddressType string `json:"address_type"`
+	Address     string `json:"address"`
+	Enabled     bool   `json:"enabled"`
+}
+
+func (address *NodeDNSPublishAddress) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		AddressType string `json:"address_type"`
+		Address     string `json:"address"`
+		Enabled     *bool  `json:"enabled"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	address.AddressType = raw.AddressType
+	address.Address = raw.Address
+	address.Enabled = true
+	if raw.Enabled != nil {
+		address.Enabled = *raw.Enabled
+	}
+	return nil
 }
 
 type MonitorRequest struct {
@@ -150,15 +177,34 @@ type DNSCredentialRequest struct {
 	Secret   string `json:"secret"`
 }
 
-type DNSRecordRequest struct {
-	DNSCredentialID string   `json:"dns_credential_id"`
-	Zone            string   `json:"zone"`
-	RecordName      string   `json:"record_name"`
-	RecordType      string   `json:"record_type"`
-	DesiredValues   []string `json:"desired_values"`
-	HealthCheckID   string   `json:"health_check_id"`
-	EventType       string   `json:"event_type"`
-	FailoverValues  []string `json:"failover_values"`
+type DNSManagedRecordRequest struct {
+	DNSCredentialID  string `json:"dns_credential_id"`
+	CredentialZoneID string `json:"credential_zone_id"`
+	RecordHost       string `json:"record_host"`
+	RecordName       string `json:"record_name"`
+	RecordType       string `json:"record_type"`
+	TTL              int    `json:"ttl"`
+	Proxied          bool   `json:"proxied"`
+}
+
+type DNSInstanceRequest struct {
+	ManagedRecordID        string         `json:"managed_record_id"`
+	Name                   string         `json:"name"`
+	Priority               int            `json:"priority"`
+	Enabled                bool           `json:"enabled"`
+	NodeGroupIDs           []string       `json:"node_group_ids"`
+	AnswerCount            int            `json:"answer_count"`
+	Condition              map[string]any `json:"condition"`
+	Action                 map[string]any `json:"action"`
+	NotificationChannelIDs []string       `json:"notification_channel_ids"`
+}
+
+type NotificationChannelRequest struct {
+	Name        string         `json:"name"`
+	ChannelType string         `json:"channel_type"`
+	Config      map[string]any `json:"config"`
+	Secret      string         `json:"secret"`
+	Enabled     bool           `json:"enabled"`
 }
 
 type RegistrationTokenRequest struct {
@@ -329,8 +375,13 @@ func ValidateNodeRequest(request NodeRequest) (NodeRequest, error) {
 	if err != nil {
 		return NodeRequest{}, err
 	}
+	dnsPublishAddresses, err := validateDNSPublishAddresses(request.DNSPublishAddresses)
+	if err != nil {
+		return NodeRequest{}, err
+	}
 	request.ListenIPs = listenIPs
 	request.PortRanges = portRanges
+	request.DNSPublishAddresses = dnsPublishAddresses
 	return request, nil
 }
 
@@ -366,6 +417,13 @@ func ValidateNodePatchRequest(request NodePatchRequest) (NodePatchRequest, error
 			return NodePatchRequest{}, err
 		}
 		request.PortRanges = &portRanges
+	}
+	if request.DNSPublishAddresses != nil {
+		dnsPublishAddresses, err := validateDNSPublishAddresses(*request.DNSPublishAddresses)
+		if err != nil {
+			return NodePatchRequest{}, err
+		}
+		request.DNSPublishAddresses = &dnsPublishAddresses
 	}
 	return request, nil
 }
@@ -473,51 +531,69 @@ func ValidateDNSCredentialRequest(request DNSCredentialRequest, secretRequired b
 	return request, nil
 }
 
-func ValidateDNSRecordRequest(request DNSRecordRequest) (DNSRecordRequest, error) {
+func ValidateDNSManagedRecordRequest(request DNSManagedRecordRequest) (DNSManagedRecordRequest, error) {
 	request.DNSCredentialID = strings.TrimSpace(request.DNSCredentialID)
-	request.Zone = strings.TrimSpace(request.Zone)
+	request.CredentialZoneID = strings.TrimSpace(request.CredentialZoneID)
+	request.RecordHost = strings.TrimSpace(request.RecordHost)
 	request.RecordName = strings.TrimSpace(request.RecordName)
 	request.RecordType = strings.ToUpper(strings.TrimSpace(request.RecordType))
-	request.HealthCheckID = strings.TrimSpace(request.HealthCheckID)
-	request.EventType = strings.ToUpper(strings.TrimSpace(request.EventType))
-	values := make([]string, 0, len(request.DesiredValues))
-	for _, value := range request.DesiredValues {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			values = append(values, value)
-		}
-	}
-	request.DesiredValues = values
-	if request.DNSCredentialID == "" || request.Zone == "" || request.RecordName == "" || len(values) == 0 {
-		return DNSRecordRequest{}, ErrInvalidRequest
+	if request.DNSCredentialID == "" || request.CredentialZoneID == "" {
+		return DNSManagedRecordRequest{}, ErrInvalidRequest
 	}
 	if request.RecordType != "A" && request.RecordType != "AAAA" && request.RecordType != "CNAME" {
-		return DNSRecordRequest{}, ErrInvalidRequest
+		return DNSManagedRecordRequest{}, ErrInvalidRequest
 	}
-	if request.RecordType == "CNAME" && len(uniqueNonEmptyStrings(request.DesiredValues)) > 1 {
-		return DNSRecordRequest{}, ErrInvalidRequest
+	if request.TTL < 0 {
+		return DNSManagedRecordRequest{}, ErrInvalidRequest
 	}
-	failoverValues := make([]string, 0, len(request.FailoverValues))
-	for _, value := range request.FailoverValues {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			failoverValues = append(failoverValues, value)
-		}
+	if request.TTL == 0 {
+		request.TTL = 60
 	}
-	request.FailoverValues = failoverValues
-	if request.HealthCheckID != "" {
-		if request.EventType == "" {
-			request.EventType = "DNS_FAILOVER"
-		}
-		if request.EventType != "DNS_FAILOVER" && request.EventType != "DNS_DELETE_OFFLINE" && request.EventType != "DNS_DELETE_ALL" && request.EventType != "DNS_RESTORE" {
-			return DNSRecordRequest{}, ErrInvalidRequest
-		}
-		if request.EventType == "DNS_FAILOVER" && len(request.FailoverValues) == 0 {
-			return DNSRecordRequest{}, ErrInvalidRequest
-		}
-		if request.RecordType == "CNAME" && len(uniqueNonEmptyStrings(request.FailoverValues)) > 1 {
-			return DNSRecordRequest{}, ErrInvalidRequest
-		}
+	return request, nil
+}
+
+func ValidateDNSInstanceRequest(request DNSInstanceRequest) (DNSInstanceRequest, error) {
+	request.ManagedRecordID = strings.TrimSpace(request.ManagedRecordID)
+	request.Name = strings.TrimSpace(request.Name)
+	if request.ManagedRecordID == "" || request.Name == "" || len(request.Name) > 120 || request.Priority < 0 {
+		return DNSInstanceRequest{}, ErrInvalidRequest
+	}
+	if request.AnswerCount == 0 {
+		request.AnswerCount = -1
+	}
+	if request.AnswerCount < -1 {
+		return DNSInstanceRequest{}, ErrInvalidRequest
+	}
+	request.NodeGroupIDs = uniqueNonEmptyStrings(request.NodeGroupIDs)
+	request.NotificationChannelIDs = uniqueNonEmptyStrings(request.NotificationChannelIDs)
+	if request.Condition == nil {
+		request.Condition = map[string]any{}
+	}
+	if request.Action == nil {
+		return DNSInstanceRequest{}, ErrInvalidRequest
+	}
+	actionType, _ := request.Action["type"].(string)
+	if strings.TrimSpace(actionType) == "" {
+		return DNSInstanceRequest{}, ErrInvalidRequest
+	}
+	return request, nil
+}
+
+func ValidateNotificationChannelRequest(request NotificationChannelRequest, secretRequired bool) (NotificationChannelRequest, error) {
+	request.Name = strings.TrimSpace(request.Name)
+	request.ChannelType = strings.ToUpper(strings.TrimSpace(request.ChannelType))
+	request.Secret = strings.TrimSpace(request.Secret)
+	if request.Name == "" || len(request.Name) > 120 {
+		return NotificationChannelRequest{}, ErrInvalidRequest
+	}
+	if request.ChannelType != "WEBHOOK" && request.ChannelType != "EMAIL" {
+		return NotificationChannelRequest{}, ErrInvalidRequest
+	}
+	if request.Config == nil {
+		request.Config = map[string]any{}
+	}
+	if request.ChannelType == "EMAIL" && secretRequired && request.Secret == "" {
+		return NotificationChannelRequest{}, ErrInvalidRequest
 	}
 	return request, nil
 }
@@ -800,4 +876,49 @@ func validatePortRanges(values []NodePortRange) ([]NodePortRange, error) {
 		return []NodePortRange{{Protocol: "TCP", StartPort: 10000, EndPort: 20000}}, nil
 	}
 	return normalized, nil
+}
+
+func validateDNSPublishAddresses(values []NodeDNSPublishAddress) ([]NodeDNSPublishAddress, error) {
+	normalized := make([]NodeDNSPublishAddress, 0, len(values))
+	seen := make(map[string]bool)
+	for _, value := range values {
+		value.AddressType = strings.ToUpper(strings.TrimSpace(value.AddressType))
+		value.Address = strings.TrimSpace(value.Address)
+		if value.Address == "" {
+			continue
+		}
+		ip := net.ParseIP(value.Address)
+		if ip == nil || !isPublicIP(ip) {
+			return nil, ErrInvalidRequest
+		}
+		if value.AddressType == "" {
+			if ip.To4() == nil {
+				value.AddressType = "AAAA"
+			} else {
+				value.AddressType = "A"
+			}
+		}
+		if (value.AddressType == "A" && ip.To4() == nil) || (value.AddressType == "AAAA" && ip.To4() != nil) {
+			return nil, ErrInvalidRequest
+		}
+		if value.AddressType != "A" && value.AddressType != "AAAA" {
+			return nil, ErrInvalidRequest
+		}
+		key := value.AddressType + "\x00" + value.Address
+		if seen[key] {
+			return nil, ErrInvalidRequest
+		}
+		seen[key] = true
+		normalized = append(normalized, value)
+	}
+	return normalized, nil
+}
+
+func isPublicIP(ip net.IP) bool {
+	return ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified() && !isCarrierGradeNATAddress(ip)
+}
+
+func isCarrierGradeNATAddress(ip net.IP) bool {
+	v4 := ip.To4()
+	return v4 != nil && v4[0] == 100 && v4[1]&0xc0 == 0x40
 }

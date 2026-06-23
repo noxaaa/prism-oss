@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type rowScanner interface {
@@ -129,6 +131,18 @@ func scanNodePortRange(row rowScanner) (NodePortRangeRecord, error) {
 
 func scanNodePortRangeRows(rows *sql.Rows) (NodePortRangeRecord, error) {
 	return scanNodePortRange(rows)
+}
+
+func scanNodeDNSPublishAddress(row rowScanner) (NodeDNSPublishAddressRecord, error) {
+	var address NodeDNSPublishAddressRecord
+	if err := row.Scan(&address.ID, &address.OrganizationID, &address.NodeID, &address.AddressType, &address.Address, &address.Source, &address.Enabled, &address.ObservedAt, &address.CreatedAt, &address.UpdatedAt); err != nil {
+		return NodeDNSPublishAddressRecord{}, mapReadError(err)
+	}
+	return address, nil
+}
+
+func scanNodeDNSPublishAddressRows(rows *sql.Rows) (NodeDNSPublishAddressRecord, error) {
+	return scanNodeDNSPublishAddress(rows)
 }
 
 func scanMonitorGroup(row rowScanner) (MonitorGroupRecord, error) {
@@ -297,6 +311,13 @@ func mapReadError(err error) error {
 func mapWriteError(err error) error {
 	if err == nil {
 		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23505", "23503", "23514", "23P01":
+			return fmt.Errorf("%w: %v", ErrConflict, err)
+		}
 	}
 	message := strings.ToLower(err.Error())
 	if strings.Contains(message, "unique") || strings.Contains(message, "constraint") {

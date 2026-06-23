@@ -9,9 +9,15 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/pressly/goose/v3"
 )
 
 func openMigratedCoreDB(t *testing.T) *sql.DB {
+	t.Helper()
+	return openMigratedCoreDBToVersion(t, 0)
+}
+
+func openMigratedCoreDBToVersion(t *testing.T, coreVersion int64) *sql.DB {
 	t.Helper()
 
 	baseURL := os.Getenv("TEST_DATABASE_URL")
@@ -46,10 +52,31 @@ func openMigratedCoreDB(t *testing.T) *sql.DB {
 	}
 	if err := run([]string{
 		"-database", migrationURL,
-		"-dir", "../../migrations/auth,../../migrations/core",
+		"-dir", "../../migrations/auth",
 		"up",
 	}); err != nil {
-		t.Fatalf("run migrate up: %v", err)
+		t.Fatalf("run auth migrate up: %v", err)
+	}
+	if coreVersion == 0 {
+		if err := run([]string{
+			"-database", migrationURL,
+			"-dir", "../../migrations/core",
+			"up",
+		}); err != nil {
+			t.Fatalf("run core migrate up: %v", err)
+		}
+	} else {
+		coreDB, err := openPostgres(migrationURL)
+		if err != nil {
+			t.Fatalf("open core migration database: %v", err)
+		}
+		defer func() { _ = coreDB.Close() }()
+		if err := goose.SetDialect("postgres"); err != nil {
+			t.Fatalf("set goose dialect: %v", err)
+		}
+		if err := runGooseUpToWithTable(coreDB, splitMigrationDirs("../../migrations/core")[0], coreVersion); err != nil {
+			t.Fatalf("run core migrate up to %d: %v", coreVersion, err)
+		}
 	}
 
 	db, err := openPostgres(databaseURL)
@@ -57,6 +84,19 @@ func openMigratedCoreDB(t *testing.T) *sql.DB {
 		t.Fatalf("open migrated database: %v", err)
 	}
 	return db
+}
+
+func runGooseUpToWithTable(db *sql.DB, group migrationGroup, version int64) error {
+	if err := ensureMigrationSchema(db, group.SchemaName); err != nil {
+		return err
+	}
+	if err := applyMigrationSearchPath(db, group.SearchPath); err != nil {
+		return err
+	}
+	previousTableName := goose.TableName()
+	goose.SetTableName(group.TableName)
+	defer goose.SetTableName(previousTableName)
+	return goose.UpTo(db, group.Dir, version)
 }
 
 func seedTenantFixture(t *testing.T, db *sql.DB) {

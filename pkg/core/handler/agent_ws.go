@@ -104,7 +104,16 @@ func (server *ControlServer) handleAgentConnect(response http.ResponseWriter, re
 		defer cancel()
 		_ = server.markAgentDisconnected(ctx, authResult)
 	}()
-	server.handleAgentMessages(request.Context(), conn, authResult, &connectionGeneration, &registrationFinalized, activateSession)
+	server.handleAgentMessages(request.Context(), conn, authResult, observedDirectAgentRemoteAddr(request), &connectionGeneration, &registrationFinalized, activateSession)
+}
+
+func observedDirectAgentRemoteAddr(request *http.Request) string {
+	if strings.TrimSpace(request.Header.Get("Forwarded")) != "" ||
+		strings.TrimSpace(request.Header.Get("X-Forwarded-For")) != "" ||
+		strings.TrimSpace(request.Header.Get("X-Real-IP")) != "" {
+		return ""
+	}
+	return request.RemoteAddr
 }
 
 func writeAgentEnvelope(ctx context.Context, conn *websocket.Conn, messageType string, payload any) error {
@@ -125,7 +134,7 @@ func mustJSON(value any) []byte {
 	return data
 }
 
-func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *websocket.Conn, authResult service.AgentAuthResult, connectionGeneration *int64, registrationFinalized *bool, activateSession func()) {
+func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *websocket.Conn, authResult service.AgentAuthResult, remoteAddr string, connectionGeneration *int64, registrationFinalized *bool, activateSession func()) {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -179,7 +188,7 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 			}
 			shouldUpdate := false
 			if authResult.AgentType == "NODE" {
-				_, update, err := server.controlService.RecordNodeAgentHello(ctx, authResult.OrganizationID, authResult.AgentID, service.AgentHelloInput{Version: helloPayload.AgentVersion, Commit: helloPayload.AgentCommit, BuildTime: helloPayload.AgentBuildTime})
+				_, update, err := server.controlService.RecordNodeAgentHello(ctx, authResult.OrganizationID, authResult.AgentID, service.AgentHelloInput{Version: helloPayload.AgentVersion, Commit: helloPayload.AgentCommit, BuildTime: helloPayload.AgentBuildTime, RemoteAddr: remoteAddr})
 				if err != nil {
 					if errors.Is(err, service.ErrNotFound) {
 						server.closeStaleAgentSession(ctx, conn, authResult)
@@ -413,7 +422,7 @@ func (server *ControlServer) closeStaleAgentSession(ctx context.Context, conn *w
 func (server *ControlServer) markAgentConnected(ctx context.Context, authResult service.AgentAuthResult) error {
 	switch authResult.AgentType {
 	case "NODE":
-		return server.controlService.MarkNodeAgentConnected(ctx, authResult.OrganizationID, authResult.AgentID)
+		return server.controlService.MarkNodeAgentConnectedFromRemote(ctx, authResult.OrganizationID, authResult.AgentID, "")
 	case "MONITOR":
 		return server.controlService.MarkMonitorAgentConnected(ctx, authResult.OrganizationID, authResult.AgentID)
 	default:

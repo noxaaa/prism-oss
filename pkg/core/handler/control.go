@@ -154,11 +154,21 @@ func (server *ControlServer) routes() {
 		server.mux.HandleFunc("GET /internal/v1/dns/credentials", server.withInternalIdentity(server.handleListDNSCredentials))
 		server.mux.HandleFunc("POST /internal/v1/dns/credentials", server.withInternalIdentity(server.handleCreateDNSCredential))
 		server.mux.HandleFunc("PATCH /internal/v1/dns/credentials/{credential_id}", server.withInternalIdentity(server.handleUpdateDNSCredential))
+		server.mux.HandleFunc("POST /internal/v1/dns/credentials/{credential_id}/zones/refresh", server.withInternalIdentity(server.handleRefreshDNSCredentialZones))
 		server.mux.HandleFunc("DELETE /internal/v1/dns/credentials/{credential_id}", server.withInternalIdentity(server.handleDeleteDNSCredential))
-		server.mux.HandleFunc("GET /internal/v1/dns/records", server.withInternalIdentity(server.handleListDNSRecords))
-		server.mux.HandleFunc("POST /internal/v1/dns/records", server.withInternalIdentity(server.handleCreateDNSRecord))
-		server.mux.HandleFunc("PATCH /internal/v1/dns/records/{record_id}", server.withInternalIdentity(server.handleUpdateDNSRecord))
-		server.mux.HandleFunc("DELETE /internal/v1/dns/records/{record_id}", server.withInternalIdentity(server.handleDeleteDNSRecord))
+		server.mux.HandleFunc("GET /internal/v1/dns/managed-records", server.withInternalIdentity(server.handleListDNSManagedRecords))
+		server.mux.HandleFunc("POST /internal/v1/dns/managed-records", server.withInternalIdentity(server.handleCreateDNSManagedRecord))
+		server.mux.HandleFunc("PATCH /internal/v1/dns/managed-records/{record_id}", server.withInternalIdentity(server.handleUpdateDNSManagedRecord))
+		server.mux.HandleFunc("DELETE /internal/v1/dns/managed-records/{record_id}", server.withInternalIdentity(server.handleDeleteDNSManagedRecord))
+		server.mux.HandleFunc("POST /internal/v1/dns/managed-records/{record_id}/evaluate", server.withInternalIdentity(server.handleEvaluateDNSManagedRecord))
+		server.mux.HandleFunc("GET /internal/v1/dns/instances", server.withInternalIdentity(server.handleListDNSInstances))
+		server.mux.HandleFunc("POST /internal/v1/dns/instances", server.withInternalIdentity(server.handleCreateDNSInstance))
+		server.mux.HandleFunc("PATCH /internal/v1/dns/instances/{instance_id}", server.withInternalIdentity(server.handleUpdateDNSInstance))
+		server.mux.HandleFunc("DELETE /internal/v1/dns/instances/{instance_id}", server.withInternalIdentity(server.handleDeleteDNSInstance))
+		server.mux.HandleFunc("GET /internal/v1/notification-channels", server.withInternalIdentity(server.handleListNotificationChannels))
+		server.mux.HandleFunc("POST /internal/v1/notification-channels", server.withInternalIdentity(server.handleCreateNotificationChannel))
+		server.mux.HandleFunc("PATCH /internal/v1/notification-channels/{channel_id}", server.withInternalIdentity(server.handleUpdateNotificationChannel))
+		server.mux.HandleFunc("DELETE /internal/v1/notification-channels/{channel_id}", server.withInternalIdentity(server.handleDeleteNotificationChannel))
 	}
 	server.mux.HandleFunc("GET /internal/v1/targets", server.withInternalIdentity(server.handleListTargets))
 	server.mux.HandleFunc("POST /internal/v1/targets", server.withInternalIdentity(server.handleCreateTarget))
@@ -590,6 +600,10 @@ func decodeNodeInput(response http.ResponseWriter, request *http.Request, update
 			input.PortRanges = toServicePortRanges(*normalized.PortRanges)
 			input.PortRangesProvided = true
 		}
+		if normalized.DNSPublishAddresses != nil {
+			input.DNSPublishAddresses = toServiceDNSPublishAddresses(*normalized.DNSPublishAddresses)
+			input.DNSPublishAddressesProvided = true
+		}
 		if normalized.PublicDescription != nil {
 			input.PublicDescription = *normalized.PublicDescription
 			input.PublicDescriptionProvided = true
@@ -608,16 +622,18 @@ func decodeNodeInput(response http.ResponseWriter, request *http.Request, update
 		return service.NodeMutationInput{}, false
 	}
 	return service.NodeMutationInput{
-		Name:                      normalized.Name,
-		NameProvided:              true,
-		GroupIDs:                  normalized.GroupIDs,
-		GroupIDsProvided:          true,
-		ListenIPs:                 toServiceListenIPs(normalized.ListenIPs),
-		ListenIPsProvided:         true,
-		PortRanges:                toServicePortRanges(normalized.PortRanges),
-		PortRangesProvided:        true,
-		PublicDescription:         normalized.PublicDescription,
-		PublicDescriptionProvided: true,
+		Name:                        normalized.Name,
+		NameProvided:                true,
+		GroupIDs:                    normalized.GroupIDs,
+		GroupIDsProvided:            true,
+		ListenIPs:                   toServiceListenIPs(normalized.ListenIPs),
+		ListenIPsProvided:           true,
+		PortRanges:                  toServicePortRanges(normalized.PortRanges),
+		PortRangesProvided:          true,
+		DNSPublishAddresses:         toServiceDNSPublishAddresses(normalized.DNSPublishAddresses),
+		DNSPublishAddressesProvided: true,
+		PublicDescription:           normalized.PublicDescription,
+		PublicDescriptionProvided:   true,
 	}, true
 }
 
@@ -726,6 +742,14 @@ func toServicePortRanges(values []validator.NodePortRange) []service.NodePortRan
 	inputs := make([]service.NodePortRangeInput, 0, len(values))
 	for _, value := range values {
 		inputs = append(inputs, service.NodePortRangeInput{Protocol: value.Protocol, StartPort: value.StartPort, EndPort: value.EndPort})
+	}
+	return inputs
+}
+
+func toServiceDNSPublishAddresses(values []validator.NodeDNSPublishAddress) []service.NodeDNSPublishAddressInput {
+	inputs := make([]service.NodeDNSPublishAddressInput, 0, len(values))
+	for _, value := range values {
+		inputs = append(inputs, service.NodeDNSPublishAddressInput{AddressType: value.AddressType, Address: value.Address, Enabled: value.Enabled})
 	}
 	return inputs
 }

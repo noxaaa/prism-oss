@@ -42,6 +42,60 @@ func TestCloudflareProviderDefaultClientHasTimeout(t *testing.T) {
 	}
 }
 
+func TestCloudflareProviderDiscoversAccessibleZones(t *testing.T) {
+	var listCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("expected bearer auth header, got %q", request.Header.Get("Authorization"))
+		}
+		if request.Method != http.MethodGet || request.URL.Path != "/client/v4/zones" {
+			t.Fatalf("unexpected zone request %s %s", request.Method, request.URL.Path)
+		}
+		listCalls++
+		switch request.URL.Query().Get("page") {
+		case "", "1":
+			writeJSON(response, http.StatusOK, map[string]any{
+				"success": true,
+				"errors":  []any{},
+				"result": []map[string]any{
+					{"id": "zone_1", "name": "example.com", "status": "active"},
+				},
+				"result_info": map[string]any{"page": 1, "total_pages": 2},
+			})
+		case "2":
+			writeJSON(response, http.StatusOK, map[string]any{
+				"success": true,
+				"errors":  []any{},
+				"result": []map[string]any{
+					{"id": "zone_2", "name": "example.net", "status": "pending"},
+				},
+				"result_info": map[string]any{"page": 2, "total_pages": 2},
+			})
+		case "3":
+			writeJSON(response, http.StatusOK, map[string]any{
+				"success":     true,
+				"errors":      []any{},
+				"result":      []map[string]any{},
+				"result_info": map[string]any{"page": 3, "total_pages": 2},
+			})
+		default:
+			t.Fatalf("unexpected page %q", request.URL.Query().Get("page"))
+		}
+	}))
+	defer server.Close()
+
+	zones, err := (CloudflareProvider{HTTPClient: server.Client(), BaseURL: server.URL + "/client/v4"}).ListZones(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("list zones: %v", err)
+	}
+	if listCalls < 2 {
+		t.Fatalf("expected both Cloudflare zone pages to be listed, got %d calls", listCalls)
+	}
+	if len(zones) != 2 || zones[0].ID != "zone_1" || zones[0].Name != "example.com" || zones[0].Status != "ACTIVE" || zones[1].ID != "zone_2" || zones[1].Name != "example.net" || zones[1].Status != "PENDING" {
+		t.Fatalf("unexpected zones %#v", zones)
+	}
+}
+
 func TestCloudflareProviderIgnoresSDKCloudflareEnv(t *testing.T) {
 	t.Setenv("CLOUDFLARE_BASE_URL", "https://env-cloudflare.example.invalid/client/v4")
 	t.Setenv("CLOUDFLARE_API_TOKEN", "env-token")
@@ -173,6 +227,46 @@ func TestCloudflareProviderLeavesMatchingRecordUnchanged(t *testing.T) {
 	}
 	if len(requests) != 1 {
 		t.Fatalf("expected only list request, got %#v", requests)
+	}
+}
+
+func TestCloudflareProviderUpdatesMatchingRecordSettings(t *testing.T) {
+	var updated map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodGet:
+			record := cloudflareRecordPayload("record_1", "app.example.com", "A", "192.0.2.1")
+			record["ttl"] = 60
+			record["proxied"] = false
+			writeJSON(response, http.StatusOK, cloudflareListEnvelope([]map[string]any{record}, 1, 1))
+		case http.MethodPut:
+			updated = decodeJSONBody(t, request)
+			writeJSON(response, http.StatusOK, map[string]any{
+				"success":  true,
+				"errors":   []any{},
+				"messages": []any{},
+				"result":   cloudflareRecordPayload("record_1", "app.example.com", "A", "192.0.2.1"),
+			})
+		default:
+			t.Fatalf("unexpected method %s", request.Method)
+		}
+	}))
+	defer server.Close()
+
+	err := (CloudflareProvider{HTTPClient: server.Client(), BaseURL: server.URL + "/client/v4"}).ApplyRecord(context.Background(), ApplyRecordInput{
+		ProviderSecret: "token",
+		Zone:           "zone_1",
+		RecordName:     "app.example.com",
+		RecordType:     "A",
+		Values:         []string{"192.0.2.1"},
+		TTL:            120,
+		Proxied:        true,
+	})
+	if err != nil {
+		t.Fatalf("apply settings update: %v", err)
+	}
+	if updated["content"] != "192.0.2.1" || updated["ttl"] != float64(1) || updated["proxied"] != true {
+		t.Fatalf("unexpected update body %#v", updated)
 	}
 }
 

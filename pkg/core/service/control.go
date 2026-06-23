@@ -85,8 +85,10 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 		targetGroupSchedulers:   options.TargetGroupSchedulers,
 		dnsSecretEncryptionKey:  options.DNSSecretEncryptionKey,
 		dnsProviders:            options.DNSProviders,
-		healthActionRegistry:    NewHealthActionRegistry(options.HealthActionExecutors...),
 	}
+	healthActionExecutors := append([]HealthActionExecutor(nil), options.HealthActionExecutors...)
+	healthActionExecutors = append(healthActionExecutors, service.defaultHealthActionExecutors()...)
+	service.healthActionRegistry = NewHealthActionRegistry(healthActionExecutors...)
 	if service.authorizer == nil {
 		service.authorizer = defaultControlAuthorizer()
 	}
@@ -96,7 +98,6 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 	for _, executor := range options.HealthEventExecutors {
 		service.healthActionRegistry.Register(executor)
 	}
-	service.healthActionRegistry.Register(dnsHealthActionExecutor{service: service})
 	return service
 }
 

@@ -95,16 +95,18 @@ type GroupMutationInput struct {
 }
 
 type NodeMutationInput struct {
-	Name                      string
-	NameProvided              bool
-	GroupIDs                  []string
-	GroupIDsProvided          bool
-	ListenIPs                 []NodeListenIPInput
-	ListenIPsProvided         bool
-	PortRanges                []NodePortRangeInput
-	PortRangesProvided        bool
-	PublicDescription         string
-	PublicDescriptionProvided bool
+	Name                        string
+	NameProvided                bool
+	GroupIDs                    []string
+	GroupIDsProvided            bool
+	ListenIPs                   []NodeListenIPInput
+	ListenIPsProvided           bool
+	PortRanges                  []NodePortRangeInput
+	PortRangesProvided          bool
+	DNSPublishAddresses         []NodeDNSPublishAddressInput
+	DNSPublishAddressesProvided bool
+	PublicDescription           string
+	PublicDescriptionProvided   bool
 }
 
 type NodeListenIPInput struct {
@@ -116,6 +118,12 @@ type NodePortRangeInput struct {
 	Protocol  string
 	StartPort int
 	EndPort   int
+}
+
+type NodeDNSPublishAddressInput struct {
+	AddressType string
+	Address     string
+	Enabled     bool
 }
 
 type MonitorMutationInput struct {
@@ -169,6 +177,7 @@ type HealthEvaluationRuleMutationInput struct {
 type HealthEventMutationInput struct {
 	EventType  string
 	ConfigJSON string
+	Secret     string
 	Enabled    bool
 }
 
@@ -178,15 +187,34 @@ type DNSCredentialMutationInput struct {
 	Secret   string
 }
 
-type DNSRecordMutationInput struct {
-	DNSCredentialID string
-	Zone            string
-	RecordName      string
-	RecordType      string
-	DesiredValues   []string
-	HealthCheckID   string
-	EventType       string
-	FailoverValues  []string
+type DNSManagedRecordMutationInput struct {
+	DNSCredentialID  string
+	CredentialZoneID string
+	RecordHost       string
+	RecordName       string
+	RecordType       string
+	TTL              int
+	Proxied          bool
+}
+
+type DNSInstanceMutationInput struct {
+	ManagedRecordID        string
+	Name                   string
+	Priority               int
+	Enabled                bool
+	NodeGroupIDs           []string
+	AnswerCount            int
+	Condition              map[string]any
+	Action                 map[string]any
+	NotificationChannelIDs []string
+}
+
+type NotificationChannelMutationInput struct {
+	Name        string
+	ChannelType string
+	Config      map[string]any
+	Secret      string
+	Enabled     bool
 }
 
 type RegistrationTokenInput struct {
@@ -321,29 +349,30 @@ type NodeGroupPayload struct {
 }
 
 type NodePayload struct {
-	ID                     string                 `json:"id"`
-	Name                   string                 `json:"name"`
-	Status                 string                 `json:"status"`
-	PublicDescription      string                 `json:"public_description"`
-	DesiredConfigVersion   int                    `json:"desired_config_version"`
-	AppliedConfigVersion   int                    `json:"applied_config_version"`
-	ConfigStatus           string                 `json:"config_status"`
-	ConfigErrorMessage     string                 `json:"config_error_message,omitempty"`
-	ConfigStatusUpdatedAt  string                 `json:"config_status_updated_at,omitempty"`
-	LastSeenAt             string                 `json:"last_seen_at,omitempty"`
-	RegisteredAt           string                 `json:"registered_at,omitempty"`
-	AgentVersion           string                 `json:"agent_version"`
-	AgentCommit            string                 `json:"agent_commit"`
-	AgentBuildTime         string                 `json:"agent_build_time"`
-	AgentAutoUpdateEnabled bool                   `json:"agent_auto_update_enabled"`
-	DesiredAgentVersion    string                 `json:"desired_agent_version"`
-	AgentUpdateStatus      string                 `json:"agent_update_status"`
-	AgentUpdateError       string                 `json:"agent_update_error,omitempty"`
-	AgentUpdateStartedAt   string                 `json:"agent_update_started_at,omitempty"`
-	AgentUpdateFinishedAt  string                 `json:"agent_update_finished_at,omitempty"`
-	GroupIDs               []string               `json:"group_ids"`
-	ListenIPs              []NodeListenIPPayload  `json:"listen_ips"`
-	PortRanges             []NodePortRangePayload `json:"port_ranges"`
+	ID                     string                         `json:"id"`
+	Name                   string                         `json:"name"`
+	Status                 string                         `json:"status"`
+	PublicDescription      string                         `json:"public_description"`
+	DesiredConfigVersion   int                            `json:"desired_config_version"`
+	AppliedConfigVersion   int                            `json:"applied_config_version"`
+	ConfigStatus           string                         `json:"config_status"`
+	ConfigErrorMessage     string                         `json:"config_error_message,omitempty"`
+	ConfigStatusUpdatedAt  string                         `json:"config_status_updated_at,omitempty"`
+	LastSeenAt             string                         `json:"last_seen_at,omitempty"`
+	RegisteredAt           string                         `json:"registered_at,omitempty"`
+	AgentVersion           string                         `json:"agent_version"`
+	AgentCommit            string                         `json:"agent_commit"`
+	AgentBuildTime         string                         `json:"agent_build_time"`
+	AgentAutoUpdateEnabled bool                           `json:"agent_auto_update_enabled"`
+	DesiredAgentVersion    string                         `json:"desired_agent_version"`
+	AgentUpdateStatus      string                         `json:"agent_update_status"`
+	AgentUpdateError       string                         `json:"agent_update_error,omitempty"`
+	AgentUpdateStartedAt   string                         `json:"agent_update_started_at,omitempty"`
+	AgentUpdateFinishedAt  string                         `json:"agent_update_finished_at,omitempty"`
+	GroupIDs               []string                       `json:"group_ids"`
+	ListenIPs              []NodeListenIPPayload          `json:"listen_ips"`
+	PortRanges             []NodePortRangePayload         `json:"port_ranges"`
+	DNSPublishAddresses    []NodeDNSPublishAddressPayload `json:"dns_publish_addresses"`
 }
 
 type NodeListenIPPayload struct {
@@ -359,6 +388,15 @@ type NodePortRangePayload struct {
 	StartPort int    `json:"start_port"`
 	EndPort   int    `json:"end_port"`
 	Enabled   bool   `json:"enabled"`
+}
+
+type NodeDNSPublishAddressPayload struct {
+	ID          string `json:"id,omitempty"`
+	AddressType string `json:"address_type"`
+	Address     string `json:"address"`
+	Source      string `json:"source"`
+	Enabled     bool   `json:"enabled"`
+	ObservedAt  string `json:"observed_at,omitempty"`
 }
 
 type MonitorGroupPayload struct {
@@ -386,8 +424,16 @@ type HealthCheckPayload struct {
 	TimeoutSeconds  int                         `json:"timeout_seconds"`
 	Config          map[string]any              `json:"config"`
 	Enabled         bool                        `json:"enabled"`
+	TargetScope     HealthTargetScopePayload    `json:"target_scope"`
 	Targets         []HealthCheckTargetPayload  `json:"targets"`
 	MonitorScopes   []HealthMonitorScopePayload `json:"monitor_scopes"`
+	LatestResults   []HealthResultPayload       `json:"latest_results"`
+}
+
+type HealthTargetScopePayload struct {
+	Type          string   `json:"type"`
+	TargetIDs     []string `json:"target_ids,omitempty"`
+	TargetGroupID string   `json:"target_group_id,omitempty"`
 }
 
 type HealthCheckTargetPayload struct {
@@ -414,7 +460,7 @@ type HealthResultPayload struct {
 	MonitorID           string `json:"monitor_id"`
 	TargetID            string `json:"target_id"`
 	Status              string `json:"status"`
-	LatencyMS           int    `json:"latency_ms,omitempty"`
+	LatencyMS           int    `json:"latency_ms"`
 	ErrorMessage        string `json:"error_message,omitempty"`
 	ObservedAt          string `json:"observed_at"`
 	CreatedAt           string `json:"created_at"`
@@ -441,21 +487,70 @@ type HealthEventPayload struct {
 }
 
 type DNSCredentialPayload struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
+	ID       string                     `json:"id"`
+	Name     string                     `json:"name"`
+	Provider string                     `json:"provider"`
+	Zones    []DNSCredentialZonePayload `json:"zones"`
 }
 
-type DNSRecordPayload struct {
-	ID                string   `json:"id"`
-	DNSCredentialID   string   `json:"dns_credential_id"`
-	Zone              string   `json:"zone"`
-	RecordName        string   `json:"record_name"`
-	RecordType        string   `json:"record_type"`
-	ManagedMode       string   `json:"managed_mode"`
-	DesiredValues     []string `json:"desired_values"`
-	LastAppliedValues []string `json:"last_applied_values"`
-	LastAppliedAt     string   `json:"last_applied_at,omitempty"`
+type DNSCredentialZonePayload struct {
+	ID           string `json:"id"`
+	ZoneID       string `json:"zone_id"`
+	ZoneName     string `json:"zone_name"`
+	Status       string `json:"status"`
+	LastSyncedAt string `json:"last_synced_at"`
+}
+
+type DNSManagedRecordPayload struct {
+	ID                   string                 `json:"id"`
+	DNSCredentialID      string                 `json:"dns_credential_id"`
+	CredentialZoneID     string                 `json:"credential_zone_id"`
+	ZoneID               string                 `json:"zone_id"`
+	ZoneName             string                 `json:"zone_name"`
+	RecordHost           string                 `json:"record_host"`
+	RecordName           string                 `json:"record_name"`
+	RecordType           string                 `json:"record_type"`
+	TTL                  int                    `json:"ttl"`
+	Proxied              bool                   `json:"proxied"`
+	ActiveInstanceID     string                 `json:"active_instance_id,omitempty"`
+	LastAppliedValues    []string               `json:"last_applied_values"`
+	LastEvaluationStatus string                 `json:"last_evaluation_status"`
+	LastEvaluationError  string                 `json:"last_evaluation_error,omitempty"`
+	LastDiagnostics      []DNSDiagnosticPayload `json:"last_diagnostics"`
+	LastEvaluatedAt      string                 `json:"last_evaluated_at,omitempty"`
+	LastAppliedAt        string                 `json:"last_applied_at,omitempty"`
+	Instances            []DNSInstancePayload   `json:"instances"`
+}
+
+type DNSInstancePayload struct {
+	ID                     string                 `json:"id"`
+	ManagedRecordID        string                 `json:"managed_record_id"`
+	Name                   string                 `json:"name"`
+	Priority               int                    `json:"priority"`
+	Enabled                bool                   `json:"enabled"`
+	NodeGroupIDs           []string               `json:"node_group_ids"`
+	AnswerCount            int                    `json:"answer_count"`
+	Condition              map[string]any         `json:"condition"`
+	Action                 map[string]any         `json:"action"`
+	NotificationChannelIDs []string               `json:"notification_channel_ids"`
+	LastOutputValues       []string               `json:"last_output_values"`
+	LastStatus             string                 `json:"last_status"`
+	LastDiagnostics        []DNSDiagnosticPayload `json:"last_diagnostics"`
+	LastEvaluatedAt        string                 `json:"last_evaluated_at,omitempty"`
+}
+
+type DNSDiagnosticPayload struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
+type NotificationChannelPayload struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	ChannelType string         `json:"channel_type"`
+	Config      map[string]any `json:"config"`
+	Enabled     bool           `json:"enabled"`
 }
 
 type RegistrationTokenPayload struct {

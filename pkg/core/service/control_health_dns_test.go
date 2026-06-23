@@ -2,359 +2,14 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
 	"time"
 
-	"github.com/noxaaa/prism-oss/pkg/core/dns"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
-
-func TestRecordMonitorHealthResultsAppliesDNSFailover(t *testing.T) {
-	store := &healthDNSTestStore{
-		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
-		checks: []repo.HealthCheckRecord{{
-			ID:             "health_1",
-			OrganizationID: "org_1",
-			Enabled:        true,
-			Targets: []repo.HealthCheckTargetRecord{{
-				ID:            "health_target_1",
-				TargetID:      "target_1",
-				TargetGroupID: "",
-			}},
-			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
-				ScopeType: "MONITOR",
-				MonitorID: "monitor_1",
-			}},
-		}},
-		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
-		record: repo.DNSRecordRecord{
-			ID:                    "dns_1",
-			OrganizationID:        "org_1",
-			DNSCredentialID:       "credential_1",
-			Zone:                  "zone_1",
-			RecordName:            "health.example.com",
-			RecordType:            "A",
-			DesiredValuesJSON:     `["192.0.2.1"]`,
-			LastAppliedValuesJSON: "[]",
-		},
-		rules: []repo.HealthEvaluationRuleRecord{{
-			ID:             "rule_1",
-			OrganizationID: "org_1",
-			HealthCheckID:  "health_1",
-			Enabled:        true,
-			Events: []repo.HealthEventRecord{{
-				ID:         "event_1",
-				EventType:  "DNS_FAILOVER",
-				Enabled:    true,
-				ConfigJSON: `{"dns_record_id":"dns_1","failover_values":["198.51.100.10"]}`,
-			}},
-		}},
-	}
-	provider := &healthDNSTestProvider{}
-	control := NewControlServiceWithOptions(store, ControlServiceOptions{
-		DNSSecretEncryptionKey: "test-dns-key",
-		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
-	})
-	encrypted, err := control.encryptDNSSecret("cloudflare-token")
-	if err != nil {
-		t.Fatalf("encrypt test secret: %v", err)
-	}
-	store.credential.EncryptedSecret = encrypted
-
-	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
-		HealthCheckID:       "health_1",
-		HealthCheckTargetID: "health_target_1",
-		TargetID:            "target_1",
-		Status:              "OFFLINE",
-		ObservedAt:          "2026-06-20T00:00:00Z",
-	}}); err != nil {
-		t.Fatalf("record monitor health results: %v", err)
-	}
-	if len(store.results) != 1 {
-		t.Fatalf("expected health result to be recorded, got %#v", store.results)
-	}
-	if provider.lastInput().ProviderSecret != "cloudflare-token" || provider.lastInput().Zone != "zone_1" || provider.lastInput().RecordName != "health.example.com" {
-		t.Fatalf("unexpected provider input: %#v", provider.lastInput())
-	}
-	if got := provider.lastInput().Values; len(got) != 1 || got[0] != "198.51.100.10" {
-		t.Fatalf("expected failover value to be applied, got %#v", got)
-	}
-	var lastApplied []string
-	if err := json.Unmarshal([]byte(store.record.LastAppliedValuesJSON), &lastApplied); err != nil {
-		t.Fatalf("decode last applied values: %v", err)
-	}
-	if len(lastApplied) != 1 || lastApplied[0] != "198.51.100.10" || store.record.LastAppliedAt == "" {
-		t.Fatalf("expected last applied failover values, got values=%#v at=%q", lastApplied, store.record.LastAppliedAt)
-	}
-}
-
-func TestRecordMonitorHealthResultsAggregatesDNSActionPerCheck(t *testing.T) {
-	store := &healthDNSTestStore{
-		monitor: repo.MonitorRecord{ID: "monitor_1", OrganizationID: "org_1"},
-		checks: []repo.HealthCheckRecord{{
-			ID:             "health_1",
-			OrganizationID: "org_1",
-			Enabled:        true,
-			Targets: []repo.HealthCheckTargetRecord{{
-				ID:       "health_target_1",
-				TargetID: "target_1",
-			}, {
-				ID:       "health_target_2",
-				TargetID: "target_2",
-			}},
-			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
-				ScopeType: "MONITOR",
-				MonitorID: "monitor_1",
-			}},
-		}},
-		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
-		record: repo.DNSRecordRecord{
-			ID:                "dns_1",
-			OrganizationID:    "org_1",
-			DNSCredentialID:   "credential_1",
-			Zone:              "zone_1",
-			RecordName:        "health.example.com",
-			RecordType:        "A",
-			DesiredValuesJSON: `["192.0.2.1"]`,
-		},
-		rules: []repo.HealthEvaluationRuleRecord{{
-			ID:             "rule_1",
-			OrganizationID: "org_1",
-			HealthCheckID:  "health_1",
-			Enabled:        true,
-			Events: []repo.HealthEventRecord{{
-				ID:         "event_1",
-				EventType:  "DNS_FAILOVER",
-				Enabled:    true,
-				ConfigJSON: `{"dns_record_id":"dns_1","failover_values":["198.51.100.10"]}`,
-			}},
-		}},
-	}
-	provider := &healthDNSTestProvider{}
-	control := NewControlServiceWithOptions(store, ControlServiceOptions{
-		DNSSecretEncryptionKey: "test-dns-key",
-		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
-	})
-	encrypted, err := control.encryptDNSSecret("cloudflare-token")
-	if err != nil {
-		t.Fatalf("encrypt test secret: %v", err)
-	}
-	store.credential.EncryptedSecret = encrypted
-
-	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
-		HealthCheckID:       "health_1",
-		HealthCheckTargetID: "health_target_1",
-		TargetID:            "target_1",
-		Status:              "ONLINE",
-		ObservedAt:          "2026-06-20T00:00:00Z",
-	}, {
-		HealthCheckID:       "health_1",
-		HealthCheckTargetID: "health_target_2",
-		TargetID:            "target_2",
-		Status:              "OFFLINE",
-		ObservedAt:          "2026-06-20T00:00:01Z",
-	}}); err != nil {
-		t.Fatalf("record monitor health results: %v", err)
-	}
-	if provider.calls() != 1 {
-		t.Fatalf("expected one DNS apply for the check evaluation, got %d", provider.calls())
-	}
-	if got := provider.lastInput().Values; len(got) != 1 || got[0] != "198.51.100.10" {
-		t.Fatalf("expected aggregate offline status to apply failover value, got %#v", got)
-	}
-}
-
-func TestRecordMonitorHealthResultsEvaluatesLatestResultsAcrossMonitorGroup(t *testing.T) {
-	store := &healthDNSTestStore{
-		monitor: repo.MonitorRecord{
-			ID:             "monitor_1",
-			OrganizationID: "org_1",
-			GroupIDs:       []string{"monitor_group_1"},
-		},
-		monitors: []repo.MonitorRecord{{
-			ID:             "monitor_1",
-			OrganizationID: "org_1",
-			GroupIDs:       []string{"monitor_group_1"},
-		}, {
-			ID:             "monitor_2",
-			OrganizationID: "org_1",
-			GroupIDs:       []string{"monitor_group_1"},
-		}},
-		monitorGroups: map[string]repo.MonitorGroupRecord{
-			"monitor_group_1": {ID: "monitor_group_1", OrganizationID: "org_1"},
-		},
-		checks: []repo.HealthCheckRecord{{
-			ID:             "health_1",
-			OrganizationID: "org_1",
-			Enabled:        true,
-			Targets: []repo.HealthCheckTargetRecord{{
-				ID:       "health_target_1",
-				TargetID: "target_1",
-			}},
-			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
-				ScopeType:      "MONITOR_GROUP",
-				MonitorGroupID: "monitor_group_1",
-			}},
-		}},
-		results: []repo.HealthResultRecord{{
-			ID:                  "existing_result_1",
-			OrganizationID:      "org_1",
-			HealthCheckID:       "health_1",
-			HealthCheckTargetID: "health_target_1",
-			MonitorID:           "monitor_2",
-			TargetID:            "target_1",
-			Status:              "OFFLINE",
-			ObservedAt:          "2026-06-20T00:00:00Z",
-		}},
-		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
-		record: repo.DNSRecordRecord{
-			ID:                    "dns_1",
-			OrganizationID:        "org_1",
-			DNSCredentialID:       "credential_1",
-			Zone:                  "zone_1",
-			RecordName:            "health.example.com",
-			RecordType:            "A",
-			DesiredValuesJSON:     `["192.0.2.1"]`,
-			LastAppliedValuesJSON: `["198.51.100.10"]`,
-		},
-		rules: []repo.HealthEvaluationRuleRecord{{
-			ID:             "rule_1",
-			OrganizationID: "org_1",
-			HealthCheckID:  "health_1",
-			Enabled:        true,
-			Events: []repo.HealthEventRecord{{
-				ID:         "event_1",
-				EventType:  "DNS_FAILOVER",
-				Enabled:    true,
-				ConfigJSON: `{"dns_record_id":"dns_1","failover_values":["198.51.100.10"]}`,
-			}},
-		}},
-	}
-	provider := &healthDNSTestProvider{}
-	control := NewControlServiceWithOptions(store, ControlServiceOptions{
-		DNSSecretEncryptionKey: "test-dns-key",
-		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
-	})
-	encrypted, err := control.encryptDNSSecret("cloudflare-token")
-	if err != nil {
-		t.Fatalf("encrypt test secret: %v", err)
-	}
-	store.credential.EncryptedSecret = encrypted
-
-	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
-		HealthCheckID:       "health_1",
-		HealthCheckTargetID: "health_target_1",
-		TargetID:            "target_1",
-		Status:              "ONLINE",
-		ObservedAt:          "2026-06-20T00:00:05Z",
-	}}); err != nil {
-		t.Fatalf("record monitor health results: %v", err)
-	}
-	if provider.calls() != 0 {
-		t.Fatalf("expected monitor group evaluation to keep failover while another scoped monitor is offline, got %d provider calls", provider.calls())
-	}
-}
-
-func TestRecordMonitorHealthResultsIgnoresDisconnectedMonitorLatestResult(t *testing.T) {
-	store := &healthDNSTestStore{
-		monitor: repo.MonitorRecord{
-			ID:             "monitor_1",
-			OrganizationID: "org_1",
-			Status:         "ONLINE",
-			GroupIDs:       []string{"monitor_group_1"},
-		},
-		monitors: []repo.MonitorRecord{{
-			ID:             "monitor_1",
-			OrganizationID: "org_1",
-			Status:         "ONLINE",
-			GroupIDs:       []string{"monitor_group_1"},
-		}, {
-			ID:             "monitor_2",
-			OrganizationID: "org_1",
-			Status:         "OFFLINE",
-			GroupIDs:       []string{"monitor_group_1"},
-		}},
-		monitorGroups: map[string]repo.MonitorGroupRecord{
-			"monitor_group_1": {ID: "monitor_group_1", OrganizationID: "org_1"},
-		},
-		checks: []repo.HealthCheckRecord{{
-			ID:             "health_1",
-			OrganizationID: "org_1",
-			Enabled:        true,
-			Targets: []repo.HealthCheckTargetRecord{{
-				ID:       "health_target_1",
-				TargetID: "target_1",
-			}},
-			MonitorScopes: []repo.HealthCheckMonitorScopeRecord{{
-				ScopeType:      "MONITOR_GROUP",
-				MonitorGroupID: "monitor_group_1",
-			}},
-		}},
-		results: []repo.HealthResultRecord{{
-			ID:                  "existing_result_1",
-			OrganizationID:      "org_1",
-			HealthCheckID:       "health_1",
-			HealthCheckTargetID: "health_target_1",
-			MonitorID:           "monitor_2",
-			TargetID:            "target_1",
-			Status:              "OFFLINE",
-			ObservedAt:          "2026-06-20T00:00:00Z",
-		}},
-		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1", Provider: "CLOUDFLARE"},
-		record: repo.DNSRecordRecord{
-			ID:                    "dns_1",
-			OrganizationID:        "org_1",
-			DNSCredentialID:       "credential_1",
-			Zone:                  "zone_1",
-			RecordName:            "health.example.com",
-			RecordType:            "A",
-			DesiredValuesJSON:     `["192.0.2.1"]`,
-			LastAppliedValuesJSON: `["198.51.100.10"]`,
-		},
-		rules: []repo.HealthEvaluationRuleRecord{{
-			ID:             "rule_1",
-			OrganizationID: "org_1",
-			HealthCheckID:  "health_1",
-			Enabled:        true,
-			Events: []repo.HealthEventRecord{{
-				ID:         "event_1",
-				EventType:  "DNS_FAILOVER",
-				Enabled:    true,
-				ConfigJSON: `{"dns_record_id":"dns_1","failover_values":["198.51.100.10"]}`,
-			}},
-		}},
-	}
-	provider := &healthDNSTestProvider{}
-	control := NewControlServiceWithOptions(store, ControlServiceOptions{
-		DNSSecretEncryptionKey: "test-dns-key",
-		DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": provider},
-	})
-	encrypted, err := control.encryptDNSSecret("cloudflare-token")
-	if err != nil {
-		t.Fatalf("encrypt test secret: %v", err)
-	}
-	store.credential.EncryptedSecret = encrypted
-
-	if err := control.RecordMonitorHealthResults(context.Background(), "org_1", "monitor_1", []HealthResultInput{{
-		HealthCheckID:       "health_1",
-		HealthCheckTargetID: "health_target_1",
-		TargetID:            "target_1",
-		Status:              "ONLINE",
-		ObservedAt:          "2026-06-20T00:00:05Z",
-	}}); err != nil {
-		t.Fatalf("record monitor health results: %v", err)
-	}
-	if provider.calls() != 1 {
-		t.Fatalf("expected stale result from disconnected monitor to be ignored and DNS restored, got %d provider calls", provider.calls())
-	}
-	if got := provider.lastInput().Values; len(got) != 1 || got[0] != "192.0.2.1" {
-		t.Fatalf("expected desired value to be restored, got %#v", got)
-	}
-}
 
 func TestRecordMonitorHealthResultsIgnoresStaleMonitorLatestResult(t *testing.T) {
 	store := &healthDNSTestStore{
@@ -505,7 +160,7 @@ func TestControlServiceReportsRegisteredHealthActionTypes(t *testing.T) {
 	})
 
 	got := control.SupportedHealthActionTypes()
-	want := []string{"DNS_DELETE_ALL", "DNS_DELETE_OFFLINE", "DNS_FAILOVER", "DNS_RESTORE", "EMAIL", "WEBHOOK"}
+	want := []string{"EMAIL", "WEBHOOK"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("supported health action types = %#v, want %#v", got, want)
 	}
@@ -547,6 +202,107 @@ func TestCreateHealthEvaluationRuleUsesRegisteredActionExecutor(t *testing.T) {
 	}
 }
 
+func TestCreateHealthEvaluationRuleSupportsDefaultNotificationActions(t *testing.T) {
+	store := &healthDNSTestStore{
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+		}},
+	}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{})
+
+	result, err := control.CreateHealthEvaluationRule(context.Background(), healthDNSTestIdentity(string(domain.PermissionHealthChecksManage)), HealthEvaluationRuleMutationInput{
+		HealthCheckID: "health_1",
+		Name:          "notify offline",
+		Enabled:       true,
+		Events: []HealthEventMutationInput{{
+			EventType:  "WEBHOOK",
+			ConfigJSON: `{"url":"https://hooks.example.test/health"}`,
+			Enabled:    true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create default webhook health action: %v", err)
+	}
+	if len(result.Events) != 1 || result.Events[0].EventType != "WEBHOOK" {
+		t.Fatalf("unexpected default health action payload: %#v", result)
+	}
+}
+
+func TestCreateHealthEvaluationRuleEncryptsNotificationEventSecret(t *testing.T) {
+	store := &healthDNSTestStore{
+		checks: []repo.HealthCheckRecord{{
+			ID:             "health_1",
+			OrganizationID: "org_1",
+			Enabled:        true,
+		}},
+	}
+	control := NewControlServiceWithOptions(store, ControlServiceOptions{
+		DNSSecretEncryptionKey: "test-secret-key",
+	})
+
+	_, err := control.CreateHealthEvaluationRule(context.Background(), healthDNSTestIdentity(string(domain.PermissionHealthChecksManage)), HealthEvaluationRuleMutationInput{
+		HealthCheckID: "health_1",
+		Name:          "notify offline",
+		Enabled:       true,
+		Events: []HealthEventMutationInput{{
+			EventType:  "EMAIL",
+			ConfigJSON: `{"smtp_host":"smtp.example.com","from":"ops@example.com","to":["ops@example.com"]}`,
+			Secret:     "smtp-password",
+			Enabled:    true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create health evaluation rule: %v", err)
+	}
+	if len(store.createdHealthEvents) != 1 || store.createdHealthEvents[0].EncryptedSecret == "" || store.createdHealthEvents[0].EncryptedSecret == "smtp-password" {
+		t.Fatalf("expected encrypted health event secret, got %#v", store.createdHealthEvents)
+	}
+	secret, err := control.decryptDNSSecret(store.createdHealthEvents[0].EncryptedSecret)
+	if err != nil {
+		t.Fatalf("decrypt health event secret: %v", err)
+	}
+	if secret != "smtp-password" {
+		t.Fatalf("unexpected decrypted secret %q", secret)
+	}
+}
+
+func TestDefaultHealthNotificationExecutorPassesEncryptedSecret(t *testing.T) {
+	capturedSecret := ""
+	executor := healthNotificationActionExecutor{
+		decryptSecret: func(encrypted string) (string, error) {
+			if encrypted != "encrypted-secret" {
+				t.Fatalf("unexpected encrypted secret %q", encrypted)
+			}
+			return "smtp-password", nil
+		},
+		send: func(_ context.Context, channelType string, _ string, secret string, _ []byte) error {
+			if channelType != "EMAIL" {
+				t.Fatalf("unexpected channel type %q", channelType)
+			}
+			capturedSecret = secret
+			return nil
+		},
+	}
+	action, ok, err := executor.BuildAction(context.Background(), nil, HealthActionExecutionInput{
+		OrganizationID: "org_1",
+		HealthCheck:    repo.HealthCheckRecord{ID: "health_1", Name: "edge"},
+		Rule:           repo.HealthEvaluationRuleRecord{ID: "rule_1"},
+		Event:          repo.HealthEventRecord{ID: "event_1", EventType: "EMAIL", ConfigJSON: `{}`, EncryptedSecret: "encrypted-secret"},
+		Result:         repo.HealthResultRecord{Status: "OFFLINE", ObservedAt: "2026-06-20T00:00:00Z"},
+	})
+	if err != nil || !ok {
+		t.Fatalf("build notification action ok=%v err=%v", ok, err)
+	}
+	if err := executor.Execute(context.Background(), action); err != nil {
+		t.Fatalf("execute notification action: %v", err)
+	}
+	if capturedSecret != "smtp-password" {
+		t.Fatalf("expected decrypted secret to be passed to dispatcher, got %q", capturedSecret)
+	}
+}
+
 func TestCreateHealthEvaluationRuleRejectsUnsupportedActionType(t *testing.T) {
 	store := &healthDNSTestStore{
 		checks: []repo.HealthCheckRecord{{
@@ -562,8 +318,8 @@ func TestCreateHealthEvaluationRuleRejectsUnsupportedActionType(t *testing.T) {
 		Name:          "notify offline",
 		Enabled:       true,
 		Events: []HealthEventMutationInput{{
-			EventType:  "WEBHOOK",
-			ConfigJSON: `{"url":"https://hooks.example.test/health"}`,
+			EventType:  "PAGERDUTY",
+			ConfigJSON: `{}`,
 			Enabled:    true,
 		}},
 	})
@@ -672,11 +428,11 @@ func TestRecordMonitorHealthResultsRejectsDeletedMonitorGroupScope(t *testing.T)
 func TestDeleteDNSCredentialRejectsActiveRecords(t *testing.T) {
 	store := &healthDNSTestStore{
 		credential: repo.DNSCredentialRecord{ID: "credential_1", OrganizationID: "org_1"},
-		record: repo.DNSRecordRecord{
-			ID:              "dns_1",
+		managedRecords: []repo.DNSManagedRecordRecord{{
+			ID:              "managed_record_1",
 			OrganizationID:  "org_1",
 			DNSCredentialID: "credential_1",
-		},
+		}},
 	}
 	control := NewControlServiceWithOptions(store, ControlServiceOptions{Authorizer: healthDNSTestAuthorizer{}})
 
@@ -960,28 +716,5 @@ func TestBuildHealthBindingsPreservesEmptyTargetGroupScope(t *testing.T) {
 	}
 	if len(targets) != 1 || targets[0].ScopeType != "TARGET_GROUP" || targets[0].TargetGroupID != "target_group_1" || targets[0].TargetID != "" {
 		t.Fatalf("expected one placeholder target-group binding, got %#v", targets)
-	}
-}
-
-func TestHealthCheckPayloadOmitsEmptyTargetGroupBinding(t *testing.T) {
-	payload := toHealthCheckPayload(repo.HealthCheckRecord{
-		ID:             "health_1",
-		OrganizationID: "org_1",
-		Targets: []repo.HealthCheckTargetRecord{{
-			ID:            "health_target_placeholder",
-			ScopeType:     "TARGET_GROUP",
-			TargetGroupID: "target_group_1",
-		}, {
-			ID:         "health_target_1",
-			ScopeType:  "TARGET_GROUP",
-			TargetID:   "target_1",
-			TargetName: "current",
-			TargetHost: "198.51.100.20",
-			TargetPort: 443,
-		}},
-	})
-
-	if len(payload.Targets) != 1 || payload.Targets[0].TargetID != "target_1" {
-		t.Fatalf("expected placeholder target-group binding to stay internal, got %#v", payload.Targets)
 	}
 }

@@ -56,6 +56,7 @@ import { localizeControlError, localizeEnum, localizeImportIssue, useI18n } from
 import { hasAnyPermission, hasPermission } from "@/components/console/permissions";
 import { ResourceSelect } from "@/components/console/resource-select";
 import { RuleDeploymentCell, RuleDeploymentSummary } from "@/components/console/rule-deployment-ui";
+import { RuleMatchCell } from "@/components/console/rule-match-cell";
 import { RuleUpstreamCell } from "@/components/console/rule-upstream-cell";
 import { useConsoleSession } from "@/components/console/shell";
 import {
@@ -380,7 +381,7 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
                   <TableCell><StatusBadge value={rule.status} /></TableCell>
                   <TableCell><RuleDeploymentCell rule={rule} /></TableCell>
                   <TableCell>{localizeEnum(rule.protocol, locale)} {rule.listen_ip}:{rule.port}</TableCell>
-                  <TableCell>{localizeEnum(rule.match.type, locale)}{rule.match.sni_hostname ? ` ${rule.match.sni_hostname}` : ""}</TableCell>
+                  <TableCell><RuleMatchCell rule={rule} /></TableCell>
                   <TableCell><RuleUpstreamCell rule={rule} targetGroupOptionLabelsByID={targetGroupOptionLabelsByID} targetGroupsByID={targetGroupsByID} targetOptionLabelsByID={targetOptionLabelsByID} targetsByID={targetsByID} /></TableCell>
                   <TableCell>{trafficByRule[rule.id] ? t("rules.trafficValue", { upload: bytes(trafficByRule[rule.id].upload_bytes), download: bytes(trafficByRule[rule.id].download_bytes) }) : t("common.notLoaded")}</TableCell>
                   <TableCell>

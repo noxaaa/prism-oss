@@ -1,4 +1,4 @@
-import { DNSPage } from "@/components/console/features/monitors";
+import { DNSPage } from "@/components/console/features/dns";
 import { ConsoleShell } from "@/components/console/shell";
 import { getConsoleServerContext } from "@/lib/server-console";
 

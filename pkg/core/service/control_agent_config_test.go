@@ -67,6 +67,20 @@ func TestShouldRequestAgentAutoUpdateRequiresConcreteTarget(t *testing.T) {
 	}
 }
 
+func TestPublicRemoteIPRejectsCarrierGradeNAT(t *testing.T) {
+	for _, remoteAddr := range []string{
+		"100.64.0.1:443",
+		"100.127.255.254",
+	} {
+		if ip := publicRemoteIP(remoteAddr); ip != nil {
+			t.Fatalf("expected CGNAT remote %q to be rejected, got %s", remoteAddr, ip.String())
+		}
+	}
+	if ip := publicRemoteIP("203.0.113.10:443"); ip == nil || ip.String() != "203.0.113.10" {
+		t.Fatalf("expected public remote to be accepted, got %v", ip)
+	}
+}
+
 func TestRecordNodeAgentHelloMarksMatchedPendingUpdateSucceeded(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	store := &agentHelloTestStore{

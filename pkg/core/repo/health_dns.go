@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
 
 func (store *PostgresStore) ListHealthChecksByOrganization(ctx context.Context, organizationID string) ([]HealthCheckRecord, error) {
@@ -182,6 +183,67 @@ func (store *PostgresStore) ListLatestHealthResultsByCheck(ctx context.Context, 
 	return results, rows.Err()
 }
 
+func (store *PostgresStore) ListLatestHealthResultsByChecks(ctx context.Context, organizationID string, healthCheckIDs []string) (map[string][]HealthResultRecord, error) {
+	resultsByCheck := make(map[string][]HealthResultRecord, len(healthCheckIDs))
+	if len(healthCheckIDs) == 0 {
+		return resultsByCheck, nil
+	}
+	args := make([]any, 0, len(healthCheckIDs)+1)
+	args = append(args, organizationID)
+	placeholders := make([]string, 0, len(healthCheckIDs))
+	for _, healthCheckID := range healthCheckIDs {
+		if healthCheckID == "" {
+			continue
+		}
+		placeholders = append(placeholders, "?")
+		args = append(args, healthCheckID)
+	}
+	if len(placeholders) == 0 {
+		return resultsByCheck, nil
+	}
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT DISTINCT ON (hr.health_check_id, hr.health_check_target_id, hr.monitor_id)
+		       hr.id, hr.organization_id, hr.health_check_id, hr.health_check_target_id, hr.monitor_id, hr.target_id, hr.status, COALESCE(hr.latency_ms, -1), hr.error_message, hr.observed_at, hr.created_at
+		FROM health_results hr
+		WHERE hr.organization_id = ? AND hr.health_check_id IN (`+strings.Join(placeholders, ", ")+`)
+		  AND EXISTS (
+			SELECT 1
+			FROM health_check_monitor_scopes scope
+			WHERE scope.organization_id = hr.organization_id
+			  AND scope.health_check_id = hr.health_check_id
+			  AND (
+				(scope.scope_type = 'MONITOR' AND scope.monitor_id = hr.monitor_id)
+				OR (
+					scope.scope_type = 'MONITOR_GROUP'
+					AND EXISTS (
+						SELECT 1
+						FROM monitor_group_members member
+						JOIN monitors monitor ON monitor.organization_id = member.organization_id
+							AND monitor.id = member.monitor_id
+							AND monitor.deleted_at IS NULL
+						WHERE member.organization_id = hr.organization_id
+						  AND member.monitor_group_id = scope.monitor_group_id
+						  AND member.monitor_id = hr.monitor_id
+					)
+				)
+			  )
+		  )
+		ORDER BY hr.health_check_id, hr.health_check_target_id, hr.monitor_id, hr.observed_at DESC, hr.created_at DESC, hr.id DESC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		result, err := scanHealthResultRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		resultsByCheck[result.HealthCheckID] = append(resultsByCheck[result.HealthCheckID], result)
+	}
+	return resultsByCheck, rows.Err()
+}
+
 func (store *PostgresStore) RecordHealthResults(ctx context.Context, organizationID string, results []HealthResultRecord) error {
 	for _, result := range results {
 		if _, err := store.db.ExecContext(ctx, `
@@ -242,43 +304,18 @@ func (store *PostgresStore) CreateHealthEvaluationRule(ctx context.Context, rule
 	}
 	for _, event := range events {
 		if _, err := store.db.ExecContext(ctx, `
-			INSERT INTO health_events (id, organization_id, health_evaluation_rule_id, event_type, config_json, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?)
-		`, event.ID, rule.OrganizationID, rule.ID, event.EventType, event.ConfigJSON, event.Enabled, event.CreatedAt, event.UpdatedAt); err != nil {
+				INSERT INTO health_events (id, organization_id, health_evaluation_rule_id, event_type, config_json, encrypted_secret, enabled, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?)
+			`, event.ID, rule.OrganizationID, rule.ID, event.EventType, event.ConfigJSON, event.EncryptedSecret, event.Enabled, event.CreatedAt, event.UpdatedAt); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (store *PostgresStore) DeleteHealthEvaluationRulesForDNSRecord(ctx context.Context, organizationID string, dnsRecordID string, deletedAt string) error {
-	_, err := store.db.ExecContext(ctx, `
-		UPDATE health_events
-		SET deleted_at = ?, updated_at = ?
-		WHERE organization_id = ?
-		  AND deleted_at IS NULL
-		  AND config_json->>'dns_record_id' = ?
-	`, deletedAt, deletedAt, organizationID, dnsRecordID)
-	if err != nil {
-		return err
-	}
-	_, err = store.db.ExecContext(ctx, `
-		UPDATE health_evaluation_rules
-		SET deleted_at = ?, updated_at = ?
-		WHERE organization_id = ?
-		  AND deleted_at IS NULL
-		  AND id IN (
-		    SELECT health_evaluation_rule_id
-		    FROM health_events
-		    WHERE organization_id = ? AND config_json->>'dns_record_id' = ?
-		  )
-	`, deletedAt, deletedAt, organizationID, organizationID, dnsRecordID)
-	return err
-}
-
 func (store *PostgresStore) listHealthEventsByRule(ctx context.Context, organizationID string, ruleID string) ([]HealthEventRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, health_evaluation_rule_id, event_type, config_json::text, enabled, created_at, updated_at, COALESCE(deleted_at::text, '')
+			SELECT id, organization_id, health_evaluation_rule_id, event_type, config_json::text, encrypted_secret, enabled, created_at, updated_at, COALESCE(deleted_at::text, '')
 		FROM health_events
 		WHERE organization_id = ? AND health_evaluation_rule_id = ? AND deleted_at IS NULL
 		ORDER BY event_type, id
@@ -509,7 +546,7 @@ func scanHealthEvaluationRuleRows(rows *sql.Rows) (HealthEvaluationRuleRecord, e
 
 func scanHealthEventRows(rows *sql.Rows) (HealthEventRecord, error) {
 	var event HealthEventRecord
-	if err := rows.Scan(&event.ID, &event.OrganizationID, &event.HealthEvaluationRuleID, &event.EventType, &event.ConfigJSON, &event.Enabled, &event.CreatedAt, &event.UpdatedAt, &event.DeletedAt); err != nil {
+	if err := rows.Scan(&event.ID, &event.OrganizationID, &event.HealthEvaluationRuleID, &event.EventType, &event.ConfigJSON, &event.EncryptedSecret, &event.Enabled, &event.CreatedAt, &event.UpdatedAt, &event.DeletedAt); err != nil {
 		return HealthEventRecord{}, mapReadError(err)
 	}
 	return event, nil
@@ -552,6 +589,102 @@ func (store *PostgresStore) CreateDNSCredential(ctx context.Context, credential 
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, credential.ID, credential.OrganizationID, credential.Provider, credential.Name, credential.EncryptedSecret, credential.CreatedAt, credential.UpdatedAt)
 	return err
+}
+
+func (store *PostgresStore) ListDNSCredentialZonesByOrganization(ctx context.Context, organizationID string) ([]DNSCredentialZoneRecord, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, organization_id, dns_credential_id, zone_id, zone_name, status, last_synced_at, created_at, updated_at
+		FROM dns_credential_zones
+		WHERE organization_id = ?
+		ORDER BY zone_name, zone_id
+	`, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	zones := make([]DNSCredentialZoneRecord, 0)
+	for rows.Next() {
+		zone, err := scanDNSCredentialZoneRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		zones = append(zones, zone)
+	}
+	return zones, rows.Err()
+}
+
+func (store *PostgresStore) ListDNSCredentialZonesByCredential(ctx context.Context, organizationID string, credentialID string) ([]DNSCredentialZoneRecord, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, organization_id, dns_credential_id, zone_id, zone_name, status, last_synced_at, created_at, updated_at
+		FROM dns_credential_zones
+		WHERE organization_id = ? AND dns_credential_id = ?
+		ORDER BY zone_name, zone_id
+	`, organizationID, credentialID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	zones := make([]DNSCredentialZoneRecord, 0)
+	for rows.Next() {
+		zone, err := scanDNSCredentialZoneRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		zones = append(zones, zone)
+	}
+	return zones, rows.Err()
+}
+
+func (store *PostgresStore) FindDNSCredentialZoneByID(ctx context.Context, organizationID string, credentialZoneID string) (DNSCredentialZoneRecord, error) {
+	row := store.db.QueryRowContext(ctx, `
+		SELECT id, organization_id, dns_credential_id, zone_id, zone_name, status, last_synced_at, created_at, updated_at
+		FROM dns_credential_zones
+		WHERE organization_id = ? AND id = ?
+	`, organizationID, credentialZoneID)
+	return scanDNSCredentialZone(row)
+}
+
+func (store *PostgresStore) ReplaceDNSCredentialZones(ctx context.Context, organizationID string, credentialID string, zones []DNSCredentialZoneRecord, now string, nextID func() string) error {
+	seen := make(map[string]bool, len(zones))
+	for _, zone := range zones {
+		if zone.ZoneID == "" || zone.ZoneName == "" {
+			continue
+		}
+		seen[zone.ZoneID] = true
+		status := normalizeDNSCredentialZoneStatus(zone.Status)
+		_, err := store.db.ExecContext(ctx, `
+			INSERT INTO dns_credential_zones (
+				id, organization_id, dns_credential_id, zone_id, zone_name, status,
+				last_synced_at, created_at, updated_at
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (organization_id, dns_credential_id, zone_id)
+			DO UPDATE SET zone_name = EXCLUDED.zone_name,
+			              status = EXCLUDED.status,
+			              last_synced_at = EXCLUDED.last_synced_at,
+			              updated_at = EXCLUDED.updated_at
+		`, nextID(), organizationID, credentialID, zone.ZoneID, zone.ZoneName, status, now, now, now)
+		if err != nil {
+			return mapWriteError(err)
+		}
+	}
+	existing, err := store.ListDNSCredentialZonesByCredential(ctx, organizationID, credentialID)
+	if err != nil {
+		return err
+	}
+	for _, zone := range existing {
+		if seen[zone.ZoneID] {
+			continue
+		}
+		if _, err := store.db.ExecContext(ctx, `
+			UPDATE dns_credential_zones
+			SET status = 'UNAVAILABLE', last_synced_at = ?, updated_at = ?
+			WHERE organization_id = ? AND dns_credential_id = ? AND zone_id = ?
+		`, now, now, organizationID, credentialID, zone.ZoneID); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	return nil
 }
 
 func (store *PostgresStore) UpdateDNSCredential(ctx context.Context, credential DNSCredentialRecord, replaceSecret bool) error {
@@ -603,172 +736,25 @@ func scanDNSCredentialRows(rows *sql.Rows) (DNSCredentialRecord, error) {
 	return scanDNSCredential(rows)
 }
 
-func (store *PostgresStore) ListDNSRecordsByOrganization(ctx context.Context, organizationID string) ([]DNSRecordRecord, error) {
-	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, dns_credential_id, zone, record_name, record_type, managed_mode,
-		       desired_values_json::text, last_applied_values_json::text, COALESCE(last_applied_at::text, ''),
-		       COALESCE(pending_retire_dns_credential_id::text, ''), COALESCE(pending_retire_zone, ''),
-		       COALESCE(pending_retire_record_name, ''), COALESCE(pending_retire_record_type, ''),
-		       pending_retire_values_json::text, COALESCE(pending_retire_at::text, ''),
-		       COALESCE(provider_delete_pending_at::text, ''),
-		       created_at, updated_at, COALESCE(deleted_at::text, '')
-		FROM dns_records
-		WHERE organization_id = ? AND deleted_at IS NULL
-		ORDER BY zone, record_name, record_type
-	`, organizationID)
-	if err != nil {
-		return nil, err
+func scanDNSCredentialZone(row rowScanner) (DNSCredentialZoneRecord, error) {
+	var zone DNSCredentialZoneRecord
+	if err := row.Scan(&zone.ID, &zone.OrganizationID, &zone.DNSCredentialID, &zone.ZoneID, &zone.ZoneName, &zone.Status, &zone.LastSyncedAt, &zone.CreatedAt, &zone.UpdatedAt); err != nil {
+		return DNSCredentialZoneRecord{}, mapReadError(err)
 	}
-	defer func() { _ = rows.Close() }()
-	records := make([]DNSRecordRecord, 0)
-	for rows.Next() {
-		record, err := scanDNSRecordRows(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	return records, rows.Err()
+	return zone, nil
 }
 
-func (store *PostgresStore) FindDNSRecordByID(ctx context.Context, organizationID string, recordID string) (DNSRecordRecord, error) {
-	row := store.db.QueryRowContext(ctx, `
-		SELECT id, organization_id, dns_credential_id, zone, record_name, record_type, managed_mode,
-		       desired_values_json::text, last_applied_values_json::text, COALESCE(last_applied_at::text, ''),
-		       COALESCE(pending_retire_dns_credential_id::text, ''), COALESCE(pending_retire_zone, ''),
-		       COALESCE(pending_retire_record_name, ''), COALESCE(pending_retire_record_type, ''),
-		       pending_retire_values_json::text, COALESCE(pending_retire_at::text, ''),
-		       COALESCE(provider_delete_pending_at::text, ''),
-		       created_at, updated_at, COALESCE(deleted_at::text, '')
-		FROM dns_records
-		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, organizationID, recordID)
-	return scanDNSRecord(row)
+func scanDNSCredentialZoneRows(rows *sql.Rows) (DNSCredentialZoneRecord, error) {
+	return scanDNSCredentialZone(rows)
 }
 
-func (store *PostgresStore) CreateDNSRecord(ctx context.Context, record DNSRecordRecord) error {
-	_, err := store.db.ExecContext(ctx, `
-		INSERT INTO dns_records (
-			id, organization_id, dns_credential_id, zone, record_name, record_type,
-			managed_mode, desired_values_json, last_applied_values_json, created_at, updated_at
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?)
-	`, record.ID, record.OrganizationID, record.DNSCredentialID, record.Zone, record.RecordName, record.RecordType, record.ManagedMode, record.DesiredValuesJSON, record.LastAppliedValuesJSON, record.CreatedAt, record.UpdatedAt)
-	return mapWriteError(err)
-}
-
-func (store *PostgresStore) UpdateDNSRecord(ctx context.Context, record DNSRecordRecord) error {
-	result, err := store.db.ExecContext(ctx, `
-		UPDATE dns_records
-		SET dns_credential_id = ?, zone = ?, record_name = ?, record_type = ?, managed_mode = ?,
-		    desired_values_json = ?::jsonb,
-		    last_applied_values_json = ?::jsonb,
-		    last_applied_at = NULLIF(?, '')::timestamptz,
-		    pending_retire_dns_credential_id = NULLIF(?, '')::uuid,
-		    pending_retire_zone = NULLIF(?, ''),
-		    pending_retire_record_name = NULLIF(?, ''),
-		    pending_retire_record_type = NULLIF(?, ''),
-		    pending_retire_values_json = ?::jsonb,
-		    pending_retire_at = NULLIF(?, '')::timestamptz,
-		    updated_at = ?
-		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, record.DNSCredentialID, record.Zone, record.RecordName, record.RecordType, record.ManagedMode, record.DesiredValuesJSON, record.LastAppliedValuesJSON, record.LastAppliedAt,
-		record.PendingRetireDNSCredentialID, record.PendingRetireZone, record.PendingRetireRecordName, record.PendingRetireRecordType, nonEmptyJSONList(record.PendingRetireValuesJSON), record.PendingRetireAt,
-		record.UpdatedAt, record.OrganizationID, record.ID)
-	if err != nil {
-		return mapWriteError(err)
+func normalizeDNSCredentialZoneStatus(status string) string {
+	switch status {
+	case "ACTIVE", "PENDING", "MOVED", "DELETED", "DEACTIVATED", "READ_ONLY", "UNAVAILABLE":
+		return status
+	default:
+		return "UNKNOWN"
 	}
-	return requireAffected(result)
-}
-
-func (store *PostgresStore) UpdateDNSRecordLastApplied(ctx context.Context, organizationID string, recordID string, lastAppliedValuesJSON string, lastAppliedAt string) error {
-	result, err := store.db.ExecContext(ctx, `
-		UPDATE dns_records
-		SET last_applied_values_json = ?::jsonb, last_applied_at = ?, updated_at = ?
-		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, lastAppliedValuesJSON, lastAppliedAt, lastAppliedAt, organizationID, recordID)
-	if err != nil {
-		return err
-	}
-	return requireAffected(result)
-}
-
-func (store *PostgresStore) ClearDNSRecordPendingRetire(ctx context.Context, organizationID string, recordID string, updatedAt string) error {
-	result, err := store.db.ExecContext(ctx, `
-		UPDATE dns_records
-		SET pending_retire_dns_credential_id = NULL,
-		    pending_retire_zone = NULL,
-		    pending_retire_record_name = NULL,
-		    pending_retire_record_type = NULL,
-		    pending_retire_values_json = '[]'::jsonb,
-		    pending_retire_at = NULL,
-		    updated_at = ?
-		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, updatedAt, organizationID, recordID)
-	if err != nil {
-		return err
-	}
-	return requireAffected(result)
-}
-
-func (store *PostgresStore) MarkDNSRecordProviderDeletePending(ctx context.Context, organizationID string, recordID string, pendingAt string) error {
-	result, err := store.db.ExecContext(ctx, `
-		UPDATE dns_records
-		SET provider_delete_pending_at = ?, updated_at = ?
-		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, pendingAt, pendingAt, organizationID, recordID)
-	if err != nil {
-		return err
-	}
-	return requireAffected(result)
-}
-
-func (store *PostgresStore) DeleteDNSRecord(ctx context.Context, organizationID string, recordID string, deletedAt string) error {
-	result, err := store.db.ExecContext(ctx, `
-		UPDATE dns_records
-		SET deleted_at = ?, updated_at = ?
-		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, deletedAt, deletedAt, organizationID, recordID)
-	if err != nil {
-		return err
-	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-func scanDNSRecord(row rowScanner) (DNSRecordRecord, error) {
-	var record DNSRecordRecord
-	if err := row.Scan(
-		&record.ID,
-		&record.OrganizationID,
-		&record.DNSCredentialID,
-		&record.Zone,
-		&record.RecordName,
-		&record.RecordType,
-		&record.ManagedMode,
-		&record.DesiredValuesJSON,
-		&record.LastAppliedValuesJSON,
-		&record.LastAppliedAt,
-		&record.PendingRetireDNSCredentialID,
-		&record.PendingRetireZone,
-		&record.PendingRetireRecordName,
-		&record.PendingRetireRecordType,
-		&record.PendingRetireValuesJSON,
-		&record.PendingRetireAt,
-		&record.ProviderDeletePendingAt,
-		&record.CreatedAt,
-		&record.UpdatedAt,
-		&record.DeletedAt,
-	); err != nil {
-		return DNSRecordRecord{}, mapReadError(err)
-	}
-	return record, nil
-}
-
-func scanDNSRecordRows(rows *sql.Rows) (DNSRecordRecord, error) {
-	return scanDNSRecord(rows)
 }
 
 func nonEmptyJSONList(value string) string {

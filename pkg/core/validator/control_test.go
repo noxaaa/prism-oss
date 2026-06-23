@@ -1,6 +1,9 @@
 package validator
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestValidateBootstrapRequestNormalizesOrganizationFields(t *testing.T) {
 	input, err := ValidateBootstrapRequest(BootstrapRequest{
@@ -180,33 +183,6 @@ func TestValidateTargetGroupRequestDefaultsSchedulerWithoutBlockingExtensions(t 
 	}
 }
 
-func TestValidateDNSRecordRequestRejectsMultipleCNAMEValues(t *testing.T) {
-	_, err := ValidateDNSRecordRequest(DNSRecordRequest{
-		DNSCredentialID: "credential_1",
-		Zone:            "zone_1",
-		RecordName:      "alias.example.com",
-		RecordType:      "CNAME",
-		DesiredValues:   []string{"origin-a.example.com", "origin-b.example.com"},
-	})
-	if err == nil {
-		t.Fatalf("expected multiple CNAME desired values to be rejected")
-	}
-
-	_, err = ValidateDNSRecordRequest(DNSRecordRequest{
-		DNSCredentialID: "credential_1",
-		Zone:            "zone_1",
-		RecordName:      "alias.example.com",
-		RecordType:      "CNAME",
-		DesiredValues:   []string{"origin.example.com"},
-		HealthCheckID:   "health_1",
-		EventType:       "DNS_FAILOVER",
-		FailoverValues:  []string{"failover-a.example.com", "failover-b.example.com"},
-	})
-	if err == nil {
-		t.Fatalf("expected multiple CNAME failover values to be rejected")
-	}
-}
-
 func TestValidateNodeRequestDefaultsListenIPsAndPortRange(t *testing.T) {
 	node, err := ValidateNodeRequest(NodeRequest{
 		Name:     "edge-a",
@@ -247,6 +223,37 @@ func TestValidateNodeRequestNormalizesMultipleListenIPsAndBlankLabels(t *testing
 	}
 	if len(node.PortRanges) != 1 || node.PortRanges[0].Protocol != "TCP" || node.PortRanges[0].StartPort != 10000 || node.PortRanges[0].EndPort != 20000 {
 		t.Fatalf("expected blank ports to default under normalized protocol, got %#v", node.PortRanges)
+	}
+}
+
+func TestValidateNodeRequestRejectsCGNATDNSPublishAddress(t *testing.T) {
+	_, err := ValidateNodeRequest(NodeRequest{
+		Name:     "edge-a",
+		GroupIDs: []string{"node_group_a"},
+		DNSPublishAddresses: []NodeDNSPublishAddress{{
+			AddressType: "A",
+			Address:     "100.64.0.1",
+			Enabled:     true,
+		}},
+	})
+	if err == nil {
+		t.Fatalf("expected CGNAT DNS publish address to be rejected")
+	}
+}
+
+func TestNodeDNSPublishAddressJSONDefaultsEnabled(t *testing.T) {
+	var request NodeRequest
+	if err := json.Unmarshal([]byte(`{"name":"edge-a","dns_publish_addresses":[{"address":"203.0.113.10"}]}`), &request); err != nil {
+		t.Fatalf("unmarshal node request: %v", err)
+	}
+	if len(request.DNSPublishAddresses) != 1 || !request.DNSPublishAddresses[0].Enabled {
+		t.Fatalf("expected omitted enabled to default true, got %#v", request.DNSPublishAddresses)
+	}
+	if err := json.Unmarshal([]byte(`{"name":"edge-a","dns_publish_addresses":[{"address":"203.0.113.10","enabled":false}]}`), &request); err != nil {
+		t.Fatalf("unmarshal node request: %v", err)
+	}
+	if len(request.DNSPublishAddresses) != 1 || request.DNSPublishAddresses[0].Enabled {
+		t.Fatalf("expected explicit false enabled to be preserved, got %#v", request.DNSPublishAddresses)
 	}
 }
 

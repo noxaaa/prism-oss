@@ -59,12 +59,20 @@ func (service *ControlService) createHealthEvaluationRule(ctx context.Context, r
 		if err != nil {
 			return repo.HealthEvaluationRuleRecord{}, err
 		}
+		encryptedSecret := ""
+		if strings.TrimSpace(eventInput.Secret) != "" {
+			encryptedSecret, err = service.encryptDNSSecret(strings.TrimSpace(eventInput.Secret))
+			if err != nil {
+				return repo.HealthEvaluationRuleRecord{}, err
+			}
+		}
 		events = append(events, repo.HealthEventRecord{
 			ID:                     service.newID(),
 			OrganizationID:         organizationID,
 			HealthEvaluationRuleID: rule.ID,
 			EventType:              eventType,
 			ConfigJSON:             configJSON,
+			EncryptedSecret:        encryptedSecret,
 			Enabled:                eventInput.Enabled,
 			CreatedAt:              now,
 			UpdatedAt:              now,

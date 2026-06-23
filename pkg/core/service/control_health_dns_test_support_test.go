@@ -3,34 +3,8 @@ package service
 import (
 	"context"
 
-	"github.com/noxaaa/prism-oss/pkg/core/dns"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
-
-type healthDNSTestProvider struct {
-	inputs []dns.ApplyRecordInput
-	err    error
-	errAt  int
-}
-
-func (provider *healthDNSTestProvider) ApplyRecord(_ context.Context, input dns.ApplyRecordInput) error {
-	provider.inputs = append(provider.inputs, input)
-	if provider.err != nil && (provider.errAt == 0 || provider.errAt == len(provider.inputs)) {
-		return provider.err
-	}
-	return nil
-}
-
-func (provider *healthDNSTestProvider) calls() int {
-	return len(provider.inputs)
-}
-
-func (provider *healthDNSTestProvider) lastInput() dns.ApplyRecordInput {
-	if len(provider.inputs) == 0 {
-		return dns.ApplyRecordInput{}
-	}
-	return provider.inputs[len(provider.inputs)-1]
-}
 
 type recordingHealthActionExecutor struct {
 	executed []recordingHealthEventAction
@@ -72,33 +46,51 @@ func (executor *recordingHealthActionExecutor) Execute(_ context.Context, action
 }
 
 type healthDNSTestStore struct {
-	results                       []repo.HealthResultRecord
-	rules                         []repo.HealthEvaluationRuleRecord
-	createdHealthRule             repo.HealthEvaluationRuleRecord
-	createdHealthEvents           []repo.HealthEventRecord
-	credential                    repo.DNSCredentialRecord
-	record                        repo.DNSRecordRecord
-	createdDNSRecord              repo.DNSRecordRecord
-	updatedDNSRecord              repo.DNSRecordRecord
-	updateDNSRecordErr            error
-	deleteDNSRecordErr            error
-	markDNSRecordDeletePendingErr error
-	monitor                       repo.MonitorRecord
-	monitors                      []repo.MonitorRecord
-	checks                        []repo.HealthCheckRecord
-	monitorGroups                 map[string]repo.MonitorGroupRecord
-	targetGroups                  map[string]repo.TargetGroupRecord
-	targetsByID                   map[string]repo.TargetRecord
-	syncedHealthTargets           bool
-	deletedHealthCheckID          string
-	deletedRulesRecordID          string
-	deletedDNSRecordID            string
-	deletedCredentialID           string
-	deletedMonitorID              string
-	deletedMonitorGroupID         string
+	results                                         []repo.HealthResultRecord
+	rules                                           []repo.HealthEvaluationRuleRecord
+	createdHealthRule                               repo.HealthEvaluationRuleRecord
+	createdHealthEvents                             []repo.HealthEventRecord
+	credential                                      repo.DNSCredentialRecord
+	createdCredential                               repo.DNSCredentialRecord
+	updatedCredential                               repo.DNSCredentialRecord
+	credentialZones                                 []repo.DNSCredentialZoneRecord
+	managedRecords                                  []repo.DNSManagedRecordRecord
+	nodes                                           []repo.NodeRecord
+	nodeGroups                                      map[string]repo.NodeGroupRecord
+	monitor                                         repo.MonitorRecord
+	monitors                                        []repo.MonitorRecord
+	checks                                          []repo.HealthCheckRecord
+	latestHealthBatchCalls, latestHealthSingleCalls int
+	monitorGroups                                   map[string]repo.MonitorGroupRecord
+	targetGroups                                    map[string]repo.TargetGroupRecord
+	targetsByID                                     map[string]repo.TargetRecord
+	forwardingRules                                 []repo.RuleRecord
+	syncedHealthTargets, respectContextCancellation bool
+	deletedHealthCheckID                            string
+	deletedDNSManagedRecordID                       string
+	deletedCredentialID                             string
+	deletedMonitorID                                string
+	deletedMonitorGroupID                           string
+	onLockDNSManagedRecord                          func(recordID string)
+	lockedDNSManagedRecords                         []string
+	lockedDNSInstances                              []string
+	notificationChannels                            []repo.NotificationChannelRecord
+	notificationDeliveries                          []repo.NotificationDeliveryRecord
+	notificationLookupErr                           error
+	notificationDeliveryErr                         error
+	txDepth                                         int
 }
 
 func (store *healthDNSTestStore) WithinTx(ctx context.Context, fn func(context.Context, repo.Repositories) error) error {
+	if store.respectContextCancellation {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	store.txDepth++
+	defer func() {
+		store.txDepth--
+	}()
 	return fn(ctx, healthDNSTestRepositories{store: store})
 }
 
@@ -110,8 +102,12 @@ func (repositories healthDNSTestRepositories) Users() repo.UserRepository       
 func (repositories healthDNSTestRepositories) Organizations() repo.OrganizationRepository { return nil }
 func (repositories healthDNSTestRepositories) Members() repo.MemberRepository             { return nil }
 func (repositories healthDNSTestRepositories) Roles() repo.RoleRepository                 { return nil }
-func (repositories healthDNSTestRepositories) NodeGroups() repo.NodeGroupRepository       { return nil }
-func (repositories healthDNSTestRepositories) Nodes() repo.NodeRepository                 { return nil }
+func (repositories healthDNSTestRepositories) NodeGroups() repo.NodeGroupRepository {
+	return healthDNSTestNodeGroupRepository(repositories)
+}
+func (repositories healthDNSTestRepositories) Nodes() repo.NodeRepository {
+	return healthDNSTestNodeRepository(repositories)
+}
 func (repositories healthDNSTestRepositories) MonitorGroups() repo.MonitorGroupRepository {
 	return healthDNSTestMonitorGroupRepository(repositories)
 }
@@ -133,7 +129,9 @@ func (repositories healthDNSTestRepositories) Targets() repo.TargetRepository {
 func (repositories healthDNSTestRepositories) TargetGroups() repo.TargetGroupRepository {
 	return healthDNSTestTargetGroupRepository(repositories)
 }
-func (repositories healthDNSTestRepositories) Rules() repo.RuleRepository   { return nil }
+func (repositories healthDNSTestRepositories) Rules() repo.RuleRepository {
+	return healthDNSTestRuleRepository(repositories)
+}
 func (repositories healthDNSTestRepositories) Quotas() repo.QuotaRepository { return nil }
 func (repositories healthDNSTestRepositories) AgentRegistrationTokens() repo.AgentRegistrationTokenRepository {
 	return nil
@@ -235,6 +233,204 @@ type healthDNSTestTargetGroupRepository struct {
 
 type healthDNSTestTargetRepository struct {
 	store *healthDNSTestStore
+}
+
+type healthDNSTestNodeRepository struct {
+	store *healthDNSTestStore
+}
+
+type healthDNSTestNodeGroupRepository struct {
+	store *healthDNSTestStore
+}
+
+func (repository healthDNSTestNodeGroupRepository) ListNodeGroupsByOrganization(_ context.Context, organizationID string) ([]repo.NodeGroupRecord, error) {
+	result := make([]repo.NodeGroupRecord, 0, len(repository.store.nodeGroups))
+	for _, group := range repository.store.nodeGroups {
+		if group.OrganizationID == organizationID && group.DeletedAt == "" {
+			result = append(result, group)
+		}
+	}
+	return result, nil
+}
+
+func (repository healthDNSTestNodeGroupRepository) FindNodeGroupByID(_ context.Context, organizationID string, nodeGroupID string) (repo.NodeGroupRecord, error) {
+	group, ok := repository.store.nodeGroups[nodeGroupID]
+	if ok && group.OrganizationID == organizationID && group.DeletedAt == "" {
+		return group, nil
+	}
+	return repo.NodeGroupRecord{}, repo.ErrNotFound
+}
+
+func (repository healthDNSTestNodeGroupRepository) CreateNodeGroup(_ context.Context, group repo.NodeGroupRecord) error {
+	if repository.store.nodeGroups == nil {
+		repository.store.nodeGroups = make(map[string]repo.NodeGroupRecord)
+	}
+	repository.store.nodeGroups[group.ID] = group
+	return nil
+}
+
+func (repository healthDNSTestNodeGroupRepository) UpdateNodeGroup(_ context.Context, group repo.NodeGroupRecord) error {
+	if repository.store.nodeGroups == nil {
+		return repo.ErrNotFound
+	}
+	if _, ok := repository.store.nodeGroups[group.ID]; !ok {
+		return repo.ErrNotFound
+	}
+	repository.store.nodeGroups[group.ID] = group
+	return nil
+}
+
+func (repository healthDNSTestNodeGroupRepository) DeleteNodeGroup(_ context.Context, organizationID string, nodeGroupID string, deletedAt string) error {
+	if repository.store.nodeGroups == nil {
+		return repo.ErrNotFound
+	}
+	group, ok := repository.store.nodeGroups[nodeGroupID]
+	if !ok || group.OrganizationID != organizationID {
+		return repo.ErrNotFound
+	}
+	group.DeletedAt = deletedAt
+	repository.store.nodeGroups[nodeGroupID] = group
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) ListNodesByOrganization(_ context.Context, organizationID string) ([]repo.NodeRecord, error) {
+	nodes := make([]repo.NodeRecord, 0, len(repository.store.nodes))
+	for _, node := range repository.store.nodes {
+		if node.OrganizationID == organizationID && node.DeletedAt == "" {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes, nil
+}
+
+func (repository healthDNSTestNodeRepository) FindNodeByID(_ context.Context, organizationID string, nodeID string) (repo.NodeRecord, error) {
+	for _, node := range repository.store.nodes {
+		if node.OrganizationID == organizationID && node.ID == nodeID && node.DeletedAt == "" {
+			return node, nil
+		}
+	}
+	return repo.NodeRecord{}, repo.ErrNotFound
+}
+
+func (repository healthDNSTestNodeRepository) CreateNode(context.Context, repo.NodeRecord, []string, []repo.NodeListenIPRecord, []repo.NodePortRangeRecord, string, func() string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) UpdateNode(context.Context, repo.NodeRecord, bool, []string, bool, []repo.NodeListenIPRecord, bool, []repo.NodePortRangeRecord, string, func() string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) MarkNodeAgentConnected(_ context.Context, organizationID string, nodeID string, now string) error {
+	for index := range repository.store.nodes {
+		node := &repository.store.nodes[index]
+		if node.OrganizationID == organizationID && node.ID == nodeID && node.DeletedAt == "" {
+			node.Status = "ONLINE"
+			node.LastSeenAt = now
+			node.UpdatedAt = now
+			return nil
+		}
+	}
+	return repo.ErrNotFound
+}
+
+func (repository healthDNSTestNodeRepository) UpdateNodeAgentVersion(context.Context, string, string, repo.NodeAgentVersionRecord, string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) UpdateNodeAgentUpdatePolicy(context.Context, string, string, bool, string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) MarkNodeAgentUpdateRequested(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) MarkNodeAgentUpdateSatisfied(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) RecordNodeAgentUpdateResult(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) MarkNodeAgentDisconnected(_ context.Context, organizationID string, nodeID string, now string) error {
+	for index := range repository.store.nodes {
+		node := &repository.store.nodes[index]
+		if node.OrganizationID == organizationID && node.ID == nodeID && node.DeletedAt == "" {
+			node.Status = "OFFLINE"
+			node.LastSeenAt = now
+			node.UpdatedAt = now
+			return nil
+		}
+	}
+	return repo.ErrNotFound
+}
+
+func (repository healthDNSTestNodeRepository) UpsertAutoNodeDNSPublishAddress(_ context.Context, organizationID string, nodeID string, addressType string, address string, now string, nextID func() string) error {
+	for nodeIndex := range repository.store.nodes {
+		node := &repository.store.nodes[nodeIndex]
+		if node.OrganizationID != organizationID || node.ID != nodeID || node.DeletedAt != "" {
+			continue
+		}
+		for addressIndex := range node.DNSPublishAddresses {
+			candidate := &node.DNSPublishAddresses[addressIndex]
+			if candidate.Source == "AUTO" && candidate.AddressType == addressType && candidate.Address != address && candidate.Enabled {
+				candidate.Enabled = false
+				candidate.UpdatedAt = now
+			}
+		}
+		for addressIndex := range node.DNSPublishAddresses {
+			candidate := &node.DNSPublishAddresses[addressIndex]
+			if candidate.Source == "AUTO" && candidate.AddressType == addressType && candidate.Address == address {
+				candidate.Enabled = true
+				candidate.ObservedAt = now
+				candidate.UpdatedAt = now
+				return nil
+			}
+		}
+		node.DNSPublishAddresses = append(node.DNSPublishAddresses, repo.NodeDNSPublishAddressRecord{
+			ID:             nextID(),
+			OrganizationID: organizationID,
+			NodeID:         nodeID,
+			AddressType:    addressType,
+			Address:        address,
+			Source:         "AUTO",
+			Enabled:        true,
+			ObservedAt:     now,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		})
+		return nil
+	}
+	return repo.ErrNotFound
+}
+
+func (repository healthDNSTestNodeRepository) RecordNodeConfigAck(context.Context, string, string, repo.NodeConfigAckRecord, string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) EnsureDesiredConfigVersionAtLeast(context.Context, string, string, int, string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) IncrementDesiredConfigForNode(context.Context, string, string, string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) IncrementDesiredConfigForNodeGroup(context.Context, string, string, string) error {
+	return nil
+}
+
+func (repository healthDNSTestNodeRepository) DeleteNode(_ context.Context, organizationID string, nodeID string, deletedAt string) error {
+	for index := range repository.store.nodes {
+		node := &repository.store.nodes[index]
+		if node.OrganizationID == organizationID && node.ID == nodeID && node.DeletedAt == "" {
+			node.DeletedAt = deletedAt
+			node.UpdatedAt = deletedAt
+			return nil
+		}
+	}
+	return repo.ErrNotFound
 }
 
 func (repository healthDNSTestTargetRepository) ListTargetsByOrganization(_ context.Context, organizationID string) ([]repo.TargetRecord, error) {
@@ -385,20 +581,34 @@ func (repository healthDNSTestHealthRepository) ListHealthResults(context.Contex
 }
 
 func (repository healthDNSTestHealthRepository) ListLatestHealthResultsByCheck(_ context.Context, organizationID string, healthCheckID string) ([]repo.HealthResultRecord, error) {
+	repository.store.latestHealthSingleCalls++
+	resultsByCheck, err := repository.ListLatestHealthResultsByChecks(context.Background(), organizationID, []string{healthCheckID})
+	if err != nil {
+		return nil, err
+	}
+	return resultsByCheck[healthCheckID], nil
+}
+
+func (repository healthDNSTestHealthRepository) ListLatestHealthResultsByChecks(_ context.Context, organizationID string, healthCheckIDs []string) (map[string][]repo.HealthResultRecord, error) {
+	repository.store.latestHealthBatchCalls++
+	allowed := make(map[string]bool, len(healthCheckIDs))
+	for _, healthCheckID := range healthCheckIDs {
+		allowed[healthCheckID] = true
+	}
 	latestByPair := map[string]repo.HealthResultRecord{}
 	for _, result := range repository.store.results {
-		if result.OrganizationID != organizationID || result.HealthCheckID != healthCheckID {
+		if result.OrganizationID != organizationID || !allowed[result.HealthCheckID] {
 			continue
 		}
-		key := result.MonitorID + "\x00" + result.HealthCheckTargetID
+		key := result.HealthCheckID + "\x00" + result.MonitorID + "\x00" + result.HealthCheckTargetID
 		current, ok := latestByPair[key]
 		if !ok || result.ObservedAt > current.ObservedAt || (result.ObservedAt == current.ObservedAt && result.CreatedAt > current.CreatedAt) {
 			latestByPair[key] = result
 		}
 	}
-	out := make([]repo.HealthResultRecord, 0, len(latestByPair))
+	out := make(map[string][]repo.HealthResultRecord, len(healthCheckIDs))
 	for _, result := range latestByPair {
-		out = append(out, result)
+		out[result.HealthCheckID] = append(out[result.HealthCheckID], result)
 	}
 	return out, nil
 }
@@ -426,31 +636,102 @@ func (repository healthDNSTestHealthRepository) CreateHealthEvaluationRule(_ con
 	return nil
 }
 
-func (repository healthDNSTestHealthRepository) DeleteHealthEvaluationRulesForDNSRecord(_ context.Context, _ string, dnsRecordID string, _ string) error {
-	repository.store.deletedRulesRecordID = dnsRecordID
-	return nil
-}
-
 type healthDNSTestDNSCredentialRepository struct {
 	store *healthDNSTestStore
 }
 
 func (repository healthDNSTestDNSCredentialRepository) ListDNSCredentialsByOrganization(context.Context, string) ([]repo.DNSCredentialRecord, error) {
-	return nil, nil
+	if repository.store.credential.ID == "" {
+		return nil, nil
+	}
+	return []repo.DNSCredentialRecord{repository.store.credential}, nil
 }
 
 func (repository healthDNSTestDNSCredentialRepository) FindDNSCredentialByID(_ context.Context, organizationID string, credentialID string) (repo.DNSCredentialRecord, error) {
-	if repository.store.credential.OrganizationID == organizationID && repository.store.credential.ID == credentialID {
-		return repository.store.credential, nil
+	for _, credential := range []repo.DNSCredentialRecord{repository.store.credential, repository.store.createdCredential, repository.store.updatedCredential} {
+		if credential.OrganizationID == organizationID && credential.ID == credentialID {
+			return credential, nil
+		}
 	}
 	return repo.DNSCredentialRecord{}, repo.ErrNotFound
 }
 
-func (repository healthDNSTestDNSCredentialRepository) CreateDNSCredential(context.Context, repo.DNSCredentialRecord) error {
+func (repository healthDNSTestDNSCredentialRepository) CreateDNSCredential(_ context.Context, credential repo.DNSCredentialRecord) error {
+	repository.store.createdCredential = credential
+	repository.store.credential = credential
 	return nil
 }
 
-func (repository healthDNSTestDNSCredentialRepository) UpdateDNSCredential(context.Context, repo.DNSCredentialRecord, bool) error {
+func (repository healthDNSTestDNSCredentialRepository) UpdateDNSCredential(_ context.Context, credential repo.DNSCredentialRecord, _ bool) error {
+	repository.store.updatedCredential = credential
+	repository.store.credential = credential
+	return nil
+}
+
+func (repository healthDNSTestDNSCredentialRepository) ListDNSCredentialZonesByOrganization(_ context.Context, organizationID string) ([]repo.DNSCredentialZoneRecord, error) {
+	zones := make([]repo.DNSCredentialZoneRecord, 0)
+	for _, zone := range repository.store.credentialZones {
+		if zone.OrganizationID == organizationID {
+			zones = append(zones, zone)
+		}
+	}
+	return zones, nil
+}
+
+func (repository healthDNSTestDNSCredentialRepository) ListDNSCredentialZonesByCredential(_ context.Context, organizationID string, credentialID string) ([]repo.DNSCredentialZoneRecord, error) {
+	zones := make([]repo.DNSCredentialZoneRecord, 0)
+	for _, zone := range repository.store.credentialZones {
+		if zone.OrganizationID == organizationID && zone.DNSCredentialID == credentialID {
+			zones = append(zones, zone)
+		}
+	}
+	return zones, nil
+}
+
+func (repository healthDNSTestDNSCredentialRepository) FindDNSCredentialZoneByID(_ context.Context, organizationID string, credentialZoneID string) (repo.DNSCredentialZoneRecord, error) {
+	for _, zone := range repository.store.credentialZones {
+		if zone.OrganizationID == organizationID && zone.ID == credentialZoneID {
+			return zone, nil
+		}
+	}
+	return repo.DNSCredentialZoneRecord{}, repo.ErrNotFound
+}
+
+func (repository healthDNSTestDNSCredentialRepository) ReplaceDNSCredentialZones(_ context.Context, organizationID string, credentialID string, zones []repo.DNSCredentialZoneRecord, now string, nextID func() string) error {
+	seen := map[string]bool{}
+	for _, zone := range zones {
+		seen[zone.ZoneID] = true
+		matched := false
+		for index := range repository.store.credentialZones {
+			existing := &repository.store.credentialZones[index]
+			if existing.OrganizationID == organizationID && existing.DNSCredentialID == credentialID && existing.ZoneID == zone.ZoneID {
+				existing.ZoneName = zone.ZoneName
+				existing.Status = zone.Status
+				existing.LastSyncedAt = now
+				existing.UpdatedAt = now
+				matched = true
+			}
+		}
+		if !matched {
+			if zone.ID == "" {
+				zone.ID = nextID()
+			}
+			zone.OrganizationID = organizationID
+			zone.DNSCredentialID = credentialID
+			zone.LastSyncedAt = now
+			zone.CreatedAt = now
+			zone.UpdatedAt = now
+			repository.store.credentialZones = append(repository.store.credentialZones, zone)
+		}
+	}
+	for index := range repository.store.credentialZones {
+		zone := &repository.store.credentialZones[index]
+		if zone.OrganizationID == organizationID && zone.DNSCredentialID == credentialID && !seen[zone.ZoneID] {
+			zone.Status = "UNAVAILABLE"
+			zone.LastSyncedAt = now
+			zone.UpdatedAt = now
+		}
+	}
 	return nil
 }
 
@@ -463,79 +744,225 @@ type healthDNSTestDNSRecordRepository struct {
 	store *healthDNSTestStore
 }
 
-func (repository healthDNSTestDNSRecordRepository) ListDNSRecordsByOrganization(context.Context, string) ([]repo.DNSRecordRecord, error) {
-	if repository.store.record.ID == "" {
-		return nil, nil
+func (repository healthDNSTestDNSRecordRepository) ListDNSManagedRecordsByOrganization(_ context.Context, organizationID string) ([]repo.DNSManagedRecordRecord, error) {
+	records := make([]repo.DNSManagedRecordRecord, 0, len(repository.store.managedRecords))
+	for _, record := range repository.store.managedRecords {
+		if record.OrganizationID == organizationID && record.DeletedAt == "" {
+			records = append(records, record)
+		}
 	}
-	return []repo.DNSRecordRecord{repository.store.record}, nil
+	return records, nil
 }
 
-func (repository healthDNSTestDNSRecordRepository) FindDNSRecordByID(_ context.Context, organizationID string, recordID string) (repo.DNSRecordRecord, error) {
-	if repository.store.record.OrganizationID == organizationID && repository.store.record.ID == recordID {
-		return repository.store.record, nil
+func (repository healthDNSTestDNSRecordRepository) FindDNSManagedRecordByID(_ context.Context, organizationID string, recordID string) (repo.DNSManagedRecordRecord, error) {
+	for _, record := range repository.store.managedRecords {
+		if record.OrganizationID == organizationID && record.ID == recordID && record.DeletedAt == "" {
+			return record, nil
+		}
 	}
-	return repo.DNSRecordRecord{}, repo.ErrNotFound
+	return repo.DNSManagedRecordRecord{}, repo.ErrNotFound
 }
 
-func (repository healthDNSTestDNSRecordRepository) CreateDNSRecord(_ context.Context, record repo.DNSRecordRecord) error {
-	repository.store.createdDNSRecord = record
-	repository.store.record = record
+func (repository healthDNSTestDNSRecordRepository) LockDNSManagedRecordEvaluation(_ context.Context, _ string, recordID string) error {
+	repository.store.lockedDNSManagedRecords = append(repository.store.lockedDNSManagedRecords, recordID)
+	if repository.store.onLockDNSManagedRecord != nil {
+		repository.store.onLockDNSManagedRecord(recordID)
+	}
 	return nil
 }
 
-func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecord(_ context.Context, record repo.DNSRecordRecord) error {
-	if repository.store.updateDNSRecordErr != nil {
-		return repository.store.updateDNSRecordErr
-	}
-	repository.store.updatedDNSRecord = record
-	repository.store.record = record
+func (repository healthDNSTestDNSRecordRepository) CreateDNSManagedRecord(_ context.Context, record repo.DNSManagedRecordRecord) error {
+	repository.store.managedRecords = append(repository.store.managedRecords, record)
 	return nil
 }
 
-func (repository healthDNSTestDNSRecordRepository) UpdateDNSRecordLastApplied(_ context.Context, organizationID string, recordID string, values string, appliedAt string) error {
-	if repository.store.record.OrganizationID != organizationID || repository.store.record.ID != recordID {
-		return repo.ErrNotFound
+func (repository healthDNSTestDNSRecordRepository) UpdateDNSManagedRecord(_ context.Context, record repo.DNSManagedRecordRecord) error {
+	for index := range repository.store.managedRecords {
+		if repository.store.managedRecords[index].OrganizationID == record.OrganizationID && repository.store.managedRecords[index].ID == record.ID {
+			repository.store.managedRecords[index] = record
+			return nil
+		}
 	}
-	repository.store.record.LastAppliedValuesJSON = values
-	repository.store.record.LastAppliedAt = appliedAt
+	return repo.ErrNotFound
+}
+
+func (repository healthDNSTestDNSRecordRepository) DeleteDNSManagedRecord(_ context.Context, organizationID string, recordID string, deletedAt string) error {
+	for index := range repository.store.managedRecords {
+		record := repository.store.managedRecords[index]
+		if record.OrganizationID == organizationID && record.ID == recordID && record.DeletedAt == "" {
+			repository.store.managedRecords[index].DeletedAt = deletedAt
+			repository.store.deletedDNSManagedRecordID = recordID
+			return nil
+		}
+	}
+	return repo.ErrNotFound
+}
+func (repository healthDNSTestDNSRecordRepository) ListDNSInstancesByOrganization(_ context.Context, organizationID string) ([]repo.DNSInstanceRecord, error) {
+	var result []repo.DNSInstanceRecord
+	for _, record := range repository.store.managedRecords {
+		if record.OrganizationID != organizationID || record.DeletedAt != "" {
+			continue
+		}
+		for _, instance := range record.Instances {
+			if instance.DeletedAt == "" {
+				result = append(result, instance)
+			}
+		}
+	}
+	return result, nil
+}
+
+func (repository healthDNSTestDNSRecordRepository) ListDNSInstancesByManagedRecord(_ context.Context, organizationID string, recordID string) ([]repo.DNSInstanceRecord, error) {
+	for _, record := range repository.store.managedRecords {
+		if record.OrganizationID == organizationID && record.ID == recordID && record.DeletedAt == "" {
+			result := make([]repo.DNSInstanceRecord, 0, len(record.Instances))
+			for _, instance := range record.Instances {
+				if instance.DeletedAt == "" {
+					result = append(result, instance)
+				}
+			}
+			return result, nil
+		}
+	}
+	return nil, nil
+}
+
+func (repository healthDNSTestDNSRecordRepository) FindDNSInstanceByID(_ context.Context, organizationID string, instanceID string) (repo.DNSInstanceRecord, error) {
+	for _, record := range repository.store.managedRecords {
+		if record.OrganizationID != organizationID || record.DeletedAt != "" {
+			continue
+		}
+		for _, instance := range record.Instances {
+			if instance.ID == instanceID && instance.DeletedAt == "" {
+				return instance, nil
+			}
+		}
+	}
+	return repo.DNSInstanceRecord{}, repo.ErrNotFound
+}
+
+func (repository healthDNSTestDNSRecordRepository) LockDNSInstanceMutation(_ context.Context, _ string, instanceID string) error {
+	repository.store.lockedDNSInstances = append(repository.store.lockedDNSInstances, instanceID)
 	return nil
 }
 
-func (repository healthDNSTestDNSRecordRepository) ClearDNSRecordPendingRetire(_ context.Context, organizationID string, recordID string, updatedAt string) error {
-	if repository.store.record.OrganizationID != organizationID || repository.store.record.ID != recordID {
-		return repo.ErrNotFound
+func (repository healthDNSTestDNSRecordRepository) CreateDNSInstance(_ context.Context, instance repo.DNSInstanceRecord) error {
+	for index := range repository.store.managedRecords {
+		record := &repository.store.managedRecords[index]
+		if record.OrganizationID == instance.OrganizationID && record.ID == instance.ManagedRecordID && record.DeletedAt == "" {
+			record.Instances = append(record.Instances, instance)
+			return nil
+		}
 	}
-	repository.store.record.PendingRetireDNSCredentialID = ""
-	repository.store.record.PendingRetireZone = ""
-	repository.store.record.PendingRetireRecordName = ""
-	repository.store.record.PendingRetireRecordType = ""
-	repository.store.record.PendingRetireValuesJSON = "[]"
-	repository.store.record.PendingRetireAt = ""
-	repository.store.record.UpdatedAt = updatedAt
+	return repo.ErrNotFound
+}
+
+func (repository healthDNSTestDNSRecordRepository) UpdateDNSInstance(_ context.Context, instance repo.DNSInstanceRecord) error {
+	for recordIndex := range repository.store.managedRecords {
+		for instanceIndex := range repository.store.managedRecords[recordIndex].Instances {
+			current := repository.store.managedRecords[recordIndex].Instances[instanceIndex]
+			if current.OrganizationID == instance.OrganizationID && current.ID == instance.ID && current.DeletedAt == "" {
+				repository.store.managedRecords[recordIndex].Instances = append(repository.store.managedRecords[recordIndex].Instances[:instanceIndex], repository.store.managedRecords[recordIndex].Instances[instanceIndex+1:]...)
+				for targetRecordIndex := range repository.store.managedRecords {
+					if repository.store.managedRecords[targetRecordIndex].OrganizationID == instance.OrganizationID &&
+						repository.store.managedRecords[targetRecordIndex].ID == instance.ManagedRecordID &&
+						repository.store.managedRecords[targetRecordIndex].DeletedAt == "" {
+						repository.store.managedRecords[targetRecordIndex].Instances = append(repository.store.managedRecords[targetRecordIndex].Instances, instance)
+						return nil
+					}
+				}
+				return repo.ErrNotFound
+			}
+		}
+	}
+	return repo.ErrNotFound
+}
+
+func (repository healthDNSTestDNSRecordRepository) DeleteDNSInstance(_ context.Context, organizationID string, instanceID string, deletedAt string) error {
+	for recordIndex := range repository.store.managedRecords {
+		for instanceIndex := range repository.store.managedRecords[recordIndex].Instances {
+			instance := &repository.store.managedRecords[recordIndex].Instances[instanceIndex]
+			if instance.OrganizationID == organizationID && instance.ID == instanceID && instance.DeletedAt == "" {
+				instance.DeletedAt = deletedAt
+				instance.UpdatedAt = deletedAt
+				return nil
+			}
+		}
+	}
+	return repo.ErrNotFound
+}
+
+func (repository healthDNSTestDNSRecordRepository) ClearDNSManagedRecordActiveInstance(_ context.Context, organizationID string, instanceID string, updatedAt string) error {
+	for index := range repository.store.managedRecords {
+		record := &repository.store.managedRecords[index]
+		if record.OrganizationID == organizationID && record.ActiveInstanceID == instanceID && record.DeletedAt == "" {
+			record.ActiveInstanceID = ""
+			record.LastEvaluationStatus = "PENDING"
+			record.LastEvaluationError = ""
+			record.LastDiagnosticsJSON = diagnosticsJSON([]DNSDiagnosticPayload{{Code: "STALE_ACTIVE_INSTANCE_CLEARED", Message: "Active DNS instance changed; re-evaluation is required."}})
+			record.UpdatedAt = updatedAt
+		}
+	}
 	return nil
 }
 
-func (repository healthDNSTestDNSRecordRepository) MarkDNSRecordProviderDeletePending(_ context.Context, organizationID string, recordID string, pendingAt string) error {
-	if repository.store.markDNSRecordDeletePendingErr != nil {
-		return repository.store.markDNSRecordDeletePendingErr
+func (repository healthDNSTestDNSRecordRepository) UpdateDNSManagedRecordEvaluation(_ context.Context, record repo.DNSManagedRecordRecord) error {
+	for index := range repository.store.managedRecords {
+		if repository.store.managedRecords[index].OrganizationID == record.OrganizationID && repository.store.managedRecords[index].ID == record.ID {
+			record.Instances = repository.store.managedRecords[index].Instances
+			repository.store.managedRecords[index] = record
+			return nil
+		}
 	}
-	if repository.store.record.OrganizationID != organizationID || repository.store.record.ID != recordID {
-		return repo.ErrNotFound
+	return repo.ErrNotFound
+}
+
+func (repository healthDNSTestDNSRecordRepository) UpdateDNSInstanceEvaluation(_ context.Context, instance repo.DNSInstanceRecord) error {
+	for recordIndex := range repository.store.managedRecords {
+		for instanceIndex := range repository.store.managedRecords[recordIndex].Instances {
+			current := repository.store.managedRecords[recordIndex].Instances[instanceIndex]
+			if current.OrganizationID == instance.OrganizationID && current.ID == instance.ID {
+				repository.store.managedRecords[recordIndex].Instances[instanceIndex] = instance
+				return nil
+			}
+		}
 	}
-	repository.store.record.ProviderDeletePendingAt = pendingAt
-	repository.store.record.UpdatedAt = pendingAt
+	return repo.ErrNotFound
+}
+
+func (repository healthDNSTestDNSRecordRepository) ListNotificationChannelsByOrganization(context.Context, string) ([]repo.NotificationChannelRecord, error) {
+	return nil, nil
+}
+
+func (repository healthDNSTestDNSRecordRepository) FindNotificationChannelByID(_ context.Context, _ string, channelID string) (repo.NotificationChannelRecord, error) {
+	if repository.store.notificationLookupErr != nil {
+		return repo.NotificationChannelRecord{}, repository.store.notificationLookupErr
+	}
+	for _, channel := range repository.store.notificationChannels {
+		if channel.ID == channelID {
+			return channel, nil
+		}
+	}
+	return repo.NotificationChannelRecord{}, repo.ErrNotFound
+}
+
+func (repository healthDNSTestDNSRecordRepository) CreateNotificationChannel(context.Context, repo.NotificationChannelRecord) error {
 	return nil
 }
 
-func (repository healthDNSTestDNSRecordRepository) DeleteDNSRecord(_ context.Context, organizationID string, recordID string, _ string) error {
-	if repository.store.deleteDNSRecordErr != nil {
-		return repository.store.deleteDNSRecordErr
+func (repository healthDNSTestDNSRecordRepository) UpdateNotificationChannel(context.Context, repo.NotificationChannelRecord, bool) error {
+	return nil
+}
+
+func (repository healthDNSTestDNSRecordRepository) DeleteNotificationChannel(context.Context, string, string, string) error {
+	return nil
+}
+
+func (repository healthDNSTestDNSRecordRepository) CreateNotificationDelivery(_ context.Context, delivery repo.NotificationDeliveryRecord) error {
+	if repository.store.notificationDeliveryErr != nil {
+		return repository.store.notificationDeliveryErr
 	}
-	if repository.store.record.OrganizationID != organizationID || repository.store.record.ID != recordID {
-		return repo.ErrNotFound
-	}
-	repository.store.deletedDNSRecordID = recordID
-	repository.store.record = repo.DNSRecordRecord{}
+	repository.store.notificationDeliveries = append(repository.store.notificationDeliveries, delivery)
 	return nil
 }
 
@@ -553,14 +980,19 @@ func (repository healthDNSTestAuditRepository) CreateAuditLog(context.Context, r
 	return nil
 }
 
-type healthDNSTestAuthorizer struct{}
+type healthDNSTestAuthorizer struct {
+	allowedNodeGroups map[string]bool
+}
 
 func (healthDNSTestAuthorizer) HasPermission(identity InternalIdentity, permission string) bool {
 	return stringSliceHas(identity.Permissions, permission)
 }
 
-func (healthDNSTestAuthorizer) AllowedNodeGroupIDs(InternalIdentity, string) map[string]bool {
-	return map[string]bool{}
+func (authorizer healthDNSTestAuthorizer) AllowedNodeGroupIDs(InternalIdentity, string) map[string]bool {
+	if authorizer.allowedNodeGroups == nil {
+		return map[string]bool{"*": true}
+	}
+	return authorizer.allowedNodeGroups
 }
 
 func (healthDNSTestAuthorizer) EnsureCanDelegateRoleScopes(context.Context, repo.Repositories, InternalIdentity, []repo.ResourceScopeRecord) error {

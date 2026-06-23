@@ -119,6 +119,9 @@ func (service *ControlService) DeleteNodeGroup(ctx context.Context, identity Int
 		if err := ensureNoNodesForNodeGroup(ctx, repositories, identity.OrganizationID, nodeGroupID); err != nil {
 			return err
 		}
+		if err := ensureNoDNSInstancesForNodeGroup(ctx, repositories, identity.OrganizationID, nodeGroupID); err != nil {
+			return err
+		}
 		deletedAt := service.timestamp()
 		if err := repositories.NodeGroups().DeleteNodeGroup(ctx, identity.OrganizationID, nodeGroupID, deletedAt); err != nil {
 			return err
@@ -142,6 +145,29 @@ func ensureNoNodesForNodeGroup(ctx context.Context, repositories repo.Repositori
 					Details: map[string]any{
 						"node_group_id": nodeGroupID,
 						"node_id":       node.ID,
+					},
+					Cause: ErrConflict,
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func ensureNoDNSInstancesForNodeGroup(ctx context.Context, repositories repo.Repositories, organizationID string, nodeGroupID string) error {
+	instances, err := repositories.DNSRecords().ListDNSInstancesByOrganization(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	for _, instance := range instances {
+		for _, groupID := range parseStringListJSON(instance.NodeGroupIDsJSON) {
+			if groupID == nodeGroupID {
+				return &controlServiceError{
+					Code:    "NODE_GROUP_IN_USE",
+					Message: "The node group is still referenced by one or more DNS policies.",
+					Details: map[string]any{
+						"node_group_id":   nodeGroupID,
+						"dns_instance_id": instance.ID,
 					},
 					Cause: ErrConflict,
 				}
@@ -219,24 +245,26 @@ func (service *ControlService) CreateNode(ctx context.Context, identity Internal
 		return NodePayload{}, err
 	}
 	var result NodePayload
+	var affectedDNSRecordIDs []string
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if err := ensureNodeGroupsExist(ctx, repositories, identity.OrganizationID, input.GroupIDs); err != nil {
 			return err
 		}
 		now := service.timestamp()
 		node := repo.NodeRecord{
-			ID:                 service.newID(),
-			OrganizationID:     identity.OrganizationID,
-			Name:               input.Name,
-			Status:             "PENDING",
-			PublicDescription:  input.PublicDescription,
-			ConfigStatus:       "PENDING",
-			ConfigErrorMessage: "",
-			CreatedAt:          now,
-			UpdatedAt:          now,
-			GroupIDs:           append([]string(nil), input.GroupIDs...),
-			ListenIPs:          toNodeListenIPRecords(input.ListenIPs),
-			PortRanges:         toNodePortRangeRecords(input.PortRanges),
+			ID:                  service.newID(),
+			OrganizationID:      identity.OrganizationID,
+			Name:                input.Name,
+			Status:              "PENDING",
+			PublicDescription:   input.PublicDescription,
+			ConfigStatus:        "PENDING",
+			ConfigErrorMessage:  "",
+			CreatedAt:           now,
+			UpdatedAt:           now,
+			GroupIDs:            append([]string(nil), input.GroupIDs...),
+			ListenIPs:           toNodeListenIPRecords(input.ListenIPs),
+			PortRanges:          toNodePortRangeRecords(input.PortRanges),
+			DNSPublishAddresses: toNodeDNSPublishAddressRecords(input.DNSPublishAddresses),
 		}
 		nodes, err := repositories.Nodes().ListNodesByOrganization(ctx, identity.OrganizationID)
 		if err != nil {
@@ -248,6 +276,13 @@ func (service *ControlService) CreateNode(ctx context.Context, identity Internal
 		if err := repositories.Nodes().CreateNode(ctx, node, input.GroupIDs, node.ListenIPs, node.PortRanges, now, service.newID); err != nil {
 			return err
 		}
+		if err := replaceManualNodeDNSPublishAddresses(ctx, repositories, identity.OrganizationID, node.ID, node.DNSPublishAddresses, now, service.newID); err != nil {
+			return err
+		}
+		affectedDNSRecordIDs, err = service.markDNSRecordsDependingOnNodeGroupsPending(ctx, repositories, identity.OrganizationID, node.GroupIDs, now)
+		if err != nil {
+			return err
+		}
 		node, err = repositories.Nodes().FindNodeByID(ctx, identity.OrganizationID, node.ID)
 		if err != nil {
 			return err
@@ -255,6 +290,9 @@ func (service *ControlService) CreateNode(ctx context.Context, identity Internal
 		result = toNodePayload(node)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "nodes.create", "NODE", node.ID, ""))
 	})
+	if err == nil {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, identity.OrganizationID, affectedDNSRecordIDs)
+	}
 	return result, mapServiceError(err)
 }
 
@@ -263,6 +301,7 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 		return NodePayload{}, ErrForbidden
 	}
 	var result NodePayload
+	var affectedDNSRecordIDs []string
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		node, err := repositories.Nodes().FindNodeByID(ctx, identity.OrganizationID, nodeID)
 		if err != nil {
@@ -297,6 +336,9 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 		if input.PortRangesProvided {
 			node.PortRanges = toNodePortRangeRecords(input.PortRanges)
 		}
+		if input.DNSPublishAddressesProvided {
+			node.DNSPublishAddresses = toNodeDNSPublishAddressRecords(input.DNSPublishAddresses)
+		}
 		node.GroupIDs = targetGroupIDs
 		nodes, err := repositories.Nodes().ListNodesByOrganization(ctx, identity.OrganizationID)
 		if err != nil {
@@ -320,6 +362,17 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 		); err != nil {
 			return err
 		}
+		if input.DNSPublishAddressesProvided {
+			if err := replaceManualNodeDNSPublishAddresses(ctx, repositories, identity.OrganizationID, node.ID, node.DNSPublishAddresses, node.UpdatedAt, service.newID); err != nil {
+				return err
+			}
+		}
+		if input.DNSPublishAddressesProvided || (input.GroupIDsProvided && !sameStringSet(previousGroupIDs, targetGroupIDs)) {
+			affectedDNSRecordIDs, err = service.markDNSRecordsDependingOnNodeGroupsPending(ctx, repositories, identity.OrganizationID, mergeStringSets(previousGroupIDs, targetGroupIDs), node.UpdatedAt)
+			if err != nil {
+				return err
+			}
+		}
 		if input.GroupIDsProvided && !sameStringSet(previousGroupIDs, targetGroupIDs) {
 			if err := repositories.Nodes().IncrementDesiredConfigForNode(ctx, identity.OrganizationID, node.ID, node.UpdatedAt); err != nil {
 				return err
@@ -339,6 +392,9 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 		result = toNodePayload(node)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "nodes.update", "NODE", node.ID, ""))
 	})
+	if err == nil {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, identity.OrganizationID, affectedDNSRecordIDs)
+	}
 	return result, mapServiceError(err)
 }
 
@@ -346,6 +402,7 @@ func (service *ControlService) DeleteNode(ctx context.Context, identity Internal
 	if !service.hasPermission(identity, string(domain.PermissionNodesManage)) {
 		return ErrForbidden
 	}
+	var affectedDNSRecordIDs []string
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		node, err := repositories.Nodes().FindNodeByID(ctx, identity.OrganizationID, nodeID)
 		if err != nil {
@@ -365,8 +422,15 @@ func (service *ControlService) DeleteNode(ctx context.Context, identity Internal
 		if err := repositories.Nodes().DeleteNode(ctx, identity.OrganizationID, nodeID, deletedAt); err != nil {
 			return err
 		}
+		affectedDNSRecordIDs, err = service.markDNSRecordsDependingOnNodeGroupsPending(ctx, repositories, identity.OrganizationID, node.GroupIDs, deletedAt)
+		if err != nil {
+			return err
+		}
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "nodes.delete", "NODE", nodeID, ""))
 	})
+	if err == nil {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, identity.OrganizationID, affectedDNSRecordIDs)
+	}
 	return mapServiceError(err)
 }
 
@@ -651,6 +715,26 @@ func toNodePortRangeRecords(inputs []NodePortRangeInput) []repo.NodePortRangeRec
 	return records
 }
 
+type manualNodeDNSPublisher interface {
+	ReplaceManualNodeDNSPublishAddresses(ctx context.Context, organizationID string, nodeID string, addresses []repo.NodeDNSPublishAddressRecord, now string, nextID func() string) error
+}
+
+func replaceManualNodeDNSPublishAddresses(ctx context.Context, repositories repo.Repositories, organizationID string, nodeID string, addresses []repo.NodeDNSPublishAddressRecord, now string, nextID func() string) error {
+	publisher, ok := repositories.Nodes().(manualNodeDNSPublisher)
+	if !ok {
+		return nil
+	}
+	return publisher.ReplaceManualNodeDNSPublishAddresses(ctx, organizationID, nodeID, addresses, now, nextID)
+}
+
+func toNodeDNSPublishAddressRecords(inputs []NodeDNSPublishAddressInput) []repo.NodeDNSPublishAddressRecord {
+	records := make([]repo.NodeDNSPublishAddressRecord, 0, len(inputs))
+	for _, input := range inputs {
+		records = append(records, repo.NodeDNSPublishAddressRecord{AddressType: input.AddressType, Address: input.Address, Source: "MANUAL", Enabled: input.Enabled})
+	}
+	return records
+}
+
 func toNodeGroupPayload(nodeGroup repo.NodeGroupRecord) NodeGroupPayload {
 	return NodeGroupPayload{ID: nodeGroup.ID, Name: nodeGroup.Name, Description: nodeGroup.Description}
 }
@@ -680,6 +764,7 @@ func toNodePayload(node repo.NodeRecord) NodePayload {
 		GroupIDs:               append([]string(nil), node.GroupIDs...),
 		ListenIPs:              toNodeListenIPPayloads(node.ListenIPs),
 		PortRanges:             toNodePortRangePayloads(node.PortRanges),
+		DNSPublishAddresses:    toNodeDNSPublishAddressPayloads(node.DNSPublishAddresses),
 	}
 }
 
@@ -697,6 +782,27 @@ func toNodePortRangePayloads(portRanges []repo.NodePortRangeRecord) []NodePortRa
 		payloads = append(payloads, NodePortRangePayload{ID: portRange.ID, Protocol: portRange.Protocol, StartPort: portRange.StartPort, EndPort: portRange.EndPort, Enabled: portRange.Enabled})
 	}
 	return payloads
+}
+
+func toNodeDNSPublishAddressPayloads(addresses []repo.NodeDNSPublishAddressRecord) []NodeDNSPublishAddressPayload {
+	payloads := make([]NodeDNSPublishAddressPayload, 0, len(addresses))
+	for _, address := range addresses {
+		payloads = append(payloads, NodeDNSPublishAddressPayload{ID: address.ID, AddressType: address.AddressType, Address: address.Address, Source: address.Source, Enabled: address.Enabled, ObservedAt: address.ObservedAt})
+	}
+	return payloads
+}
+
+func mergeStringSets(left []string, right []string) []string {
+	seen := make(map[string]bool, len(left)+len(right))
+	merged := make([]string, 0, len(left)+len(right))
+	for _, value := range append(append([]string{}, left...), right...) {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		merged = append(merged, value)
+	}
+	return merged
 }
 
 func toMonitorGroupPayload(monitorGroup repo.MonitorGroupRecord) MonitorGroupPayload {

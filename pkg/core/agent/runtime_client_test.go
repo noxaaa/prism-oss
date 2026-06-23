@@ -307,6 +307,23 @@ func TestNodeRuntimeSendsHeartbeatWithAppliedConfigVersion(t *testing.T) {
 	}
 }
 
+func TestNodeAndMonitorRuntimeUseOneSecondReportingIntervals(t *testing.T) {
+	nodeRuntime := NewNodeRuntime(RuntimeConfig{}, nil)
+	if nodeRuntime.metricsInterval != time.Second {
+		t.Fatalf("node metrics interval = %s, want %s", nodeRuntime.metricsInterval, time.Second)
+	}
+	if nodeRuntime.heartbeatInterval != time.Second {
+		t.Fatalf("node heartbeat interval = %s, want %s", nodeRuntime.heartbeatInterval, time.Second)
+	}
+	monitorRuntime := NewMonitorRuntime(RuntimeConfig{})
+	if monitorRuntime.metricsInterval != time.Second {
+		t.Fatalf("monitor metrics interval = %s, want %s", monitorRuntime.metricsInterval, time.Second)
+	}
+	if monitorRuntime.heartbeatInterval != time.Second {
+		t.Fatalf("monitor heartbeat interval = %s, want %s", monitorRuntime.heartbeatInterval, time.Second)
+	}
+}
+
 func TestMonitorRuntimeRegistersAndReportsMetrics(t *testing.T) {
 	type helloPayload struct {
 		AgentID   string `json:"agent_id"`

@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	cloudflare "github.com/cloudflare/cloudflare-go/v7"
 	cfdns "github.com/cloudflare/cloudflare-go/v7/dns"
 	"github.com/cloudflare/cloudflare-go/v7/option"
+	cfzones "github.com/cloudflare/cloudflare-go/v7/zones"
 )
 
 type ApplyRecordInput struct {
@@ -20,10 +22,22 @@ type ApplyRecordInput struct {
 	RecordName     string
 	RecordType     string
 	Values         []string
+	TTL            int
+	Proxied        bool
 }
 
 type Provider interface {
 	ApplyRecord(ctx context.Context, input ApplyRecordInput) error
+}
+
+type ZoneInfo struct {
+	ID     string
+	Name   string
+	Status string
+}
+
+type ZoneLister interface {
+	ListZones(ctx context.Context, providerSecret string) ([]ZoneInfo, error)
 }
 
 type ProviderRegistry interface {
@@ -63,6 +77,13 @@ func (provider CloudflareProvider) ApplyRecord(ctx context.Context, input ApplyR
 	if secret == "" || zone == "" || recordName == "" || recordType == "" {
 		return errors.New("invalid dns record input")
 	}
+	ttl := input.TTL
+	if ttl <= 0 {
+		ttl = 60
+	}
+	if input.Proxied {
+		ttl = 1
+	}
 	desired := normalizeStringSet(input.Values)
 	if recordType == "CNAME" && len(desired) > 1 {
 		return errors.New("CNAME records support exactly one value")
@@ -87,6 +108,11 @@ func (provider CloudflareProvider) ApplyRecord(ctx context.Context, input ApplyR
 	for _, record := range records {
 		if remaining[record.Content] {
 			delete(remaining, record.Content)
+			if !cloudflareRecordSettingsMatch(record, ttl, input.Proxied) {
+				if err := provider.updateCloudflareRecord(ctx, client, zone, record.ID, recordName, recordType, record.Content, ttl, input.Proxied); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		value := firstValue(remaining)
@@ -96,22 +122,65 @@ func (provider CloudflareProvider) ApplyRecord(ctx context.Context, input ApplyR
 			}
 			continue
 		}
-		if err := provider.updateCloudflareRecord(ctx, client, zone, record.ID, recordName, recordType, value); err != nil {
+		if err := provider.updateCloudflareRecord(ctx, client, zone, record.ID, recordName, recordType, value, ttl, input.Proxied); err != nil {
 			return err
 		}
 		delete(remaining, value)
 	}
 	for value := range remaining {
-		if err := provider.createCloudflareRecord(ctx, client, zone, recordName, recordType, value); err != nil {
+		if err := provider.createCloudflareRecord(ctx, client, zone, recordName, recordType, value, ttl, input.Proxied); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func cloudflareRecordSettingsMatch(record cloudflareRecord, ttl int, proxied bool) bool {
+	recordTTL := record.TTL
+	if recordTTL == 0 {
+		recordTTL = ttl
+	}
+	return recordTTL == ttl && record.Proxied == proxied
+}
+
+func (provider CloudflareProvider) ListZones(ctx context.Context, providerSecret string) ([]ZoneInfo, error) {
+	secret := strings.TrimSpace(providerSecret)
+	if secret == "" {
+		return nil, errors.New("invalid dns credential input")
+	}
+	client := provider.newCloudflareClient(secret)
+	pager := client.Zones.ListAutoPaging(ctx, cfzones.ZoneListParams{})
+	zones := make([]ZoneInfo, 0)
+	for pager.Next() {
+		zone := pager.Current()
+		zoneID := strings.TrimSpace(zone.ID)
+		zoneName := strings.TrimSpace(zone.Name)
+		if zoneID == "" || zoneName == "" {
+			continue
+		}
+		zones = append(zones, ZoneInfo{
+			ID:     zoneID,
+			Name:   strings.ToLower(zoneName),
+			Status: strings.ToUpper(strings.TrimSpace(string(zone.Status))),
+		})
+	}
+	if err := pager.Err(); err != nil {
+		return nil, fmt.Errorf("cloudflare dns list zones: %w", err)
+	}
+	sort.Slice(zones, func(left, right int) bool {
+		if zones[left].Name == zones[right].Name {
+			return zones[left].ID < zones[right].ID
+		}
+		return zones[left].Name < zones[right].Name
+	})
+	return zones, nil
+}
+
 type cloudflareRecord struct {
 	ID      string
 	Content string
+	TTL     int
+	Proxied bool
 }
 
 func (provider CloudflareProvider) newCloudflareClient(secret string) *cloudflare.Client {
@@ -157,7 +226,7 @@ func (provider CloudflareProvider) listCloudflareRecords(ctx context.Context, cl
 			return records, nil
 		}
 		for _, record := range result.Result {
-			records = append(records, cloudflareRecord{ID: record.ID, Content: record.Content})
+			records = append(records, cloudflareRecord{ID: record.ID, Content: record.Content, TTL: int(record.TTL), Proxied: record.Proxied})
 		}
 		if totalPages > 0 && page >= totalPages {
 			return records, nil
@@ -180,10 +249,10 @@ func cloudflareTotalPages(raw string) int {
 	return int(envelope.ResultInfo.TotalPages)
 }
 
-func (provider CloudflareProvider) createCloudflareRecord(ctx context.Context, client *cloudflare.Client, zone string, recordName string, recordType string, value string) error {
+func (provider CloudflareProvider) createCloudflareRecord(ctx context.Context, client *cloudflare.Client, zone string, recordName string, recordType string, value string, ttl int, proxied bool) error {
 	_, err := client.DNS.Records.New(ctx, cfdns.RecordNewParams{
 		ZoneID: cloudflare.F(zone),
-		Body:   cloudflareRecordNewBody(recordName, recordType, value),
+		Body:   cloudflareRecordNewBody(recordName, recordType, value, ttl, proxied),
 	})
 	if err != nil {
 		return fmt.Errorf("cloudflare dns create record: %w", err)
@@ -191,13 +260,13 @@ func (provider CloudflareProvider) createCloudflareRecord(ctx context.Context, c
 	return nil
 }
 
-func (provider CloudflareProvider) updateCloudflareRecord(ctx context.Context, client *cloudflare.Client, zone string, recordID string, recordName string, recordType string, value string) error {
+func (provider CloudflareProvider) updateCloudflareRecord(ctx context.Context, client *cloudflare.Client, zone string, recordID string, recordName string, recordType string, value string, ttl int, proxied bool) error {
 	if recordID == "" || value == "" {
 		return nil
 	}
 	_, err := client.DNS.Records.Update(ctx, recordID, cfdns.RecordUpdateParams{
 		ZoneID: cloudflare.F(zone),
-		Body:   cloudflareRecordUpdateBody(recordName, recordType, value),
+		Body:   cloudflareRecordUpdateBody(recordName, recordType, value, ttl, proxied),
 	})
 	if err != nil {
 		return fmt.Errorf("cloudflare dns update record: %w", err)
@@ -205,23 +274,23 @@ func (provider CloudflareProvider) updateCloudflareRecord(ctx context.Context, c
 	return nil
 }
 
-func cloudflareRecordNewBody(recordName string, recordType string, value string) cfdns.RecordNewParamsBody {
+func cloudflareRecordNewBody(recordName string, recordType string, value string, ttl int, proxied bool) cfdns.RecordNewParamsBody {
 	return cfdns.RecordNewParamsBody{
 		Name:    cloudflare.F(recordName),
-		TTL:     cloudflare.F(cfdns.TTL(60)),
+		TTL:     cloudflare.F(cfdns.TTL(ttl)),
 		Type:    cloudflare.F(cfdns.RecordNewParamsBodyType(recordType)),
 		Content: cloudflare.F(value),
-		Proxied: cloudflare.F(false),
+		Proxied: cloudflare.F(proxied),
 	}
 }
 
-func cloudflareRecordUpdateBody(recordName string, recordType string, value string) cfdns.RecordUpdateParamsBody {
+func cloudflareRecordUpdateBody(recordName string, recordType string, value string, ttl int, proxied bool) cfdns.RecordUpdateParamsBody {
 	return cfdns.RecordUpdateParamsBody{
 		Name:    cloudflare.F(recordName),
-		TTL:     cloudflare.F(cfdns.TTL(60)),
+		TTL:     cloudflare.F(cfdns.TTL(ttl)),
 		Type:    cloudflare.F(cfdns.RecordUpdateParamsBodyType(recordType)),
 		Content: cloudflare.F(value),
-		Proxied: cloudflare.F(false),
+		Proxied: cloudflare.F(proxied),
 	}
 }
 

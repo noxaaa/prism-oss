@@ -87,6 +87,15 @@ export type NodePortRange = {
   enabled: boolean;
 };
 
+export type NodeDNSPublishAddress = {
+  id?: string;
+  address_type: "A" | "AAAA" | string;
+  address: string;
+  source: "MANUAL" | "AUTO" | string;
+  enabled: boolean;
+  observed_at?: string;
+};
+
 export type NodeResource = {
   id: string;
   name: string;
@@ -111,6 +120,7 @@ export type NodeResource = {
   group_ids: string[];
   listen_ips: NodeListenIP[];
   port_ranges: NodePortRange[];
+  dns_publish_addresses?: NodeDNSPublishAddress[];
 };
 
 export type MonitorGroup = {
@@ -151,8 +161,16 @@ export type HealthCheck = {
   timeout_seconds: number;
   config: Record<string, unknown>;
   enabled: boolean;
+  target_scope?: HealthTargetScope;
   targets: HealthCheckTarget[];
   monitor_scopes: HealthMonitorScope[];
+  latest_results?: HealthResult[];
+};
+
+export type HealthTargetScope = {
+  type: string;
+  target_ids?: string[];
+  target_group_id?: string;
 };
 
 export type HealthCheckTarget = {
@@ -189,18 +207,67 @@ export type DNSCredential = {
   id: string;
   name: string;
   provider: string;
+  zones?: DNSCredentialZone[];
 };
 
-export type DNSRecord = {
+export type DNSCredentialZone = {
+  id: string;
+  zone_id: string;
+  zone_name: string;
+  status: string;
+  last_synced_at: string;
+};
+
+export type DNSDiagnostic = {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+};
+
+export type DNSManagedRecord = {
   id: string;
   dns_credential_id: string;
-  zone: string;
+  credential_zone_id: string;
+  zone_id: string;
+  zone_name: string;
+  record_host: string;
   record_name: string;
   record_type: string;
-  managed_mode: string;
-  desired_values: string[];
+  ttl: number;
+  proxied: boolean;
+  active_instance_id?: string;
   last_applied_values: string[];
+  last_evaluation_status: string;
+  last_evaluation_error?: string;
+  last_diagnostics: DNSDiagnostic[];
+  last_evaluated_at?: string;
   last_applied_at?: string;
+  instances: DNSInstance[];
+};
+
+export type DNSInstance = {
+  id: string;
+  managed_record_id: string;
+  name: string;
+  priority: number;
+  enabled: boolean;
+  node_group_ids: string[];
+  answer_count: number;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  notification_channel_ids: string[];
+  last_output_values: string[];
+  last_status: string;
+  last_diagnostics: DNSDiagnostic[];
+  last_evaluated_at?: string;
+};
+
+export type NotificationChannel = {
+  id: string;
+  name: string;
+  channel_type: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
 };
 
 export type Target = {

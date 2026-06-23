@@ -29,6 +29,20 @@ func (ossRouteTestDNSProvider) ApplyRecord(context.Context, dns.ApplyRecordInput
 	return nil
 }
 
+func (ossRouteTestDNSProvider) ListZones(context.Context, string) ([]dns.ZoneInfo, error) {
+	return []dns.ZoneInfo{{ID: "zone_1", Name: "example.com", Status: "ACTIVE"}}, nil
+}
+
+type ossRouteFailingDNSProvider struct{}
+
+func (ossRouteFailingDNSProvider) ApplyRecord(context.Context, dns.ApplyRecordInput) error {
+	return nil
+}
+
+func (ossRouteFailingDNSProvider) ListZones(context.Context, string) ([]dns.ZoneInfo, error) {
+	return nil, context.Canceled
+}
+
 func TestOSSControlServerDoesNotRegisterRBACRoutes(t *testing.T) {
 	signer := auth.HMACInternalTokenSigner{Secret: []byte("test-secret")}
 	server := NewControlServer(ControlServerOptions{
@@ -118,6 +132,42 @@ func TestControlServerRouteExtensionReceivesInternalIdentity(t *testing.T) {
 	if payload.Data.UserID != "user_extension" || payload.Data.EditionKey != string(edition.KeyOSS) || payload.Data.ResourceLen != 1 {
 		t.Fatalf("unexpected extension payload: %#v", payload.Data)
 	}
+}
+
+func TestOSSControlServerDNSCredentialDiscoveryFailureIsValidationError(t *testing.T) {
+	signer := auth.HMACInternalTokenSigner{Secret: []byte("test-secret")}
+	server := NewControlServer(ControlServerOptions{
+		TokenVerifier: signer,
+		Edition:       edition.OSSProvider(),
+		ControlService: service.NewControlServiceWithOptions(nil, service.ControlServiceOptions{
+			Edition:                edition.OSSProvider(),
+			DNSSecretEncryptionKey: "test-dns-secret-key",
+			DNSProviders:           dns.StaticProviderRegistry{"CLOUDFLARE": ossRouteFailingDNSProvider{}},
+		}),
+		AgentTokenSigningSecret: []byte("agent-token-secret-32-byte-test-key"),
+	})
+	token := signInternalToken(t, signer, auth.InternalClaims{
+		UserID:         "user_owner",
+		OrganizationID: "org_oss",
+		MemberID:       "member_oss",
+		Roles:          []string{"owner"},
+		Permissions:    []string{string(domain.PermissionDNSManage)},
+		ExpiresAt:      time.Now().Add(time.Minute),
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/dns/credentials", bytes.NewBufferString(`{"name":"test","provider":"CLOUDFLARE","secret":"test-cloudflare-token"}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected DNS credential discovery failure to return 400, got %d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "test-cloudflare-token") {
+		t.Fatalf("DNS credential discovery failure must not expose token: %s", response.Body.String())
+	}
+	assertOSSErrorCode(t, response, "VALIDATION_FAILED")
 }
 
 func TestOSSControlServerBootstrapsWithCoreOnlySchema(t *testing.T) {
@@ -263,7 +313,9 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 	targetGroup := createOSSTargetGroupViaAPI(t, server, token, target.ID, "OSS API Target Group")
 	healthCheck := createOSSHealthCheckViaAPI(t, server, token, target.ID, monitor.ID, "OSS API Health")
 	dnsCredential := createOSSDNSCredentialViaAPI(t, server, token, "OSS API Cloudflare")
-	dnsRecord := createOSSDNSRecordViaAPI(t, server, token, dnsCredential.ID, "OSS API DNS")
+	dnsManagedRecord := createOSSDNSManagedRecordViaAPI(t, server, token, dnsCredential, "smart", "A")
+	dnsInstance := createOSSDNSInstanceViaAPI(t, server, token, dnsManagedRecord.ID, "OSS API DNS Instance")
+	assertOSSDNSManagedRecordTypeConflictViaAPI(t, server, token, dnsCredential, "smart", "CNAME")
 	controlService := service.NewControlServiceWithOptions(store, service.ControlServiceOptions{
 		Edition:                 edition.OSSProvider(),
 		AppName:                 "OSS Control Console",
@@ -334,7 +386,9 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 		"/internal/v1/health-checks",
 		"/internal/v1/health-checks/" + healthCheck.ID + "/results",
 		"/internal/v1/dns/credentials",
-		"/internal/v1/dns/records",
+		"/internal/v1/dns/managed-records",
+		"/internal/v1/dns/instances",
+		"/internal/v1/notification-channels",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Authorization", "Bearer "+token)
@@ -344,9 +398,11 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 			t.Fatalf("expected %s to return 200, got %d body=%s", path, response.Code, response.Body.String())
 		}
 	}
+	assertOSSRouteNotFound(t, server, token, "/internal/v1/dns/"+"records")
 	revokeNodeRegistrationTokenViaAPI(t, server, token, node.ID, registrationToken.TokenID)
 	revokeMonitorRegistrationTokenViaAPI(t, server, token, monitor.ID, monitorRegistrationToken.TokenID)
-	deleteOSSDNSRecordViaAPI(t, server, token, dnsRecord.ID)
+	deleteOSSDNSInstanceViaAPI(t, server, token, dnsInstance.ID)
+	deleteOSSDNSManagedRecordViaAPI(t, server, token, dnsManagedRecord.ID)
 	deleteOSSDNSCredentialViaAPI(t, server, token, dnsCredential.ID)
 }
 
@@ -461,10 +517,21 @@ type ossHealthCheckPayload struct {
 }
 
 type ossDNSCredentialPayload struct {
+	ID    string                        `json:"id"`
+	Zones []ossDNSCredentialZonePayload `json:"zones"`
+}
+
+type ossDNSCredentialZonePayload struct {
+	ID       string `json:"id"`
+	ZoneID   string `json:"zone_id"`
+	ZoneName string `json:"zone_name"`
+}
+
+type ossDNSManagedRecordPayload struct {
 	ID string `json:"id"`
 }
 
-type ossDNSRecordPayload struct {
+type ossDNSInstancePayload struct {
 	ID string `json:"id"`
 }
 
@@ -657,7 +724,7 @@ func createOSSHealthCheckViaAPI(t *testing.T, server http.Handler, token string,
 func createOSSDNSCredentialViaAPI(t *testing.T, server http.Handler, token string, name string) ossDNSCredentialPayload {
 	t.Helper()
 
-	body := `{"name":"` + name + `","provider":"CLOUDFLARE","secret":"test-token"}`
+	body := `{"name":"` + name + `","provider":"CLOUDFLARE","secret":"test-cloudflare-token"}`
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/internal/v1/dns/credentials", bytes.NewBufferString(body))
 	request.Header.Set("Authorization", "Bearer "+token)
@@ -666,39 +733,135 @@ func createOSSDNSCredentialViaAPI(t *testing.T, server http.Handler, token strin
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("expected OSS DNS credential create 201, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if strings.Contains(recorder.Body.String(), "test-token") {
+	if strings.Contains(recorder.Body.String(), "test-cloudflare-token") {
 		t.Fatalf("DNS credential response must not expose the secret: %s", recorder.Body.String())
 	}
 	var response struct {
 		Data ossDNSCredentialPayload `json:"data"`
 	}
 	decodeJSON(t, recorder, &response)
+	if len(response.Data.Zones) == 0 {
+		t.Fatalf("expected OSS DNS credential create to discover zones, got body=%s", recorder.Body.String())
+	}
 	return response.Data
 }
 
-func createOSSDNSRecordViaAPI(t *testing.T, server http.Handler, token string, credentialID string, name string) ossDNSRecordPayload {
+func createOSSDNSManagedRecordViaAPI(t *testing.T, server http.Handler, token string, credential ossDNSCredentialPayload, host string, recordType string) ossDNSManagedRecordPayload {
 	t.Helper()
+	if len(credential.Zones) == 0 {
+		t.Fatalf("expected DNS credential to include at least one zone")
+	}
 
 	body := `{
-		"dns_credential_id":"` + credentialID + `",
-		"zone":"example.com",
-		"record_name":"health.example.com",
-		"record_type":"A",
-		"desired_values":["192.0.2.1"]
+		"dns_credential_id":"` + credential.ID + `",
+		"credential_zone_id":"` + credential.Zones[0].ID + `",
+		"record_host":"` + host + `",
+		"record_type":"` + recordType + `",
+		"ttl":60,
+		"proxied":false
 	}`
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/internal/v1/dns/records", bytes.NewBufferString(body))
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/dns/managed-records", bytes.NewBufferString(body))
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusCreated {
-		t.Fatalf("expected OSS DNS record create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+		t.Fatalf("expected OSS DNS managed record create 201, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var response struct {
-		Data ossDNSRecordPayload `json:"data"`
+		Data ossDNSManagedRecordPayload `json:"data"`
 	}
 	decodeJSON(t, recorder, &response)
 	return response.Data
+}
+
+func assertOSSRouteNotFound(t *testing.T, server http.Handler, token string, path string) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected %s to return 404, got %d body=%s", path, recorder.Code, recorder.Body.String())
+	}
+}
+
+func assertOSSDNSManagedRecordTypeConflictViaAPI(t *testing.T, server http.Handler, token string, credential ossDNSCredentialPayload, host string, recordType string) {
+	t.Helper()
+	if len(credential.Zones) == 0 {
+		t.Fatalf("expected DNS credential to include at least one zone")
+	}
+
+	body := `{
+		"dns_credential_id":"` + credential.ID + `",
+		"credential_zone_id":"` + credential.Zones[0].ID + `",
+		"record_host":"` + host + `",
+		"record_type":"` + recordType + `",
+		"ttl":60,
+		"proxied":false
+	}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/dns/managed-records", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected OSS DNS managed record type conflict 400, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func createOSSDNSInstanceViaAPI(t *testing.T, server http.Handler, token string, managedRecordID string, name string) ossDNSInstancePayload {
+	t.Helper()
+
+	body := `{
+		"managed_record_id":"` + managedRecordID + `",
+		"name":"` + name + `",
+		"priority":10,
+		"enabled":true,
+		"node_group_ids":[],
+		"answer_count":-1,
+		"condition":{},
+		"action":{"type":"SET_STATIC_ADDRESSES","values":["192.0.2.10"]},
+		"notification_channel_ids":[]
+	}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/dns/instances", bytes.NewBufferString(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected OSS DNS instance create 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data ossDNSInstancePayload `json:"data"`
+	}
+	decodeJSON(t, recorder, &response)
+	return response.Data
+}
+
+func deleteOSSDNSInstanceViaAPI(t *testing.T, server http.Handler, token string, instanceID string) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/dns/instances/"+instanceID, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected OSS DNS instance delete 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func deleteOSSDNSManagedRecordViaAPI(t *testing.T, server http.Handler, token string, recordID string) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/dns/managed-records/"+recordID, nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	server.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected OSS DNS managed record delete 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func createOSSNodeRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, nodeID string) ossRegistrationTokenPayload {
@@ -758,18 +921,6 @@ func revokeMonitorRegistrationTokenViaAPI(t *testing.T, server http.Handler, tok
 	server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected OSS monitor registration token revoke 200, got %d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func deleteOSSDNSRecordViaAPI(t *testing.T, server http.Handler, token string, recordID string) {
-	t.Helper()
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/dns/records/"+recordID, nil)
-	request.Header.Set("Authorization", "Bearer "+token)
-	server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected OSS DNS record delete 200, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
