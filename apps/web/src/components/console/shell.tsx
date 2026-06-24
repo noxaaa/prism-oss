@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  ActivityIcon,
   DatabaseIcon,
   KeyRoundIcon,
   LogOutIcon,
+  RouteIcon,
   UsersIcon,
 } from "lucide-react";
 import {
@@ -32,6 +34,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ControlAPIError, controlGet, controlPost } from "@/components/console/control-api";
 import { defaultConsoleRegistry, type ConsoleNavItem, type Workspace } from "@/components/console/edition-registry";
+import { CardTableSkeleton, SummaryCard, SummaryGrid } from "@/components/console/shared";
 import { I18nProvider, LanguageSwitch, localizeControlError, useI18n, type Locale, type MessageKey } from "@/components/console/i18n";
 import { canUseAdminWorkspace, hasAnyPermission, roleSummary } from "@/components/console/permissions";
 import type { ControlSession, InitialUser } from "@/components/console/types";
@@ -586,16 +589,71 @@ function SignOutButton({ compact = true }: { compact?: boolean }) {
 
 function ConsoleLoading({ appName }: { appName: string }) {
   return (
-    <main className="min-h-screen bg-background p-6">
-      <div className="mx-auto flex max-w-6xl flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-6 w-48" />
-            <Skeleton className="h-4 w-64" />
+    <main className="min-h-screen bg-background text-foreground">
+      <div className="grid min-h-screen lg:grid-cols-[240px_1fr]">
+        <aside className="border-r bg-card">
+          <div className="flex h-full flex-col gap-4 p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                <DatabaseIcon />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">{appName}</div>
+                <Skeleton className="mt-1 h-3 w-28" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-1 rounded-md bg-muted p-1">
+              <Skeleton className="h-8 rounded-sm" />
+              <Skeleton className="h-8 rounded-sm" />
+            </div>
+            <nav className="flex flex-col gap-1">
+              {Array.from({ length: 6 }, (_, index) => (
+                <Skeleton className="h-9 w-full" key={index} />
+              ))}
+            </nav>
+            <div className="mt-auto flex flex-col gap-3">
+              <Separator />
+              <div className="flex items-center gap-3">
+                <Skeleton className="size-8 rounded-full" />
+                <div className="min-w-0 flex-1">
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="mt-1 h-3 w-20" />
+                </div>
+                <Skeleton className="size-8" />
+              </div>
+            </div>
           </div>
-          <Badge variant="secondary">{appName}</Badge>
-        </div>
-        <Skeleton className="h-[560px] w-full" />
+        </aside>
+        <section className="min-w-0">
+          <header className="border-b bg-background/95 px-4 py-4 lg:px-8">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div className="flex flex-col gap-2">
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-8 w-48" />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Skeleton className="h-9 w-28" />
+                <Skeleton className="h-6 w-24 rounded-full" />
+              </div>
+            </div>
+          </header>
+          <div className="px-4 py-6 lg:px-8">
+            <div className="flex flex-col gap-6">
+              <SummaryGrid>
+                <SummaryCard icon={<DatabaseIcon />} label={<Skeleton className="h-4 w-20" />} loading value={null} />
+                <SummaryCard icon={<UsersIcon />} label={<Skeleton className="h-4 w-24" />} loading value={null} />
+                <SummaryCard icon={<RouteIcon />} label={<Skeleton className="h-4 w-16" />} loading value={null} />
+                <SummaryCard icon={<ActivityIcon />} label={<Skeleton className="h-4 w-20" />} loading value={null} />
+              </SummaryGrid>
+              <CardTableSkeleton
+                columns={5}
+                description={<Skeleton className="h-4 w-64" />}
+                rows={5}
+                title={<Skeleton className="h-6 w-40" />}
+              />
+            </div>
+          </div>
+        </section>
       </div>
     </main>
   );

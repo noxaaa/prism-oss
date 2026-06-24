@@ -189,7 +189,7 @@ func (service *ControlService) RecordNodeAgentHello(ctx context.Context, organiz
 		if node.DesiredAgentVersion == "" {
 			node.DesiredAgentVersion = targetVersion
 		}
-		result = toNodePayload(node)
+		result = service.toNodePayload(node)
 		return nil
 	})
 	if err == nil {
@@ -229,7 +229,7 @@ func (service *ControlService) UpdateNodeAgentUpdatePolicy(ctx context.Context, 
 				return err
 			}
 		}
-		result = toNodePayload(node)
+		result = service.toNodePayload(node)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "nodes.agent_update_policy", "NODE", node.ID, ""))
 	})
 	return result, mapServiceError(err)
@@ -257,7 +257,7 @@ func (service *ControlService) RequestNodeAgentUpgrade(ctx context.Context, iden
 		if err != nil {
 			return err
 		}
-		result = toNodePayload(node)
+		result = service.toNodePayload(node)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "nodes.agent_upgrade", "NODE", node.ID, ""))
 	})
 	return result, mapServiceError(err)
@@ -301,7 +301,7 @@ func (service *ControlService) RequestNodeAgentUpgrades(ctx context.Context, ide
 			if err != nil {
 				return err
 			}
-			result = append(result, toNodePayload(updatedNode))
+			result = append(result, service.toNodePayload(updatedNode))
 			if err := service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "nodes.agent_upgrade", "NODE", updatedNode.ID, "")); err != nil {
 				return err
 			}

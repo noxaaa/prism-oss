@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -321,6 +322,32 @@ func TestNodeAndMonitorRuntimeUseOneSecondReportingIntervals(t *testing.T) {
 	}
 	if monitorRuntime.heartbeatInterval != time.Second {
 		t.Fatalf("monitor heartbeat interval = %s, want %s", monitorRuntime.heartbeatInterval, time.Second)
+	}
+}
+
+func TestNodeRuntimeMetricsIncludesSystemDetails(t *testing.T) {
+	runtime := NewNodeRuntime(RuntimeConfig{}, nil)
+	metrics := runtime.collectMetrics()
+	if metrics.Architecture != goruntime.GOARCH {
+		t.Fatalf("metrics architecture = %q, want %q", metrics.Architecture, goruntime.GOARCH)
+	}
+	if metrics.CPULogicalCores <= 0 {
+		t.Fatalf("expected logical CPU core count, got %d", metrics.CPULogicalCores)
+	}
+}
+
+func TestNodeRuntimeMetricsUsesCachedSystemDetails(t *testing.T) {
+	runtime := NewNodeRuntime(RuntimeConfig{}, nil)
+	runtime.staticMetrics = MetricsPayload{CPUModel: "Cached CPU", CPULogicalCores: 12, CPUPhysicalCores: 6, OSName: "cached-os", OSVersion: "cached-version", KernelVersion: "cached-kernel", Architecture: "cached-arch", VirtualizationSystem: "cached-kvm", VirtualizationRole: "guest"}
+	metrics := runtime.collectMetrics()
+	if metrics.CPUModel != "Cached CPU" || metrics.CPULogicalCores != 12 || metrics.CPUPhysicalCores != 6 {
+		t.Fatalf("expected cached CPU details, got %#v", metrics)
+	}
+	if metrics.OSName != "cached-os" || metrics.OSVersion != "cached-version" || metrics.KernelVersion != "cached-kernel" || metrics.Architecture != "cached-arch" {
+		t.Fatalf("expected cached OS details, got %#v", metrics)
+	}
+	if metrics.VirtualizationSystem != "cached-kvm" || metrics.VirtualizationRole != "guest" {
+		t.Fatalf("expected cached virtualization details, got %#v", metrics)
 	}
 }
 

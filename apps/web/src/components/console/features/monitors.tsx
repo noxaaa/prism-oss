@@ -19,7 +19,6 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDeleteDialog } from "@/components/console/confirm-delete-dialog";
 import { controlDelete, controlGet, controlPatch, controlPost, shortDate } from "@/components/console/control-api";
 import { formatHealthCheckTargets } from "@/components/console/health-check-targets";
@@ -29,7 +28,7 @@ import { localizeControlError, useI18n } from "@/components/console/i18n";
 import { MultiSelectField } from "@/components/console/multi-select-field";
 import { hasPermission } from "@/components/console/permissions";
 import { useConsoleSession } from "@/components/console/shell";
-import { DataState, EnumSelect, PageStack, StatusBadge, SummaryCard, SummaryGrid, copyText, useControlList } from "@/components/console/shared";
+import { DataState, EnumSelect, PageStack, StatusBadge, SummaryCard, SummaryGrid, TableSkeleton, copyText, useControlList } from "@/components/console/shared";
 import type { HealthCheck, HealthResult, Monitor, MonitorGroup, RegistrationToken, ResourceOption, Target, TargetGroup } from "@/components/console/types";
 
 type DrawerMode = "create" | "edit" | "detail";
@@ -84,9 +83,9 @@ export function MonitorsPage() {
   return (
     <PageStack>
       <SummaryGrid>
-        <SummaryCard icon={<RadarIcon />} label={t("monitors.monitors")} value={monitors.data.length} />
-        <SummaryCard icon={<RadarIcon />} label={t("monitors.groups")} value={monitorGroups.data.length} />
-        <SummaryCard icon={<RadarIcon />} label={t("nodes.online")} value={monitors.data.filter((monitor) => monitor.status === "ONLINE").length} />
+        <SummaryCard icon={<RadarIcon />} label={t("monitors.monitors")} loading={monitors.loading} value={monitors.data.length} />
+        <SummaryCard icon={<RadarIcon />} label={t("monitors.groups")} loading={monitorGroups.loading} value={monitorGroups.data.length} />
+        <SummaryCard icon={<RadarIcon />} label={t("nodes.online")} loading={monitors.loading} value={monitors.data.filter((monitor) => monitor.status === "ONLINE").length} />
       </SummaryGrid>
 
       <Card>
@@ -98,7 +97,7 @@ export function MonitorsPage() {
           </CardAction>
         </CardHeader>
         <CardContent>
-          <DataState loading={monitorGroups.loading} error={monitorGroups.error}>
+          <DataState loading={monitorGroups.loading} loadingFallback={<TableSkeleton columns={canManage ? 4 : 3} rows={4} />} error={monitorGroups.error}>
             <Table>
               <TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("field.description")}</TableHead><TableHead>{t("monitors.monitors")}</TableHead>{canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
               <TableBody>
@@ -135,7 +134,7 @@ export function MonitorsPage() {
           </CardAction>
         </CardHeader>
         <CardContent>
-          <DataState loading={monitors.loading || monitorGroups.loading} error={monitors.error || monitorGroups.error}>
+          <DataState loading={monitors.loading || monitorGroups.loading} loadingFallback={<TableSkeleton columns={canManage ? 5 : 4} rows={5} />} error={monitors.error || monitorGroups.error}>
             <Table>
               <TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("field.status")}</TableHead><TableHead>{t("monitors.groups")}</TableHead><TableHead>{t("overview.lastSeen")}</TableHead>{canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
               <TableBody>
@@ -220,8 +219,8 @@ export function HealthChecksPage() {
   return (
     <PageStack>
       <SummaryGrid>
-        <SummaryCard icon={<HeartPulseIcon />} label={t("health.checks")} value={checks.data.length} />
-        <SummaryCard icon={<HeartPulseIcon />} label={t("common.enabled")} value={checks.data.filter((check) => check.enabled).length} />
+        <SummaryCard icon={<HeartPulseIcon />} label={t("health.checks")} loading={checks.loading} value={checks.data.length} />
+        <SummaryCard icon={<HeartPulseIcon />} label={t("common.enabled")} loading={checks.loading} value={checks.data.filter((check) => check.enabled).length} />
       </SummaryGrid>
       <Card>
         <CardHeader>
@@ -232,7 +231,7 @@ export function HealthChecksPage() {
           </CardAction>
         </CardHeader>
         <CardContent>
-          <DataState loading={resourceState.loading} error={resourceState.error}>
+          <DataState loading={resourceState.loading} loadingFallback={<TableSkeleton columns={showActions ? 6 : 5} rows={5} />} error={resourceState.error}>
             <Table>
               <TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("health.probeType")}</TableHead><TableHead>{t("targets.targets")}</TableHead><TableHead>{t("health.latestResult")}</TableHead><TableHead>{t("common.enabled")}</TableHead>{showActions ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
               <TableBody>
@@ -531,13 +530,63 @@ function HealthCheckForm({ check, targets, targetGroups, monitors, monitorGroups
       <EnumSelect label={t("health.monitorScope")} onValueChange={setMonitorScopeType} options={[{ value: "MONITOR", label: t("monitors.monitor") }, { value: "MONITOR_GROUP", label: t("monitors.group") }]} value={monitorScopeType} />
       <input name="monitor_scope_type" type="hidden" value={monitorScopeType} />
       {monitorScopeType === "MONITOR" ? <SelectField defaultValue={check?.monitor_scopes[0]?.monitor_id ?? ""} label={t("field.monitor_id")} name="monitor_id" options={monitors.map((monitor) => ({ value: monitor.id, label: monitor.name }))} /> : <SelectField defaultValue={check?.monitor_scopes[0]?.monitor_group_id ?? ""} label={t("field.monitor_group_id")} name="monitor_group_id" options={monitorGroups.map((group) => ({ value: group.id, label: group.name }))} />}
-      <Field><FieldLabel htmlFor="health-config">{t("health.config")}</FieldLabel><Textarea defaultValue={JSON.stringify(check?.config ?? {}, null, 2)} id="health-config" name="config" /></Field>
+      <HealthProbeConfigFields config={check?.config ?? {}} probeType={probeType} />
       <Field orientation="horizontal"><Switch checked={enabled} onCheckedChange={setEnabled} /> <FieldLabel>{t("common.enabled")}</FieldLabel></Field>
       <input name="enabled" type="hidden" value={enabled ? "true" : "false"} />
       <Button disabled={saving} type="submit">{t("common.save")}</Button>
     </form>
   );
 }
+
+function HealthProbeConfigFields({ config, probeType }: { config: Record<string, unknown>; probeType: string }) {
+  const { t } = useI18n();
+  const normalized = probeType.trim().toUpperCase();
+  if (normalized === "ICMP") {
+    return (
+      <Field>
+        <FieldLabel>{t("health.config")}</FieldLabel>
+        <p className="text-sm text-muted-foreground">{t("health.noProbeConfig")}</p>
+      </Field>
+    );
+  }
+  return (
+    <FieldGroup>
+      <FieldLabel>{t("health.config")}</FieldLabel>
+      {(normalized === "TCP_PORT" || normalized === "HTTP") ? (
+        <Field>
+          <FieldLabel htmlFor="health-config-port">{t("health.portOverride")}</FieldLabel>
+          <Input defaultValue={probeConfigNumber(config, "port_override")} id="health-config-port" max="65535" min="1" name="config_port_override" placeholder="443" type="number" />
+        </Field>
+      ) : null}
+      {normalized === "HTTP" ? (
+        <div className="grid gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="health-config-scheme">{t("health.httpScheme")}</FieldLabel>
+              <select className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 text-sm" defaultValue={healthProbeSchemeDefault(config)} id="health-config-scheme" name="config_http_scheme">
+                <option value="http">http</option>
+                <option value="https">https</option>
+              </select>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="health-config-method">{t("health.httpMethod")}</FieldLabel>
+              <Input defaultValue={probeConfigString(config, "method", "GET")} id="health-config-method" name="config_http_method" placeholder="GET" />
+            </Field>
+          </div>
+          <Field>
+            <FieldLabel htmlFor="health-config-path">{t("health.httpPath")}</FieldLabel>
+            <Input defaultValue={probeConfigString(config, "path", "/")} id="health-config-path" name="config_http_path" placeholder="/" />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="health-config-statuses">{t("health.expectedStatuses")}</FieldLabel>
+            <Input defaultValue={probeConfigStatusesText(config)} id="health-config-statuses" name="config_http_expected_statuses" placeholder="200, 204, 301" />
+          </Field>
+        </div>
+      ) : null}
+    </FieldGroup>
+  );
+}
+
 function LatestHealthSummary({ check, locale }: { check: HealthCheck; locale: Parameters<typeof shortDate>[1] }) {
   const { t } = useI18n();
   const results = check.latest_results ?? [];
@@ -629,19 +678,66 @@ function healthCheckPayloadFromForm(formElement: HTMLFormElement) {
     monitor_scope: monitorScopeType === "MONITOR_GROUP"
       ? { type: "MONITOR_GROUP", monitor_group_id: String(form.get("monitor_group_id") ?? "") }
       : { type: "MONITOR", monitor_id: String(form.get("monitor_id") ?? "") },
-    config: parseJSONFormField(form, "config", {}),
+    config: healthProbeConfigFromForm(form, String(form.get("probe_type") ?? "TCP_PORT")),
   };
 }
 
-function parseJSONFormField(form: FormData, field: string, fallback: Record<string, unknown>) {
-  const raw = String(form.get(field) ?? "").trim();
-  if (!raw) return fallback;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : fallback;
-  } catch {
-    return fallback;
+export function healthProbeConfigFromForm(form: FormData, probeType: string): Record<string, unknown> {
+  const normalized = probeType.trim().toUpperCase();
+  const config: Record<string, unknown> = {};
+  if (normalized === "TCP_PORT" || normalized === "HTTP") {
+    const port = parseOptionalInteger(form.get("config_port_override"));
+    if (port >= 1 && port <= 65535) config.port_override = port;
   }
+  if (normalized === "HTTP") {
+    const scheme = String(form.get("config_http_scheme") ?? "http").trim().toLowerCase();
+    config.scheme = scheme === "https" ? "https" : "http";
+    const method = String(form.get("config_http_method") ?? "GET").trim();
+    config.method = method || "GET";
+    const path = String(form.get("config_http_path") ?? "/").trim();
+    config.path = path.startsWith("/") ? path : `/${path || ""}`;
+    const statuses = parseExpectedStatuses(String(form.get("config_http_expected_statuses") ?? ""));
+    if (statuses.length > 0) config.expected_statuses = statuses;
+  }
+  return config;
+}
+
+function parseOptionalInteger(value: FormDataEntryValue | null): number {
+  const raw = String(value ?? "").trim();
+  if (!raw) return 0;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) ? parsed : 0;
+}
+
+function parseExpectedStatuses(raw: string): number[] {
+  const seen = new Set<number>();
+  return raw.split(/[\s,]+/)
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value >= 100 && value <= 599)
+    .filter((value) => {
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+}
+
+function probeConfigString(config: Record<string, unknown>, key: string, fallback: string): string {
+  const value = config[key];
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+export function healthProbeSchemeDefault(config: Record<string, unknown>): "http" | "https" {
+  return probeConfigString(config, "scheme", "http").toLowerCase() === "https" ? "https" : "http";
+}
+
+function probeConfigNumber(config: Record<string, unknown>, key: string): string {
+  const value = config[key];
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+}
+
+function probeConfigStatusesText(config: Record<string, unknown>): string {
+  const value = config.expected_statuses;
+  return Array.isArray(value) ? value.filter((item) => typeof item === "number" && Number.isFinite(item)).join(", ") : "";
 }
 
 function dnsDeleteLabel(request: { kind: "group"; item: MonitorGroup } | { kind: "monitor"; item: Monitor }) {

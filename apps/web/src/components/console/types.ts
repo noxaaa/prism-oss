@@ -94,6 +94,16 @@ export type NodeDNSPublishAddress = {
   source: "MANUAL" | "AUTO" | string;
   enabled: boolean;
   observed_at?: string;
+  geoip?: NodeGeoIP;
+};
+
+export type NodeGeoIP = {
+  ip?: string;
+  source?: string;
+  country_code?: string;
+  country_name?: string;
+  flag_emoji?: string;
+  attribution?: string;
 };
 
 export type NodeResource = {
@@ -117,6 +127,7 @@ export type NodeResource = {
   agent_update_error?: string;
   agent_update_started_at?: string;
   agent_update_finished_at?: string;
+  geoip?: NodeGeoIP;
   group_ids: string[];
   listen_ips: NodeListenIP[];
   port_ranges: NodePortRange[];
@@ -477,12 +488,21 @@ export type AgentMetrics = {
   udp_packets_per_second?: number;
   bandwidth_bps?: number;
   cpu_percent?: number;
+  cpu_model?: string;
+  cpu_logical_cores?: number;
+  cpu_physical_cores?: number;
   ram_used_bytes?: number;
   ram_total_bytes?: number;
   upload_bytes?: number;
   download_bytes?: number;
   uptime_seconds?: number;
   boot_time?: string;
+  os_name?: string;
+  os_version?: string;
+  kernel_version?: string;
+  architecture?: string;
+  virtualization_system?: string;
+  virtualization_role?: string;
   last_seen_at?: string;
   desired_config_version?: number;
   applied_config_version?: number;

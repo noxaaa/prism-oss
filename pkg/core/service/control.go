@@ -40,6 +40,7 @@ type ControlService struct {
 	targetGroupSchedulers   TargetGroupSchedulerSupportFunc
 	dnsSecretEncryptionKey  string
 	dnsProviders            dns.ProviderRegistry
+	geoIPResolver           GeoIPResolver
 	healthActionRegistry    HealthActionRegistry
 }
 
@@ -59,6 +60,7 @@ type ControlServiceOptions struct {
 	TargetGroupSchedulers   TargetGroupSchedulerSupportFunc
 	DNSSecretEncryptionKey  string
 	DNSProviders            dns.ProviderRegistry
+	GeoIPResolver           GeoIPResolver
 	HealthActionExecutors   []HealthActionExecutor
 	HealthEventExecutors    []HealthEventExecutor
 }
@@ -85,6 +87,7 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 		targetGroupSchedulers:   options.TargetGroupSchedulers,
 		dnsSecretEncryptionKey:  options.DNSSecretEncryptionKey,
 		dnsProviders:            options.DNSProviders,
+		geoIPResolver:           options.GeoIPResolver,
 	}
 	healthActionExecutors := append([]HealthActionExecutor(nil), options.HealthActionExecutors...)
 	healthActionExecutors = append(healthActionExecutors, service.defaultHealthActionExecutors()...)

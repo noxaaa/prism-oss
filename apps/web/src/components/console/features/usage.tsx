@@ -59,7 +59,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
@@ -77,6 +76,7 @@ import {
   StatusBadge,
   SummaryCard,
   SummaryGrid,
+  TableSkeleton,
   TextAreaField,
   TextField,
   copyText,
@@ -156,10 +156,10 @@ export function UserUsagePage() {
   return (
     <PageStack>
       <SummaryGrid>
-        <SummaryCard icon={<RouteIcon />} label={t("overview.rules")} value={rules.data.length} />
-        <SummaryCard icon={<UploadIcon />} label={t("usage.upload")} value={bytes(totals.upload)} />
-        <SummaryCard icon={<DownloadIcon />} label={t("usage.download")} value={bytes(totals.download)} />
-        <SummaryCard icon={<ActivityIcon />} label={t("usage.tcpConnections")} value={totals.tcp} />
+        <SummaryCard icon={<RouteIcon />} label={t("overview.rules")} loading={rules.loading} value={rules.data.length} />
+        <SummaryCard icon={<UploadIcon />} label={t("usage.upload")} loading={rules.loading} value={bytes(totals.upload)} />
+        <SummaryCard icon={<DownloadIcon />} label={t("usage.download")} loading={rules.loading} value={bytes(totals.download)} />
+        <SummaryCard icon={<ActivityIcon />} label={t("usage.tcpConnections")} loading={rules.loading} value={totals.tcp} />
       </SummaryGrid>
       <Card>
         <CardHeader>
@@ -167,7 +167,7 @@ export function UserUsagePage() {
           <CardAction><Button disabled={!canReadRules || !canReadTraffic} onClick={loadTraffic} size="sm" type="button" variant="outline">{t("usage.refreshTraffic")}</Button></CardAction>
         </CardHeader>
         <CardContent>
-          <DataState loading={rules.loading} error={rules.error}>
+          <DataState loading={rules.loading} loadingFallback={<TableSkeleton columns={4} rows={5} />} error={rules.error}>
             <Table>
               <TableHeader>
                 <TableRow>

@@ -25,6 +25,8 @@ curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install.
 
 安装脚本会写入本地 `.env`，生成基于镜像的 `docker-compose.yml`，拉取指定 Release 镜像，运行 `migrate` 镜像，并启动 PostgreSQL 16、Redis、控制面和 Web 控制台。安装完成后打开脚本输出的 setup URL 创建第一个 owner 账号。
 
+安装脚本还会尝试下载 DB-IP IP to Country Lite MMDB 到 `./geoip/dbip-country-lite.mmdb`，并以只读方式挂载到控制面，用于节点国家/地区国旗展示。GeoIP 下载失败不会阻断安装；缺少数据库时节点国家/地区显示为未知。DB-IP Lite 由 DB-IP.com 提供，使用 CC BY 4.0 归因。
+
 如果安装在远程主机上，自动识别的地址不是浏览器可访问地址时，显式传入外部访问地址：
 
 ```sh
@@ -51,6 +53,21 @@ sh ./install.sh \
   --control-port 8080 \
   --control-bind-host 0.0.0.0 \
   --control-url http://YOUR_SERVER_IP:8080
+```
+
+覆盖或跳过可选 GeoIP 数据库下载：
+
+```sh
+sh ./install.sh --geoip-db-url "https://download.db-ip.com/free/dbip-country-lite-YYYY-MM.mmdb.gz"
+sh ./install.sh --skip-geoip-download
+```
+
+在安装目录中手动刷新 GeoIP 数据库：
+
+```sh
+mkdir -p geoip
+curl -fsSL "https://download.db-ip.com/free/dbip-country-lite-$(date -u +%Y-%m).mmdb.gz" | gunzip -c > geoip/dbip-country-lite.mmdb
+docker compose restart control-plane
 ```
 
 使用外部 PostgreSQL 16，而不是内置 PostgreSQL 容器：

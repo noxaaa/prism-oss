@@ -369,10 +369,20 @@ type NodePayload struct {
 	AgentUpdateError       string                         `json:"agent_update_error,omitempty"`
 	AgentUpdateStartedAt   string                         `json:"agent_update_started_at,omitempty"`
 	AgentUpdateFinishedAt  string                         `json:"agent_update_finished_at,omitempty"`
+	GeoIP                  NodeGeoIPPayload               `json:"geoip"`
 	GroupIDs               []string                       `json:"group_ids"`
 	ListenIPs              []NodeListenIPPayload          `json:"listen_ips"`
 	PortRanges             []NodePortRangePayload         `json:"port_ranges"`
 	DNSPublishAddresses    []NodeDNSPublishAddressPayload `json:"dns_publish_addresses"`
+}
+
+type NodeGeoIPPayload struct {
+	IP          string `json:"ip,omitempty"`
+	Source      string `json:"source,omitempty"`
+	CountryCode string `json:"country_code,omitempty"`
+	CountryName string `json:"country_name,omitempty"`
+	FlagEmoji   string `json:"flag_emoji,omitempty"`
+	Attribution string `json:"attribution,omitempty"`
 }
 
 type NodeListenIPPayload struct {
@@ -391,12 +401,13 @@ type NodePortRangePayload struct {
 }
 
 type NodeDNSPublishAddressPayload struct {
-	ID          string `json:"id,omitempty"`
-	AddressType string `json:"address_type"`
-	Address     string `json:"address"`
-	Source      string `json:"source"`
-	Enabled     bool   `json:"enabled"`
-	ObservedAt  string `json:"observed_at,omitempty"`
+	ID          string           `json:"id,omitempty"`
+	AddressType string           `json:"address_type"`
+	Address     string           `json:"address"`
+	Source      string           `json:"source"`
+	Enabled     bool             `json:"enabled"`
+	ObservedAt  string           `json:"observed_at,omitempty"`
+	GeoIP       NodeGeoIPPayload `json:"geoip"`
 }
 
 type MonitorGroupPayload struct {

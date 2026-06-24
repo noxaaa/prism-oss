@@ -25,6 +25,8 @@ curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install.
 
 The installer writes a local `.env`, writes an image-based `docker-compose.yml`, pulls the selected release images, runs the `migrate` image, and starts PostgreSQL 16, Redis, the control plane, and the web console. Open the setup URL printed by the installer. On a remote host, pass `--public-web-url http://YOUR_SERVER_IP:3000` and `--control-url http://YOUR_SERVER_IP:8080` when automatic address detection cannot infer reachable URLs.
 
+The installer also tries to download the DB-IP IP to Country Lite MMDB database into `./geoip/dbip-country-lite.mmdb` and mounts it read-only into the control plane for node country flags. GeoIP download failures do not block installation; affected nodes show an unknown country until the database is installed. DB-IP Lite is provided by DB-IP.com under CC BY 4.0 attribution.
+
 Pinned release flow:
 
 ```sh
@@ -36,6 +38,21 @@ Useful options:
 
 ```sh
 ./scripts/install.sh --version v0.1.3 --dir "$HOME/prism-oss" --app-name "OSS Control Console" --web-port 3000 --public-web-url http://YOUR_SERVER_IP:3000 --control-port 8080 --control-bind-host 0.0.0.0 --control-url http://YOUR_SERVER_IP:8080
+```
+
+Override or skip the optional GeoIP database download:
+
+```sh
+./scripts/install.sh --geoip-db-url "https://download.db-ip.com/free/dbip-country-lite-YYYY-MM.mmdb.gz"
+./scripts/install.sh --skip-geoip-download
+```
+
+Refresh the GeoIP database manually from the install directory:
+
+```sh
+mkdir -p geoip
+curl -fsSL "https://download.db-ip.com/free/dbip-country-lite-$(date -u +%Y-%m).mmdb.gz" | gunzip -c > geoip/dbip-country-lite.mmdb
+docker compose restart control-plane
 ```
 
 Use an external PostgreSQL 16 database instead of the bundled container:

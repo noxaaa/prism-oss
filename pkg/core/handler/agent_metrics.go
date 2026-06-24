@@ -16,7 +16,7 @@ func (server *ControlServer) handleNodeMetricsStream(response http.ResponseWrite
 		writeServiceResponse(response, http.StatusOK, nil, err)
 		return
 	}
-	server.handleAgentMetricsStream(response, request, identity.OrganizationID, "NODE", nodeID)
+	server.handleAgentMetricsStream(response, request, identity.OrganizationID, "NODE", nodeID, true)
 }
 
 func (server *ControlServer) handleMonitorMetricsStream(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
@@ -26,16 +26,16 @@ func (server *ControlServer) handleMonitorMetricsStream(response http.ResponseWr
 		writeServiceResponse(response, http.StatusOK, nil, err)
 		return
 	}
-	server.handleAgentMetricsStream(response, request, identity.OrganizationID, "MONITOR", monitorID)
+	server.handleAgentMetricsStream(response, request, identity.OrganizationID, "MONITOR", monitorID, false)
 }
 
-func (server *ControlServer) handleAgentMetricsStream(response http.ResponseWriter, request *http.Request, organizationID string, agentType string, agentID string) {
+func (server *ControlServer) handleAgentMetricsStream(response http.ResponseWriter, request *http.Request, organizationID string, agentType string, agentID string, includeHostDetails bool) {
 	response.Header().Set("Content-Type", "text/event-stream")
 	response.Header().Set("Cache-Control", "no-cache")
 	response.Header().Set("Connection", "keep-alive")
 	lastSent := ""
 	if state, ok := server.agentStates.Latest(organizationID, agentType, agentID); ok {
-		if !writeMetricsSSE(response, state) {
+		if !writeMetricsSSE(response, state, includeHostDetails) {
 			return
 		}
 		lastSent = state.LastSeenAt
@@ -61,7 +61,7 @@ func (server *ControlServer) handleAgentMetricsStream(response http.ResponseWrit
 			if !ok || state.LastSeenAt == lastSent {
 				continue
 			}
-			if !writeMetricsSSE(response, state) {
+			if !writeMetricsSSE(response, state, includeHostDetails) {
 				return
 			}
 			lastSent = state.LastSeenAt
@@ -80,7 +80,7 @@ func writeKeepaliveSSE(response http.ResponseWriter) bool {
 	return err == nil
 }
 
-func writeMetricsSSE(response http.ResponseWriter, state AgentMetricsState) bool {
+func writeMetricsSSE(response http.ResponseWriter, state AgentMetricsState, includeHostDetails bool) bool {
 	payload := map[string]any{
 		"status":                 state.Status,
 		"last_seen_at":           state.LastSeenAt,
@@ -96,6 +96,17 @@ func writeMetricsSSE(response http.ResponseWriter, state AgentMetricsState) bool
 		"boot_time":              state.Metrics.BootTime,
 		"applied_config_version": state.Metrics.AppliedConfigVersion,
 		"targets":                state.Metrics.Targets,
+	}
+	if includeHostDetails {
+		payload["cpu_model"] = state.Metrics.CPUModel
+		payload["cpu_logical_cores"] = state.Metrics.CPULogicalCores
+		payload["cpu_physical_cores"] = state.Metrics.CPUPhysicalCores
+		payload["os_name"] = state.Metrics.OSName
+		payload["os_version"] = state.Metrics.OSVersion
+		payload["kernel_version"] = state.Metrics.KernelVersion
+		payload["architecture"] = state.Metrics.Architecture
+		payload["virtualization_system"] = state.Metrics.VirtualizationSystem
+		payload["virtualization_role"] = state.Metrics.VirtualizationRole
 	}
 	data, _ := json.Marshal(payload)
 	_, err := fmt.Fprintf(response, "event: metrics\ndata: %s\n\n", data)

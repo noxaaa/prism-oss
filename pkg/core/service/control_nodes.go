@@ -191,7 +191,7 @@ func (service *ControlService) ListNodes(ctx context.Context, identity InternalI
 			if !service.canUseAnyNodeGroup(identity, node.GroupIDs) {
 				continue
 			}
-			result = append(result, toNodePayload(node))
+			result = append(result, service.toNodePayload(node))
 		}
 		return nil
 	})
@@ -211,7 +211,7 @@ func (service *ControlService) GetNode(ctx context.Context, identity InternalIde
 		if !service.canUseAnyNodeGroup(identity, node.GroupIDs) {
 			return ErrForbidden
 		}
-		result = toNodePayload(node)
+		result = service.toNodePayload(node)
 		return nil
 	})
 	return result, mapServiceError(err)
@@ -287,7 +287,7 @@ func (service *ControlService) CreateNode(ctx context.Context, identity Internal
 		if err != nil {
 			return err
 		}
-		result = toNodePayload(node)
+		result = service.toNodePayload(node)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "nodes.create", "NODE", node.ID, ""))
 	})
 	if err == nil {
@@ -389,7 +389,7 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 		if err != nil {
 			return err
 		}
-		result = toNodePayload(node)
+		result = service.toNodePayload(node)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "nodes.update", "NODE", node.ID, ""))
 	})
 	if err == nil {
@@ -740,6 +740,10 @@ func toNodeGroupPayload(nodeGroup repo.NodeGroupRecord) NodeGroupPayload {
 }
 
 func toNodePayload(node repo.NodeRecord) NodePayload {
+	return nodePayloadWithoutGeoIP(node)
+}
+
+func nodePayloadWithoutGeoIP(node repo.NodeRecord) NodePayload {
 	return NodePayload{
 		ID:                     node.ID,
 		Name:                   node.Name,
@@ -787,9 +791,13 @@ func toNodePortRangePayloads(portRanges []repo.NodePortRangeRecord) []NodePortRa
 func toNodeDNSPublishAddressPayloads(addresses []repo.NodeDNSPublishAddressRecord) []NodeDNSPublishAddressPayload {
 	payloads := make([]NodeDNSPublishAddressPayload, 0, len(addresses))
 	for _, address := range addresses {
-		payloads = append(payloads, NodeDNSPublishAddressPayload{ID: address.ID, AddressType: address.AddressType, Address: address.Address, Source: address.Source, Enabled: address.Enabled, ObservedAt: address.ObservedAt})
+		payloads = append(payloads, toNodeDNSPublishAddressPayload(address))
 	}
 	return payloads
+}
+
+func toNodeDNSPublishAddressPayload(address repo.NodeDNSPublishAddressRecord) NodeDNSPublishAddressPayload {
+	return NodeDNSPublishAddressPayload{ID: address.ID, AddressType: address.AddressType, Address: address.Address, Source: address.Source, Enabled: address.Enabled, ObservedAt: address.ObservedAt}
 }
 
 func mergeStringSets(left []string, right []string) []string {

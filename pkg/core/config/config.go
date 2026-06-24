@@ -20,6 +20,7 @@ type ControlPlaneConfig struct {
 	AgentTokenSigningSecret string
 	AgentReleaseVersion     string
 	DNSSecretEncryptionKey  string
+	GeoIPDBPath             string
 	LogLevel                string
 }
 
@@ -39,6 +40,7 @@ func LoadControlPlane() (ControlPlaneConfig, error) {
 		AgentTokenSigningSecret: os.Getenv("AGENT_TOKEN_SIGNING_SECRET"),
 		AgentReleaseVersion:     envOrDefault("AGENT_RELEASE_VERSION", "latest"),
 		DNSSecretEncryptionKey:  os.Getenv("DNS_SECRET_ENCRYPTION_KEY"),
+		GeoIPDBPath:             envOrDefault("GEOIP_DB_PATH", "/data/geoip/dbip-country-lite.mmdb"),
 		LogLevel:                envOrDefault("LOG_LEVEL", "info"),
 	}
 	if cfg.AppName == "" {

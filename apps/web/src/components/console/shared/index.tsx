@@ -46,7 +46,7 @@ export function ResourceTable({
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent>
-        <DataState emptyIcon={icon} loading={loading} error={error}>
+        <DataState emptyIcon={icon} loading={loading} loadingFallback={<TableSkeleton columns={headers.length} rows={4} />} error={error}>
           <Table>
             <TableHeader>
               <TableRow>{headers.map((header) => <TableHead key={header}>{header}</TableHead>)}</TableRow>
@@ -69,21 +69,17 @@ export function DataState({
   children,
   emptyIcon,
   error,
+  loadingFallback,
   loading,
 }: {
   children: ReactNode;
   emptyIcon?: ReactNode;
   error: string;
+  loadingFallback?: ReactNode;
   loading: boolean;
 }) {
   if (loading) {
-    return (
-      <div className="flex flex-col gap-3">
-        <Skeleton className="h-8 w-full" />
-        <Skeleton className="h-8 w-11/12" />
-        <Skeleton className="h-8 w-10/12" />
-      </div>
-    );
+    return loadingFallback ?? <TableSkeleton columns={3} />;
   }
   if (error) {
     return (
@@ -99,6 +95,51 @@ export function DataState({
   );
 }
 
+export function TableSkeleton({ columns, rows = 3 }: { columns: number; rows?: number }) {
+  const columnIndexes = range(columns);
+  const rowIndexes = range(rows);
+  return (
+    <div className="min-w-0 overflow-x-auto" data-console-table-skeleton="true">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            {columnIndexes.map((index) => (
+              <TableHead key={index}>
+                <Skeleton className={cellSkeletonClass(index, true)} />
+              </TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rowIndexes.map((rowIndex) => (
+            <TableRow key={rowIndex}>
+              {columnIndexes.map((columnIndex) => (
+                <TableCell key={columnIndex}>
+                  <Skeleton className={cellSkeletonClass(columnIndex)} />
+                </TableCell>
+              ))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+export function CardTableSkeleton({ columns, description, rows = 3, title }: { columns: number; description?: ReactNode; rows?: number; title: ReactNode }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        {description ? <CardDescription>{description}</CardDescription> : null}
+      </CardHeader>
+      <CardContent>
+        <TableSkeleton columns={columns} rows={rows} />
+      </CardContent>
+    </Card>
+  );
+}
+
 export function PageStack({ children }: { children: ReactNode }) {
   return <div className="flex flex-col gap-6">{children}</div>;
 }
@@ -107,7 +148,7 @@ export function SummaryGrid({ children }: { children: ReactNode }) {
   return <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{children}</div>;
 }
 
-export function SummaryCard({ icon, label, value }: { icon: ReactNode; label: string; value: ReactNode }) {
+export function SummaryCard({ icon, label, loading = false, value }: { icon: ReactNode; label: ReactNode; loading?: boolean; value: ReactNode }) {
   return (
     <Card size="sm">
       <CardHeader>
@@ -117,10 +158,21 @@ export function SummaryCard({ icon, label, value }: { icon: ReactNode; label: st
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-semibold">{value}</div>
+        <div className="flex h-8 items-center text-2xl font-semibold">
+          {loading ? <Skeleton className="h-8 w-16" /> : value}
+        </div>
       </CardContent>
     </Card>
   );
+}
+
+function range(count: number) {
+  return Array.from({ length: Math.max(1, count) }, (_, index) => index);
+}
+
+function cellSkeletonClass(index: number, compact = false) {
+  const widths = ["w-28", "w-20", "w-32", "w-24", "w-16", "w-36", "w-24", "w-28", "w-20", "w-32"];
+  return `${compact ? "h-4" : "h-5"} ${widths[index % widths.length]}`;
 }
 
 export function TextField({

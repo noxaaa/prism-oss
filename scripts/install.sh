@@ -19,6 +19,9 @@ image_registry="ghcr.io/noxaaa"
 image_registry_provided=0
 database_url=""
 database_url_provided=0
+geoip_db_url=""
+geoip_db_url_provided=0
+skip_geoip_download=0
 version="latest"
 
 usage() {
@@ -36,6 +39,8 @@ Options:
                            Host interface for the control-plane API. Defaults to 0.0.0.0.
   --control-url URL        URL that node agents use to reach the control plane.
   --database-url URL       External PostgreSQL DATABASE_URL. When set, no local postgres service is rendered.
+  --geoip-db-url URL       GeoIP MMDB gzip URL. Defaults to DB-IP Country Lite for the current month.
+  --skip-geoip-download    Skip optional GeoIP database download; country flags show unknown until a DB is mounted.
   --image-registry HOST    Image registry namespace. Defaults to ghcr.io/noxaaa.
   -h, --help              Show this help.
 USAGE
@@ -52,6 +57,8 @@ while [ "$#" -gt 0 ]; do
     --control-bind-host) control_bind_host="${2:?missing value for --control-bind-host}"; control_bind_host_provided=1; shift 2 ;;
     --control-url) control_url="${2:?missing value for --control-url}"; control_url_provided=1; shift 2 ;;
     --database-url) database_url="${2:?missing value for --database-url}"; database_url_provided=1; shift 2 ;;
+    --geoip-db-url) geoip_db_url="${2:?missing value for --geoip-db-url}"; geoip_db_url_provided=1; shift 2 ;;
+    --skip-geoip-download) skip_geoip_download=1; shift ;;
     --image-registry) image_registry="${2:?missing value for --image-registry}"; image_registry_provided=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -196,6 +203,78 @@ query_encode() {
   printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/+/%2B/g' -e 's/\//%2F/g' -e 's/=/%3D/g' -e 's/ /%20/g' -e 's/?/%3F/g' -e 's/&/%26/g' -e 's/#/%23/g'
 }
 
+geoip_month() {
+  offset="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    OFFSET="$offset" python3 - <<'PY'
+import datetime
+import os
+
+today = datetime.date.today().replace(day=1)
+offset = int(os.environ["OFFSET"])
+month = today.month + offset
+year = today.year
+while month < 1:
+    month += 12
+    year -= 1
+while month > 12:
+    month -= 12
+    year += 1
+print(f"{year:04d}-{month:02d}")
+PY
+    return
+  fi
+  if [ "$offset" = "-1" ] && date -u -d "last month" +%Y-%m >/dev/null 2>&1; then
+    date -u -d "last month" +%Y-%m
+    return
+  fi
+  if [ "$offset" = "-1" ] && date -u -v-1m +%Y-%m >/dev/null 2>&1; then
+    date -u -v-1m +%Y-%m
+    return
+  fi
+  date -u +%Y-%m
+}
+
+default_geoip_db_url() {
+  printf 'https://download.db-ip.com/free/dbip-country-lite-%s.mmdb.gz' "$(geoip_month "$1")"
+}
+
+download_geoip_database() {
+  target="geoip/dbip-country-lite.mmdb"
+  mkdir -p geoip
+  chmod 0755 geoip
+  if [ "$skip_geoip_download" = "1" ]; then
+    return 0
+  fi
+  if [ -s "$target" ] && [ "$geoip_db_url_provided" = "0" ]; then
+    return 0
+  fi
+  tmp="$(mktemp)"
+  cleanup_geoip_tmp() {
+    rm -f "$tmp" "$target.tmp"
+  }
+  trap cleanup_geoip_tmp EXIT INT TERM
+  if [ "$geoip_db_url_provided" = "1" ]; then
+    candidate_urls="$geoip_db_url"
+  else
+    candidate_urls="$(default_geoip_db_url 0)
+$(default_geoip_db_url -1)"
+  fi
+  for candidate_url in $candidate_urls; do
+    if curl -fsSL "$candidate_url" -o "$tmp" && gunzip -c "$tmp" > "$target.tmp"; then
+      mv "$target.tmp" "$target"
+      chmod 0644 "$target"
+      trap - EXIT INT TERM
+      cleanup_geoip_tmp
+      echo "GeoIP database installed at $target"
+      return 0
+    fi
+  done
+  trap - EXIT INT TERM
+  cleanup_geoip_tmp
+  return 1
+}
+
 env_value() {
   key="$1"
   if [ -f ".env" ]; then
@@ -293,7 +372,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       QUEUE_REDIS_URL: ${QUEUE_REDIS_URL:-redis://redis:6379/0}
       CACHE_REDIS_URL: ${CACHE_REDIS_URL:-redis://redis:6379/0}
+      GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/data/geoip/dbip-country-lite.mmdb}
       CONTROL_PLANE_HTTP_ADDR: 0.0.0.0:8080
+    volumes:
+      - ./geoip:/data/geoip:ro
     ports:
       - "${CONTROL_PLANE_BIND_HOST:-0.0.0.0}:${CONTROL_PLANE_PORT:-8080}:8080"
 
@@ -359,7 +441,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       QUEUE_REDIS_URL: ${QUEUE_REDIS_URL:-redis://redis:6379/0}
       CACHE_REDIS_URL: ${CACHE_REDIS_URL:-redis://redis:6379/0}
+      GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/data/geoip/dbip-country-lite.mmdb}
       CONTROL_PLANE_HTTP_ADDR: 0.0.0.0:8080
+    volumes:
+      - ./geoip:/data/geoip:ro
     ports:
       - "${CONTROL_PLANE_BIND_HOST:-0.0.0.0}:${CONTROL_PLANE_PORT:-8080}:8080"
 
@@ -523,6 +608,7 @@ cd "$install_dir"
 
 if [ "$purge" -eq 1 ]; then
   docker compose down -v --remove-orphans
+  rm -rf geoip
   rm -f .env docker-compose.yml upgrade.sh uninstall.sh
   echo "Uninstalled prism-oss and removed generated config plus Docker volumes."
 else
@@ -654,6 +740,7 @@ if [ ! -f ".env" ]; then
     printf 'DATABASE_URL=%s\n' "$resolved_database_url"
     printf 'QUEUE_REDIS_URL=redis://redis:6379/0\n'
     printf 'CACHE_REDIS_URL=redis://redis:6379/0\n'
+    printf 'GEOIP_DB_PATH=/data/geoip/dbip-country-lite.mmdb\n'
     printf 'BETTER_AUTH_SECRET=%s\n' "$(generate_secret)"
     printf 'BETTER_AUTH_URL=%s\n' "$resolved_public_url"
     printf 'BETTER_AUTH_TRUSTED_ORIGINS=%s\n' "$trusted_origins"
@@ -681,9 +768,14 @@ else
     set_env_value_if_requested_or_missing POSTGRES_PASSWORD "$postgres_password" 0
   fi
   set_env_value_if_requested_or_missing DATABASE_URL "$resolved_database_url" "$database_url_provided"
+  set_env_value_if_requested_or_missing GEOIP_DB_PATH /data/geoip/dbip-country-lite.mmdb 0
   set_env_value_if_requested_or_missing BETTER_AUTH_URL "$resolved_public_url" "$public_web_url_provided"
   set_env_value_if_requested_or_missing BETTER_AUTH_TRUSTED_ORIGINS "$trusted_origins" "$trusted_origins_requested"
   set_env_value_if_requested_or_missing DNS_SECRET_ENCRYPTION_KEY "$(generate_secret)" 0
+fi
+
+if ! download_geoip_database; then
+  echo "GeoIP database download failed; continuing with unknown locations" >&2
 fi
 
 docker compose pull

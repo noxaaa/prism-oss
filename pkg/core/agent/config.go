@@ -89,12 +89,21 @@ type MetricsPayload struct {
 	UDPPacketsPerSecond  int64                  `json:"udp_packets_per_second"`
 	BandwidthBps         int64                  `json:"bandwidth_bps"`
 	CPUPercent           float64                `json:"cpu_percent"`
+	CPUModel             string                 `json:"cpu_model"`
+	CPULogicalCores      int                    `json:"cpu_logical_cores"`
+	CPUPhysicalCores     int                    `json:"cpu_physical_cores"`
 	RAMUsedBytes         uint64                 `json:"ram_used_bytes"`
 	RAMTotalBytes        uint64                 `json:"ram_total_bytes"`
 	UploadBytes          int64                  `json:"upload_bytes"`
 	DownloadBytes        int64                  `json:"download_bytes"`
 	UptimeSeconds        int64                  `json:"uptime_seconds"`
 	BootTime             string                 `json:"boot_time"`
+	OSName               string                 `json:"os_name"`
+	OSVersion            string                 `json:"os_version"`
+	KernelVersion        string                 `json:"kernel_version"`
+	Architecture         string                 `json:"architecture"`
+	VirtualizationSystem string                 `json:"virtualization_system"`
+	VirtualizationRole   string                 `json:"virtualization_role"`
 	AppliedConfigVersion int                    `json:"applied_config_version"`
 	Targets              []TargetMetricsPayload `json:"targets"`
 	TrafficReportID      string                 `json:"traffic_report_id,omitempty"`

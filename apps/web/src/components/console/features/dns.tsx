@@ -17,7 +17,7 @@ import { localizeControlError, useI18n } from "@/components/console/i18n";
 import { MultiSelectField } from "@/components/console/multi-select-field";
 import { hasPermission } from "@/components/console/permissions";
 import { useConsoleSession } from "@/components/console/shell";
-import { DataState, EnumSelect, PageStack, StatusBadge, SummaryCard, SummaryGrid, useControlList } from "@/components/console/shared";
+import { DataState, EnumSelect, PageStack, StatusBadge, SummaryCard, SummaryGrid, TableSkeleton, useControlList } from "@/components/console/shared";
 import type { DNSCredential, DNSInstance, DNSManagedRecord, NotificationChannel, ResourceOption } from "@/components/console/types";
 
 type DrawerMode = "create" | "edit" | "detail";
@@ -104,9 +104,9 @@ export function DNSPage() {
   return (
     <PageStack>
       <SummaryGrid>
-        <SummaryCard icon={<GlobeIcon />} label={t("dns.credentials")} value={credentials.data.length} />
-        <SummaryCard icon={<GlobeIcon />} label={t("dns.managedRecords")} value={managedRecords.data.length} />
-        <SummaryCard icon={<GlobeIcon />} label={t("dns.instances")} value={instances.data.length} />
+        <SummaryCard icon={<GlobeIcon />} label={t("dns.credentials")} loading={credentials.loading} value={credentials.data.length} />
+        <SummaryCard icon={<GlobeIcon />} label={t("dns.managedRecords")} loading={managedRecords.loading} value={managedRecords.data.length} />
+        <SummaryCard icon={<GlobeIcon />} label={t("dns.instances")} loading={instances.loading} value={instances.data.length} />
       </SummaryGrid>
       <CredentialTable canManage={canManage} credentials={credentials.data} error={credentials.error} loading={credentials.loading} onDelete={(item) => setDeleteRequest({ kind: "credential", item })} onEdit={(credential) => setCredentialDrawer({ mode: "edit", credential })} onDetail={(credential) => setCredentialDrawer({ mode: "detail", credential })} onNew={() => setCredentialDrawer({ mode: "create" })} onRefresh={refreshAll} />
       <ManagedRecordTable canManage={canManage} error={resourceError} instances={instances.data} loading={resourceLoading} records={managedRecords.data} onDelete={(item) => setDeleteRequest({ kind: "managed_record", item })} onDetail={(record) => setManagedRecordDrawer({ mode: "detail", record })} onEdit={(record) => setManagedRecordDrawer({ mode: "edit", record })} onEvaluate={evaluateRecord} onNew={() => setManagedRecordDrawer({ mode: "create" })} onRefresh={refreshAll} />
@@ -146,7 +146,7 @@ function CredentialTable(props: { canManage: boolean; credentials: DNSCredential
   return (
     <Card>
       <CardHeader><CardTitle>{t("dns.credentials")}</CardTitle><CardAction className="flex gap-2">{props.canManage ? <Button onClick={props.onNew} size="sm" type="button"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button> : null}<Button onClick={props.onRefresh} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button></CardAction></CardHeader>
-      <CardContent><DataState loading={props.loading} error={props.error}><Table><TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>Provider</TableHead><TableHead>{t("dns.zone")}</TableHead>{props.canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader><TableBody>{props.credentials.map((credential) => <TableRow key={credential.id}><TableCell>{credential.name}</TableCell><TableCell>{credential.provider}</TableCell><TableCell>{credential.zones?.map((zone) => zone.zone_name).join(", ") || t("common.none")}</TableCell>{props.canManage ? <TableCell className="flex gap-2"><IconButton onClick={() => props.onDetail(credential)}><EyeIcon /></IconButton><IconButton onClick={() => props.onEdit(credential)}><Edit3Icon /></IconButton><IconButton onClick={() => props.onDelete(credential)}><Trash2Icon /></IconButton></TableCell> : null}</TableRow>)}</TableBody></Table></DataState></CardContent>
+      <CardContent><DataState loading={props.loading} loadingFallback={<TableSkeleton columns={props.canManage ? 4 : 3} rows={4} />} error={props.error}><Table><TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>Provider</TableHead><TableHead>{t("dns.zone")}</TableHead>{props.canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader><TableBody>{props.credentials.map((credential) => <TableRow key={credential.id}><TableCell>{credential.name}</TableCell><TableCell>{credential.provider}</TableCell><TableCell>{credential.zones?.map((zone) => zone.zone_name).join(", ") || t("common.none")}</TableCell>{props.canManage ? <TableCell className="flex gap-2"><IconButton onClick={() => props.onDetail(credential)}><EyeIcon /></IconButton><IconButton onClick={() => props.onEdit(credential)}><Edit3Icon /></IconButton><IconButton onClick={() => props.onDelete(credential)}><Trash2Icon /></IconButton></TableCell> : null}</TableRow>)}</TableBody></Table></DataState></CardContent>
     </Card>
   );
 }
@@ -156,7 +156,7 @@ function ManagedRecordTable(props: { canManage: boolean; records: DNSManagedReco
   return (
     <Card>
       <CardHeader><CardTitle>{t("dns.managedRecords")}</CardTitle><CardAction className="flex gap-2">{props.canManage ? <Button onClick={props.onNew} size="sm" type="button"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button> : null}<Button onClick={props.onRefresh} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button></CardAction></CardHeader>
-      <CardContent><DataState loading={props.loading} error={props.error}><Table><TableHeader><TableRow><TableHead>{t("dns.record")}</TableHead><TableHead>{t("dns.type")}</TableHead><TableHead>{t("dns.activeInstance")}</TableHead><TableHead>{t("dns.values")}</TableHead><TableHead>{t("field.status")}</TableHead>{props.canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader><TableBody>{props.records.map((record) => <TableRow key={record.id}><TableCell>{record.record_name}</TableCell><TableCell>{record.record_type}</TableCell><TableCell>{record.active_instance_id ? props.instances.find((instance) => instance.id === record.active_instance_id)?.name ?? record.active_instance_id : t("common.none")}</TableCell><TableCell className="max-w-[18rem] truncate">{record.last_applied_values.join(", ") || t("common.none")}</TableCell><TableCell><StatusBadge value={record.last_evaluation_status} /></TableCell>{props.canManage ? <TableCell className="flex gap-2"><IconButton onClick={() => props.onEvaluate(record)}><RefreshCwIcon /></IconButton><IconButton onClick={() => props.onDetail(record)}><EyeIcon /></IconButton><IconButton onClick={() => props.onEdit(record)}><Edit3Icon /></IconButton><IconButton onClick={() => props.onDelete(record)}><Trash2Icon /></IconButton></TableCell> : null}</TableRow>)}</TableBody></Table></DataState></CardContent>
+      <CardContent><DataState loading={props.loading} loadingFallback={<TableSkeleton columns={props.canManage ? 6 : 5} rows={4} />} error={props.error}><Table><TableHeader><TableRow><TableHead>{t("dns.record")}</TableHead><TableHead>{t("dns.type")}</TableHead><TableHead>{t("dns.activeInstance")}</TableHead><TableHead>{t("dns.values")}</TableHead><TableHead>{t("field.status")}</TableHead>{props.canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader><TableBody>{props.records.map((record) => <TableRow key={record.id}><TableCell>{record.record_name}</TableCell><TableCell>{record.record_type}</TableCell><TableCell>{record.active_instance_id ? props.instances.find((instance) => instance.id === record.active_instance_id)?.name ?? record.active_instance_id : t("common.none")}</TableCell><TableCell className="max-w-[18rem] truncate">{record.last_applied_values.join(", ") || t("common.none")}</TableCell><TableCell><StatusBadge value={record.last_evaluation_status} /></TableCell>{props.canManage ? <TableCell className="flex gap-2"><IconButton onClick={() => props.onEvaluate(record)}><RefreshCwIcon /></IconButton><IconButton onClick={() => props.onDetail(record)}><EyeIcon /></IconButton><IconButton onClick={() => props.onEdit(record)}><Edit3Icon /></IconButton><IconButton onClick={() => props.onDelete(record)}><Trash2Icon /></IconButton></TableCell> : null}</TableRow>)}</TableBody></Table></DataState></CardContent>
     </Card>
   );
 }
@@ -166,7 +166,7 @@ function InstanceTable(props: { canManage: boolean; instances: DNSInstance[]; re
   return (
     <Card>
       <CardHeader><CardTitle>{t("dns.instances")}</CardTitle><CardAction className="flex gap-2">{props.canManage ? <Button disabled={props.records.length === 0} onClick={props.onNew} size="sm" type="button"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button> : null}<Button onClick={props.onRefresh} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button></CardAction></CardHeader>
-      <CardContent><DataState loading={props.loading} error={props.error}><Table><TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("dns.record")}</TableHead><TableHead>{t("dns.priority")}</TableHead><TableHead>{t("dns.action")}</TableHead><TableHead>{t("field.status")}</TableHead>{props.canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader><TableBody>{props.instances.map((instance) => <TableRow key={instance.id}><TableCell>{instance.name}</TableCell><TableCell>{props.records.find((record) => record.id === instance.managed_record_id)?.record_name ?? instance.managed_record_id}</TableCell><TableCell>{instance.priority}</TableCell><TableCell>{String(instance.action.type ?? "")}</TableCell><TableCell><StatusBadge value={instance.enabled ? instance.last_status : "DISABLED"} /></TableCell>{props.canManage ? <TableCell className="flex gap-2"><IconButton onClick={() => props.onDetail(instance)}><EyeIcon /></IconButton><IconButton onClick={() => props.onEdit(instance)}><Edit3Icon /></IconButton><IconButton onClick={() => props.onDelete(instance)}><Trash2Icon /></IconButton></TableCell> : null}</TableRow>)}</TableBody></Table></DataState></CardContent>
+      <CardContent><DataState loading={props.loading} loadingFallback={<TableSkeleton columns={props.canManage ? 6 : 5} rows={4} />} error={props.error}><Table><TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("dns.record")}</TableHead><TableHead>{t("dns.priority")}</TableHead><TableHead>{t("dns.action")}</TableHead><TableHead>{t("field.status")}</TableHead>{props.canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader><TableBody>{props.instances.map((instance) => <TableRow key={instance.id}><TableCell>{instance.name}</TableCell><TableCell>{props.records.find((record) => record.id === instance.managed_record_id)?.record_name ?? instance.managed_record_id}</TableCell><TableCell>{instance.priority}</TableCell><TableCell>{String(instance.action.type ?? "")}</TableCell><TableCell><StatusBadge value={instance.enabled ? instance.last_status : "DISABLED"} /></TableCell>{props.canManage ? <TableCell className="flex gap-2"><IconButton onClick={() => props.onDetail(instance)}><EyeIcon /></IconButton><IconButton onClick={() => props.onEdit(instance)}><Edit3Icon /></IconButton><IconButton onClick={() => props.onDelete(instance)}><Trash2Icon /></IconButton></TableCell> : null}</TableRow>)}</TableBody></Table></DataState></CardContent>
     </Card>
   );
 }
@@ -176,7 +176,7 @@ function NotificationChannelTable(props: { canManage: boolean; channels: Notific
   return (
     <Card>
       <CardHeader><CardTitle>{t("dns.notificationChannels")}</CardTitle><CardAction className="flex gap-2">{props.canManage ? <Button onClick={props.onNew} size="sm" type="button"><PlusIcon data-icon="inline-start" />{t("common.create")}</Button> : null}<Button onClick={props.onRefresh} size="icon" type="button" variant="outline"><RefreshCwIcon /></Button></CardAction></CardHeader>
-      <CardContent><DataState loading={props.loading} error={props.error}><Table><TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("dns.channelType")}</TableHead><TableHead>{t("common.enabled")}</TableHead>{props.canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader><TableBody>{props.channels.map((channel) => <TableRow key={channel.id}><TableCell>{channel.name}</TableCell><TableCell>{channel.channel_type}</TableCell><TableCell><StatusBadge value={channel.enabled ? "ENABLED" : "DISABLED"} /></TableCell>{props.canManage ? <TableCell className="flex gap-2"><IconButton onClick={() => props.onDetail(channel)}><EyeIcon /></IconButton><IconButton onClick={() => props.onEdit(channel)}><Edit3Icon /></IconButton><IconButton onClick={() => props.onDelete(channel)}><Trash2Icon /></IconButton></TableCell> : null}</TableRow>)}</TableBody></Table></DataState></CardContent>
+      <CardContent><DataState loading={props.loading} loadingFallback={<TableSkeleton columns={props.canManage ? 4 : 3} rows={4} />} error={props.error}><Table><TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("dns.channelType")}</TableHead><TableHead>{t("common.enabled")}</TableHead>{props.canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader><TableBody>{props.channels.map((channel) => <TableRow key={channel.id}><TableCell>{channel.name}</TableCell><TableCell>{channel.channel_type}</TableCell><TableCell><StatusBadge value={channel.enabled ? "ENABLED" : "DISABLED"} /></TableCell>{props.canManage ? <TableCell className="flex gap-2"><IconButton onClick={() => props.onDetail(channel)}><EyeIcon /></IconButton><IconButton onClick={() => props.onEdit(channel)}><Edit3Icon /></IconButton><IconButton onClick={() => props.onDelete(channel)}><Trash2Icon /></IconButton></TableCell> : null}</TableRow>)}</TableBody></Table></DataState></CardContent>
     </Card>
   );
 }
@@ -553,15 +553,15 @@ function DNSConditionGroupEditor({ node, onChange, onRemove, depth = 0 }: { node
     onChange({ ...node, children, preserveEmpty: depth === 0 && children.length === 0 ? false : node.preserveEmpty });
   }
   return (
-    <div className={depth > 0 ? "grid gap-2 rounded-md border p-3" : "grid gap-2"}>
+    <div className={depth > 0 ? "grid min-w-0 gap-2 rounded-md border p-3" : "grid min-w-0 gap-2"}>
       <div className="flex flex-wrap items-center gap-2">
-        <select className="h-9 rounded-md border bg-background px-3 text-sm" value={node.op} onChange={(event) => onChange({ ...node, op: event.currentTarget.value === "OR" ? "OR" : "AND" })}>
+        <select className="h-8 min-w-0 rounded-md border bg-background px-2.5 text-sm" value={node.op} onChange={(event) => onChange({ ...node, op: event.currentTarget.value === "OR" ? "OR" : "AND" })}>
           <option value="AND">AND</option>
           <option value="OR">OR</option>
         </select>
-        <Button data-testid="dns-condition-add-condition" onClick={() => onChange({ ...node, rawPayload: undefined, children: [...node.children, defaultDNSConditionLeaf()] })} size="sm" type="button" variant="outline"><PlusIcon data-icon="inline-start" />{t("dns.addCondition")}</Button>
-        <Button data-testid="dns-condition-add-group" onClick={() => onChange({ ...node, rawPayload: undefined, children: [...node.children, defaultDNSConditionGroup()] })} size="sm" type="button" variant="outline"><PlusIcon data-icon="inline-start" />{t("dns.addGroup")}</Button>
-        {onRemove ? <Button onClick={onRemove} size="icon-sm" type="button" variant="outline"><Trash2Icon /></Button> : null}
+        <Button data-testid="dns-condition-add-condition" onClick={() => onChange({ ...node, rawPayload: undefined, children: [...node.children, defaultDNSConditionLeaf()] })} type="button" variant="outline"><PlusIcon data-icon="inline-start" />{t("dns.addCondition")}</Button>
+        <Button data-testid="dns-condition-add-group" onClick={() => onChange({ ...node, rawPayload: undefined, children: [...node.children, defaultDNSConditionGroup()] })} type="button" variant="outline"><PlusIcon data-icon="inline-start" />{t("dns.addGroup")}</Button>
+        {onRemove ? <Button onClick={onRemove} size="icon" type="button" variant="outline"><Trash2Icon /></Button> : null}
       </div>
       {node.rawPayload ? <DNSConditionRawEditor node={{ raw: node.rawPayload }} onRemove={() => onChange({ ...node, rawPayload: undefined })} /> : null}
       <div className="grid gap-2">
@@ -578,15 +578,15 @@ function DNSConditionGroupEditor({ node, onChange, onRemove, depth = 0 }: { node
 function DNSConditionLeafEditor({ node, onChange, onRemove }: { node: DNSConditionLeaf; onChange: (node: DNSConditionLeaf) => void; onRemove: () => void }) {
   const { t } = useI18n();
   return (
-    <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-[1fr_auto_auto_auto]" data-testid="dns-condition-leaf">
-      <select className="h-9 rounded-md border bg-background px-3 text-sm" value={node.metric} onChange={(event) => onChange({ ...node, metric: event.currentTarget.value })}>
+    <div className="grid min-w-0 gap-2 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_4.5rem_5rem_2rem] sm:items-center" data-testid="dns-condition-leaf">
+      <select className="h-8 w-full min-w-0 rounded-md border bg-background px-2.5 text-sm" value={node.metric} onChange={(event) => onChange({ ...node, metric: event.currentTarget.value })}>
         {dnsConditionMetrics.map((metric) => <option key={metric.value} value={metric.value}>{t(metric.labelKey)}</option>)}
       </select>
-      <select className="h-9 rounded-md border bg-background px-3 text-sm" value={node.comparator} onChange={(event) => onChange({ ...node, comparator: event.currentTarget.value })}>
+      <select className="h-8 w-full min-w-0 rounded-md border bg-background px-2.5 text-sm" value={node.comparator} onChange={(event) => onChange({ ...node, comparator: event.currentTarget.value })}>
         {dnsConditionComparators.map((comparator) => <option key={comparator} value={comparator}>{comparator}</option>)}
       </select>
-      <Input className="sm:w-24" min="0" onChange={(event) => onChange({ ...node, value: event.currentTarget.value })} step="any" type="number" value={node.value} />
-      <Button onClick={onRemove} size="icon-sm" type="button" variant="outline"><Trash2Icon /></Button>
+      <Input className="h-8" min="0" onChange={(event) => onChange({ ...node, value: event.currentTarget.value })} step="any" type="number" value={node.value} />
+      <Button onClick={onRemove} size="icon" type="button" variant="outline"><Trash2Icon /></Button>
     </div>
   );
 }

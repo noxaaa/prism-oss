@@ -47,7 +47,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
@@ -67,6 +66,7 @@ import {
   StatusBadge,
   SummaryCard,
   SummaryGrid,
+  TableSkeleton,
   TextAreaField,
   TextField,
   copyText,
@@ -341,7 +341,7 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
             </AlertDescription>
           </Alert>
         ) : null}
-        <DataState loading={rules.loading} error={rules.error}>
+        <DataState loading={rules.loading} loadingFallback={<TableSkeleton columns={9} rows={6} />} error={rules.error}>
           <Table>
             <TableHeader>
               <TableRow>
@@ -416,9 +416,9 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
         <RuleDiagnosticsDialog onOpenChange={(open) => { if (!open) setDiagnosticsRule(null); }} rule={diagnosticsRule} />
         <RuleExportDialog exportLabel={exportLabel} exportPayload={exportPayload} onOpenChange={setExportOpen} open={exportOpen} />
         <SummaryGrid>
-          <SummaryCard icon={<RouteIcon />} label={t("rules.activeRules")} value={rules.data.filter((rule) => rule.enabled).length} />
-          <SummaryCard icon={<ActivityIcon />} label={t("rules.totalRules")} value={rules.data.length} />
-          <SummaryCard icon={<NetworkIcon />} label={t("rules.availableNodeGroups")} value={nodeGroupOptions.data.filter((option) => !option.disabled).length} />
+          <SummaryCard icon={<RouteIcon />} label={t("rules.activeRules")} loading={rules.loading} value={rules.data.filter((rule) => rule.enabled).length} />
+          <SummaryCard icon={<ActivityIcon />} label={t("rules.totalRules")} loading={rules.loading} value={rules.data.length} />
+          <SummaryCard icon={<NetworkIcon />} label={t("rules.availableNodeGroups")} loading={nodeGroupOptions.loading} value={nodeGroupOptions.data.filter((option) => !option.disabled).length} />
           <SummaryCard icon={<TargetIcon />} label={t("rules.scopes")} value={session?.resource_scopes?.length ?? 0} />
         </SummaryGrid>
         {rulesTable}
@@ -621,7 +621,7 @@ function RuleDiagnosticsDialog({ onOpenChange, rule }: { onOpenChange: (open: bo
             </Table>
           </div>
         ) : loading ? (
-          <Skeleton className="h-48 w-full" />
+          <TableSkeleton columns={6} rows={3} />
         ) : null}
         <DialogFooter showCloseButton>
           <Button disabled={!rule || loading} onClick={() => setRefreshKey((value) => value + 1)} type="button" variant="outline">

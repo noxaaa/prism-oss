@@ -19,6 +19,7 @@ func TestLoadControlPlaneReadsRuntimeDisplayNameAndURLs(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://prism:prism@localhost:5432/prism")
 	t.Setenv("AGENT_TOKEN_SIGNING_SECRET", "agent-token-secret-32-bytes")
 	t.Setenv("AGENT_RELEASE_VERSION", "v1.2.3")
+	t.Setenv("GEOIP_DB_PATH", "/data/geoip/dbip-country-lite.mmdb")
 
 	cfg, err := LoadControlPlane()
 	if err != nil {
@@ -32,6 +33,9 @@ func TestLoadControlPlaneReadsRuntimeDisplayNameAndURLs(t *testing.T) {
 	}
 	if cfg.AgentReleaseVersion != "v1.2.3" {
 		t.Fatalf("expected agent release version from env, got %q", cfg.AgentReleaseVersion)
+	}
+	if cfg.GeoIPDBPath != "/data/geoip/dbip-country-lite.mmdb" {
+		t.Fatalf("expected GeoIP DB path from env, got %q", cfg.GeoIPDBPath)
 	}
 }
 

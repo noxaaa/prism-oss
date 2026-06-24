@@ -30,6 +30,7 @@ type ControlServerOptions struct {
 	AgentTokenSigningSecret []byte
 	DNSSecretEncryptionKey  string
 	DNSProviders            dns.ProviderRegistry
+	GeoIPResolver           service.GeoIPResolver
 	AgentStateRegistry      *AgentStateRegistry
 	Edition                 edition.Provider
 	RouteExtensions         []ControlRouteExtension
@@ -59,6 +60,7 @@ func NewControlServer(options ControlServerOptions) *ControlServer {
 			AgentTokenSigningSecret: options.AgentTokenSigningSecret,
 			DNSSecretEncryptionKey:  options.DNSSecretEncryptionKey,
 			DNSProviders:            options.DNSProviders,
+			GeoIPResolver:           options.GeoIPResolver,
 			Edition:                 provider,
 		})
 	}

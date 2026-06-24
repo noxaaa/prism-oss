@@ -59,6 +59,7 @@ import {
   StatusBadge,
   SummaryCard,
   SummaryGrid,
+  TableSkeleton,
   TextAreaField,
   TextField,
   copyText,
@@ -70,6 +71,7 @@ import {
 import type {
   AgentMetrics,
   NodeGroup,
+  NodeGeoIP,
   NodeResource,
   RegistrationToken,
 } from "@/components/console/types";
@@ -79,6 +81,8 @@ const protocolOptions = [
   { value: "UDP", label: "UDP" },
   { value: "TCP_UDP", label: "TCP + UDP" },
 ];
+
+const noMetricNodes: NodeResource[] = [];
 
 function nodePortRangesForSelection(protocol: string, startPort: number, endPort: number) {
   const protocols = protocol === "TCP_UDP" ? ["TCP", "UDP"] : [protocol];
@@ -100,6 +104,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
   const canReadMetrics = hasPermission(session, "nodes.read") && hasPermission(session, "traffic.read_all");
   const nodeGroups = useControlList<NodeGroup>("/api/control/node-groups");
   const nodes = useControlList<NodeResource>("/api/control/nodes");
+  const metricsByNode = useNodeMetrics(canReadMetrics ? nodes.data : noMetricNodes);
   const [nodeGroupCreateOpen, setNodeGroupCreateOpen] = useState(false);
   const [nodeCreateOpen, setNodeCreateOpen] = useState(false);
   const [editingNodeGroup, setEditingNodeGroup] = useState<NodeGroup | null>(null);
@@ -161,9 +166,9 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
   return (
     <PageStack>
       <SummaryGrid>
-        <SummaryCard icon={<NetworkIcon />} label={t("nodes.nodeGroups")} value={nodeGroups.data.length} />
-        <SummaryCard icon={<ServerIcon />} label={t("nodes.nodes")} value={nodes.data.length} />
-        <SummaryCard icon={<ActivityIcon />} label={t("nodes.online")} value={nodes.data.filter((node) => node.status === "ONLINE").length} />
+        <SummaryCard icon={<NetworkIcon />} label={t("nodes.nodeGroups")} loading={nodeGroups.loading} value={nodeGroups.data.length} />
+        <SummaryCard icon={<ServerIcon />} label={t("nodes.nodes")} loading={nodes.loading} value={nodes.data.length} />
+        <SummaryCard icon={<ActivityIcon />} label={t("nodes.online")} loading={nodes.loading} value={nodes.data.filter((node) => node.status === "ONLINE").length} />
       </SummaryGrid>
 
       {canManage ? (
@@ -203,7 +208,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
           <CardDescription>{t("nodes.nodeGroupsDescription")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <DataState loading={nodeGroups.loading} error={nodeGroups.error}>
+          <DataState loading={nodeGroups.loading} loadingFallback={<TableSkeleton columns={canManage ? 4 : 3} rows={4} />} error={nodeGroups.error}>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -252,12 +257,13 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
           </CardAction>
         </CardHeader>
         <CardContent>
-          <DataState loading={nodes.loading} error={nodes.error}>
+          <DataState loading={nodes.loading} loadingFallback={<TableSkeleton columns={canManage ? 9 : 8} rows={5} />} error={nodes.error}>
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("field.name")}</TableHead>
                   <TableHead>{t("overview.status")}</TableHead>
+                  <TableHead className="w-24">{t("nodes.country")}</TableHead>
                   <TableHead>{t("nodes.agent")}</TableHead>
                   <TableHead>{t("nodes.groups")}</TableHead>
                   <TableHead>{t("nodes.listenIPs")}</TableHead>
@@ -271,11 +277,12 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                   <TableRow key={node.id}>
                     <TableCell>
                       <div className="flex flex-col gap-1">
-                        <span>{node.name}</span>
+                        <NodeSystemHover metrics={metricsByNode[node.id]} node={node} />
                         {node.public_description ? <span className="text-xs text-muted-foreground">{node.public_description}</span> : null}
                       </div>
                     </TableCell>
                     <TableCell><StatusBadge value={node.status} /></TableCell>
+                    <TableCell><NodeGeoIPCell geoip={node.geoip} /></TableCell>
                     <TableCell><NodeAgentSummary node={node} /></TableCell>
                     <TableCell>{nodeGroupIDs(node).map((id) => groupName(nodeGroups.data, id)).join(", ")}</TableCell>
                     <TableCell>{node.listen_ips.map((item) => item.listen_ip).join(", ")}</TableCell>
@@ -328,9 +335,38 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
         </CardContent>
       </Card>
 
-      {canReadMetrics ? <NodeMetricsPanel nodes={nodes.data} /> : null}
+      {canReadMetrics ? <NodeMetricsPanel metricsByNode={metricsByNode} nodes={nodes.data} /> : null}
     </PageStack>
   );
+}
+
+function useNodeMetrics(nodes: NodeResource[]) {
+  const [metricsByNode, setMetricsByNode] = useState<Record<string, AgentMetrics>>({});
+
+  useEffect(() => {
+    const nodeIDs = new Set(nodes.map((node) => node.id));
+    setMetricsByNode((current) => Object.fromEntries(Object.entries(current).filter(([nodeID]) => nodeIDs.has(nodeID))));
+    if (nodes.length === 0) {
+      return undefined;
+    }
+
+    const sources = nodes.map((node) => {
+      const source = new EventSource(`/api/control/nodes/${node.id}/metrics/stream`);
+      source.addEventListener("metrics", (event) => {
+        setMetricsByNode((current) => ({
+          ...current,
+          [node.id]: JSON.parse((event as MessageEvent).data) as AgentMetrics,
+        }));
+      });
+      return source;
+    });
+
+    return () => {
+      sources.forEach((source) => source.close());
+    };
+  }, [nodes]);
+
+  return metricsByNode;
 }
 
 function NodeAgentSummary({ node }: { node: NodeResource }) {
@@ -347,6 +383,62 @@ function NodeAgentSummary({ node }: { node: NodeResource }) {
       {node.agent_update_error ? <span className="max-w-56 text-xs text-destructive">{node.agent_update_error}</span> : null}
     </div>
   );
+}
+
+function NodeGeoIPCell({ geoip }: { geoip: NodeGeoIP | undefined }) {
+  const { t } = useI18n();
+  const code = geoip?.country_code || t("common.unknown");
+  const flag = geoip?.flag_emoji || "??";
+  return (
+    <HoverCard>
+      <HoverCardTrigger asChild>
+        <span className="inline-flex min-w-16 cursor-default items-center gap-2 whitespace-nowrap">
+          <span aria-hidden="true">{flag}</span>
+          <span className="font-mono text-xs">{code}</span>
+        </span>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-72">
+        <MetricDetail label="IP" value={geoip?.ip || t("common.unknown")} />
+        <MetricDetail label={t("nodes.geoipSource")} value={geoip?.source || t("common.unknown")} />
+        <MetricDetail label={t("nodes.country")} value={geoip?.country_name || code} />
+        <a
+          className="block pt-2 text-xs text-muted-foreground underline-offset-4 hover:underline"
+          href="https://db-ip.com/db/download/ip-to-country-lite"
+          rel="noreferrer"
+          target="_blank"
+        >
+          {geoip?.attribution || "DB-IP"}
+        </a>
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+function NodeSystemHover({ metrics, node }: { metrics: AgentMetrics | undefined; node: NodeResource }) {
+  const { t } = useI18n();
+  return (
+    <HoverCard>
+      <HoverCardTrigger asChild>
+        <span className="inline-flex max-w-56 cursor-default truncate font-medium">{node.name}</span>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-80">
+        <MetricDetail label={t("nodes.osName")} value={metrics?.os_name || t("common.unknown")} />
+        <MetricDetail label={t("nodes.osVersion")} value={metrics?.os_version || t("common.unknown")} />
+        <MetricDetail label={t("nodes.kernelVersion")} value={metrics?.kernel_version || t("common.unknown")} />
+        <MetricDetail label={t("nodes.architecture")} value={metrics?.architecture || t("common.unknown")} />
+        <MetricDetail label={t("nodes.virtualization")} value={virtualizationLabel(metrics, t("common.unknown"))} />
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+function virtualizationLabel(metrics: AgentMetrics | undefined, fallback: string) {
+  const system = metrics?.virtualization_system?.trim();
+  const role = metrics?.virtualization_role?.trim();
+  if (system && role) {
+    return `${system} (${role})`;
+  }
+  return system || role || fallback;
 }
 
 function NodeAgentDetails({ node }: { node: NodeResource }) {
@@ -722,32 +814,8 @@ function NodeGroupDeleteDialog({ group, onDeleted, onOpenChange }: { group: Node
   );
 }
 
-function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
+function NodeMetricsPanel({ metricsByNode, nodes }: { metricsByNode: Record<string, AgentMetrics>; nodes: NodeResource[] }) {
   const { locale, t } = useI18n();
-  const [metricsByNode, setMetricsByNode] = useState<Record<string, AgentMetrics>>({});
-
-  useEffect(() => {
-    const nodeIDs = new Set(nodes.map((node) => node.id));
-    setMetricsByNode((current) => Object.fromEntries(Object.entries(current).filter(([nodeID]) => nodeIDs.has(nodeID))));
-    if (nodes.length === 0) {
-      return undefined;
-    }
-
-    const sources = nodes.map((node) => {
-      const source = new EventSource(`/api/control/nodes/${node.id}/metrics/stream`);
-      source.addEventListener("metrics", (event) => {
-        setMetricsByNode((current) => ({
-          ...current,
-          [node.id]: JSON.parse((event as MessageEvent).data) as AgentMetrics,
-        }));
-      });
-      return source;
-    });
-
-    return () => {
-      sources.forEach((source) => source.close());
-    };
-  }, [nodes]);
 
   return (
     <Card>
@@ -776,7 +844,7 @@ function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
                   <TableRow key={node.id}>
                     <TableCell>
                       <div className="flex flex-col gap-1">
-                        <span>{node.name}</span>
+                        <NodeSystemHover metrics={metrics} node={node} />
                         {node.public_description ? <span className="text-xs text-muted-foreground">{node.public_description}</span> : null}
                       </div>
                     </TableCell>
@@ -794,7 +862,7 @@ function NodeMetricsPanel({ nodes }: { nodes: NodeResource[] }) {
                         </HoverCardContent>
                       </HoverCard>
                     </TableCell>
-                    <TableCell><MetricProgress value={metrics.cpu_percent} label={percent(metrics.cpu_percent)} /></TableCell>
+                    <TableCell><NodeCPUHover metrics={metrics} /></TableCell>
                     <TableCell>
                       <HoverCard>
                         <HoverCardTrigger asChild>
@@ -838,11 +906,33 @@ function MetricProgress({ label, value }: { label: string; value: number | undef
   );
 }
 
+function NodeCPUHover({ metrics }: { metrics: AgentMetrics }) {
+  const { t } = useI18n();
+  return (
+    <HoverCard>
+      <HoverCardTrigger asChild>
+        <div className="inline-flex cursor-default">
+          <MetricProgress value={metrics.cpu_percent} label={percent(metrics.cpu_percent)} />
+        </div>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-80">
+        <MetricDetail label={t("nodes.cpuModel")} value={metrics.cpu_model || t("common.unknown")} />
+        <MetricDetail label={t("nodes.cpuLogicalCores")} value={positiveCountOrUnknown(metrics.cpu_logical_cores, t("common.unknown"))} />
+        <MetricDetail label={t("nodes.cpuPhysicalCores")} value={positiveCountOrUnknown(metrics.cpu_physical_cores, t("common.unknown"))} />
+      </HoverCardContent>
+    </HoverCard>
+  );
+}
+
+function positiveCountOrUnknown(value: number | undefined, fallback: string) {
+  return typeof value === "number" && value > 0 ? value : fallback;
+}
+
 function MetricDetail({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 py-1">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium tabular-nums">{value}</span>
+      <span className="min-w-0 break-words text-right font-medium tabular-nums">{value}</span>
     </div>
   );
 }

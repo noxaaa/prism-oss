@@ -10,6 +10,7 @@ import (
 	"github.com/noxaaa/prism-oss/pkg/core/config"
 	"github.com/noxaaa/prism-oss/pkg/core/handler"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
+	"github.com/noxaaa/prism-oss/pkg/core/service"
 	"github.com/noxaaa/prism-oss/pkg/edition"
 )
 
@@ -46,6 +47,7 @@ func main() {
 		AgentReleaseVersion:     cfg.AgentReleaseVersion,
 		AgentTokenSigningSecret: []byte(cfg.AgentTokenSigningSecret),
 		DNSSecretEncryptionKey:  cfg.DNSSecretEncryptionKey,
+		GeoIPResolver:           service.NewGeoIPResolver(cfg.GeoIPDBPath),
 		Edition:                 controlEdition,
 	})
 

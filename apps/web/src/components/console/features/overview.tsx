@@ -78,6 +78,7 @@ import {
   StatusBadge,
   SummaryCard,
   SummaryGrid,
+  TableSkeleton,
   TextAreaField,
   TextField,
   copyText,
@@ -123,10 +124,10 @@ export function AdminOverviewPage() {
   return (
     <PageStack>
       <SummaryGrid>
-        <SummaryCard icon={<ServerIcon />} label={t("overview.nodes")} value={nodes.data.length} />
-        {hasMonitorsCapability ? <SummaryCard icon={<RadarIcon />} label={t("overview.monitors")} value={monitors.data.length} /> : null}
-        <SummaryCard icon={<RouteIcon />} label={t("overview.rules")} value={rules.data.length} />
-        <SummaryCard icon={<TargetIcon />} label={t("overview.targets")} value={targets.data.length} />
+        <SummaryCard icon={<ServerIcon />} label={t("overview.nodes")} loading={nodes.loading} value={nodes.data.length} />
+        {hasMonitorsCapability ? <SummaryCard icon={<RadarIcon />} label={t("overview.monitors")} loading={monitors.loading} value={monitors.data.length} /> : null}
+        <SummaryCard icon={<RouteIcon />} label={t("overview.rules")} loading={rules.loading} value={rules.data.length} />
+        <SummaryCard icon={<TargetIcon />} label={t("overview.targets")} loading={targets.loading} value={targets.data.length} />
       </SummaryGrid>
       <Card>
         <CardHeader>
@@ -134,7 +135,7 @@ export function AdminOverviewPage() {
           <CardDescription>{session?.organization?.name ?? t("overview.currentOrganization")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <DataState loading={nodes.loading} error={nodes.error}>
+          <DataState loading={nodes.loading} loadingFallback={<TableSkeleton columns={5} rows={5} />} error={nodes.error}>
             <Table>
               <TableHeader>
                 <TableRow>

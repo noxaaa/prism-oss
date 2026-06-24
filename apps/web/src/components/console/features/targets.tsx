@@ -86,6 +86,7 @@ import {
   StatusBadge,
   SummaryCard,
   SummaryGrid,
+  TableSkeleton,
   TextAreaField,
   TextField,
   copyText,
@@ -239,7 +240,7 @@ export function TargetsPage({ mode }: { mode: "admin" | "user" }) {
             <CardDescription>{mode === "user" ? t("targets.visibleDescription") : t("targets.upstreamDescription")}</CardDescription>
           </CardHeader>
           <CardContent>
-            <DataState loading={targets.loading} error={targets.error}>
+            <DataState loading={targets.loading} loadingFallback={<TableSkeleton columns={canManage ? 5 : 4} rows={5} />} error={targets.error}>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -275,7 +276,7 @@ export function TargetsPage({ mode }: { mode: "admin" | "user" }) {
             <CardDescription>{t("targets.poolDescription")}</CardDescription>
           </CardHeader>
           <CardContent>
-            <DataState loading={targetGroups.loading} error={targetGroups.error}>
+            <DataState loading={targetGroups.loading} loadingFallback={<TableSkeleton columns={canManage ? 4 : 3} rows={5} />} error={targetGroups.error}>
               <Table>
                 <TableHeader>
                   <TableRow>

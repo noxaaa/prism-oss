@@ -39,6 +39,7 @@ cd "$install_dir"
 
 if [ "$purge" -eq 1 ]; then
   docker compose down -v --remove-orphans
+  rm -rf geoip
   rm -f .env docker-compose.yml upgrade.sh uninstall.sh
   echo "Uninstalled prism-oss and removed generated config plus Docker volumes."
 else

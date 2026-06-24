@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/noxaaa/prism-oss/pkg/core/buildinfo"
 	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"nhooyr.io/websocket"
 )
@@ -50,6 +52,7 @@ type NodeRuntime struct {
 	monitorMu            sync.Mutex
 	monitorSnapshot      MonitorConfigSnapshot
 	monitorLastProbe     map[string]time.Time
+	staticMetrics        MetricsPayload
 }
 
 type runtimeEnvelope struct {
@@ -72,6 +75,7 @@ func NewNodeRuntime(config RuntimeConfig, applier ConfigApplier) *NodeRuntime {
 		metricsInterval:   time.Second,
 		heartbeatInterval: time.Second,
 		monitorLastProbe:  map[string]time.Time{},
+		staticMetrics:     collectStaticSystemMetrics(),
 	}
 }
 
@@ -83,6 +87,7 @@ func NewMonitorRuntime(config RuntimeConfig) *NodeRuntime {
 		metricsInterval:   time.Second,
 		heartbeatInterval: time.Second,
 		monitorLastProbe:  map[string]time.Time{},
+		staticMetrics:     collectStaticSystemMetrics(),
 	}
 }
 
@@ -510,12 +515,46 @@ func (runtime *NodeRuntime) collectMetrics() MetricsPayload {
 		metrics.RAMUsedBytes = memory.Used
 		metrics.RAMTotalBytes = memory.Total
 	}
+	metrics.CPUModel = runtime.staticMetrics.CPUModel
+	metrics.CPULogicalCores = runtime.staticMetrics.CPULogicalCores
+	metrics.CPUPhysicalCores = runtime.staticMetrics.CPUPhysicalCores
+	metrics.OSName = runtime.staticMetrics.OSName
+	metrics.OSVersion = runtime.staticMetrics.OSVersion
+	metrics.KernelVersion = runtime.staticMetrics.KernelVersion
+	metrics.Architecture = runtime.staticMetrics.Architecture
+	metrics.VirtualizationSystem = runtime.staticMetrics.VirtualizationSystem
+	metrics.VirtualizationRole = runtime.staticMetrics.VirtualizationRole
+	if metrics.Architecture == "" {
+		metrics.Architecture = goruntime.GOARCH
+	}
 	metrics.UptimeSeconds = int64(time.Since(runtime.bootTime).Seconds())
 	metrics.BootTime = runtime.bootTime.Format(time.RFC3339Nano)
 	metrics.AppliedConfigVersion = runtime.getAppliedConfigVersion()
 	runtime.queueTrafficDeltas(metrics.TrafficDeltas)
 	metrics.TrafficDeltas = nil
 	runtime.attachTrafficReport(&metrics)
+	return metrics
+}
+
+func collectStaticSystemMetrics() MetricsPayload {
+	var metrics MetricsPayload
+	if cpuInfo, err := cpu.Info(); err == nil && len(cpuInfo) > 0 {
+		metrics.CPUModel = strings.TrimSpace(cpuInfo[0].ModelName)
+	}
+	if logicalCores, err := cpu.Counts(true); err == nil {
+		metrics.CPULogicalCores = logicalCores
+	}
+	if physicalCores, err := cpu.Counts(false); err == nil {
+		metrics.CPUPhysicalCores = physicalCores
+	}
+	if hostInfo, err := host.Info(); err == nil && hostInfo != nil {
+		metrics.OSName = strings.TrimSpace(hostInfo.Platform)
+		metrics.OSVersion = strings.TrimSpace(hostInfo.PlatformVersion)
+		metrics.KernelVersion = strings.TrimSpace(hostInfo.KernelVersion)
+		metrics.VirtualizationSystem = strings.TrimSpace(hostInfo.VirtualizationSystem)
+		metrics.VirtualizationRole = strings.TrimSpace(hostInfo.VirtualizationRole)
+	}
+	metrics.Architecture = goruntime.GOARCH
 	return metrics
 }
 
