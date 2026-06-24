@@ -44,6 +44,7 @@ describe("monitor health DNS console source", () => {
   it("uses smart DNS managed records, instances, and notification policy payloads", () => {
     const text = monitorSource();
     const dnsText = dnsSource();
+    const nodesText = nodesSource();
 
     expect(text).toContain("target_scope");
     expect(text).toContain("summarizeHealthResults");
@@ -57,6 +58,12 @@ describe("monitor health DNS console source", () => {
     expect(text).toContain("{canRead ? <Button");
     expect(text).toContain("{canUseEditor ? <Button");
     expect(text).toContain("{canManage ? <Button");
+    expect(text).toContain("function monitorGroupIDs(monitor: Monitor): string[]");
+    expect(text).not.toContain("monitor.group_ids.includes");
+    expect(text).not.toContain("monitor.group_ids.map");
+    expect(nodesText).toContain("function nodeGroupIDs(node: NodeResource): string[]");
+    expect(nodesText).not.toContain("node.group_ids.includes");
+    expect(nodesText).not.toContain("node.group_ids.map");
     expect(dnsText).toContain("/api/control/dns/managed-records");
     expect(dnsText).toContain("/api/control/dns/instances");
     expect(dnsText).toContain("/api/control/notification-channels");
@@ -66,8 +73,11 @@ describe("monitor health DNS console source", () => {
     expect(dnsText).toContain("name=\"notification_channel_id\" options={channels");
     expect(dnsText).toContain("required={false}");
     expect(dnsText).toContain("answer_count");
-    expect(dnsText).toContain("condition_json");
-    expect(dnsText).toContain("function defaultDNSCondition() {\n  return {};\n}");
+    expect(dnsText).toContain("DNSConditionBuilder");
+    expect(dnsText).toContain("data-testid=\"dns-condition-builder\"");
+    expect(dnsText).toContain("data-testid=\"dns-condition-add-condition\"");
+    expect(dnsText).toContain("name=\"condition_payload\"");
+    expect(dnsText).not.toContain("name=\"condition_json\"");
     expect(dnsText).toContain("ROTATE_ONLINE_NODES");
     expect(dnsText).toContain("SET_STATIC_ADDRESSES");
     expect(dnsText).toContain("SET_STATIC_CNAME");

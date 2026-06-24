@@ -370,6 +370,7 @@ func (service *ControlService) CreateDNSInstance(ctx context.Context, identity I
 		return DNSInstancePayload{}, ErrForbidden
 	}
 	var result DNSInstancePayload
+	affectedDNSRecordIDs := map[string]bool{}
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if err := repositories.DNSRecords().LockDNSManagedRecordEvaluation(ctx, identity.OrganizationID, input.ManagedRecordID); err != nil {
 			return err
@@ -398,14 +399,37 @@ func (service *ControlService) CreateDNSInstance(ctx context.Context, identity I
 			return err
 		}
 		if instance.Enabled {
-			if _, err := service.markDNSManagedRecordPending(ctx, repositories, identity.OrganizationID, instance.ManagedRecordID, now, "DNS_INSTANCE_CHANGED"); err != nil {
+			marked, err := service.markDNSManagedRecordPending(ctx, repositories, identity.OrganizationID, instance.ManagedRecordID, now, "DNS_INSTANCE_CHANGED")
+			if err != nil {
 				return err
+			}
+			if marked {
+				affectedDNSRecordIDs[instance.ManagedRecordID] = true
 			}
 		}
 		result = toDNSInstancePayload(instance)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_instances.create", "DNS_INSTANCE", instance.ID, ""))
 	})
+	if err == nil {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, identity.OrganizationID, sortedStringSetKeys(affectedDNSRecordIDs))
+		if refreshed, refreshErr := service.findDNSInstancePayload(ctx, identity.OrganizationID, result.ID); refreshErr == nil {
+			result = refreshed
+		}
+	}
 	return result, mapServiceError(err)
+}
+
+func (service *ControlService) findDNSInstancePayload(ctx context.Context, organizationID string, instanceID string) (DNSInstancePayload, error) {
+	var result DNSInstancePayload
+	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		instance, err := repositories.DNSRecords().FindDNSInstanceByID(ctx, organizationID, instanceID)
+		if err != nil {
+			return err
+		}
+		result = toDNSInstancePayload(instance)
+		return nil
+	})
+	return result, err
 }
 
 func (service *ControlService) UpdateDNSInstance(ctx context.Context, identity InternalIdentity, instanceID string, input DNSInstanceMutationInput) (DNSInstancePayload, error) {
@@ -413,6 +437,7 @@ func (service *ControlService) UpdateDNSInstance(ctx context.Context, identity I
 		return DNSInstancePayload{}, ErrForbidden
 	}
 	var result DNSInstancePayload
+	affectedDNSRecordIDs := map[string]bool{}
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if err := repositories.DNSRecords().LockDNSInstanceMutation(ctx, identity.OrganizationID, instanceID); err != nil {
 			return err
@@ -464,17 +489,22 @@ func (service *ControlService) UpdateDNSInstance(ctx context.Context, identity I
 		if err := repositories.DNSRecords().UpdateDNSInstance(ctx, instance); err != nil {
 			return err
 		}
-		if previous.ManagedRecordID != instance.ManagedRecordID || !instance.Enabled {
+		evaluationInputsChanged := dnsInstanceEvaluationInputsChanged(previous, instance)
+		if previous.Enabled && (previous.ManagedRecordID != instance.ManagedRecordID || !instance.Enabled) {
 			if err := repositories.DNSRecords().ClearDNSManagedRecordActiveInstance(ctx, identity.OrganizationID, instance.ID, instance.UpdatedAt); err != nil {
 				return err
 			}
 			if previous.ManagedRecordID != "" {
-				if _, err := service.markDNSManagedRecordPending(ctx, repositories, identity.OrganizationID, previous.ManagedRecordID, instance.UpdatedAt, "DNS_INSTANCE_CHANGED"); err != nil {
+				marked, err := service.markDNSManagedRecordPending(ctx, repositories, identity.OrganizationID, previous.ManagedRecordID, instance.UpdatedAt, "DNS_INSTANCE_CHANGED")
+				if err != nil {
 					return err
+				}
+				if marked {
+					affectedDNSRecordIDs[previous.ManagedRecordID] = true
 				}
 			}
 		}
-		if instance.Enabled {
+		if instance.Enabled && evaluationInputsChanged {
 			code := "DNS_INSTANCE_CHANGED"
 			if previous.ManagedRecordID == instance.ManagedRecordID {
 				record, err := repositories.DNSRecords().FindDNSManagedRecordByID(ctx, identity.OrganizationID, instance.ManagedRecordID)
@@ -485,17 +515,43 @@ func (service *ControlService) UpdateDNSInstance(ctx context.Context, identity I
 					code = "ACTIVE_INSTANCE_CHANGED"
 				}
 			}
-			if _, err := service.markDNSManagedRecordPending(ctx, repositories, identity.OrganizationID, instance.ManagedRecordID, instance.UpdatedAt, code); err != nil {
+			marked, err := service.markDNSManagedRecordPending(ctx, repositories, identity.OrganizationID, instance.ManagedRecordID, instance.UpdatedAt, code)
+			if err != nil {
 				return err
 			}
+			if marked {
+				affectedDNSRecordIDs[instance.ManagedRecordID] = true
+			}
 		}
-		if _, err := service.markDNSRecordsReferencingInstancePending(ctx, repositories, identity.OrganizationID, instance.ID, instance.UpdatedAt); err != nil {
-			return err
+		if evaluationInputsChanged {
+			referencedRecordIDs, err := service.markDNSRecordsReferencingInstancePending(ctx, repositories, identity.OrganizationID, instance.ID, instance.UpdatedAt)
+			if err != nil {
+				return err
+			}
+			for _, recordID := range referencedRecordIDs {
+				affectedDNSRecordIDs[recordID] = true
+			}
 		}
 		result = toDNSInstancePayload(instance)
 		return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "dns_instances.update", "DNS_INSTANCE", instance.ID, ""))
 	})
+	if err == nil {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, identity.OrganizationID, sortedStringSetKeys(affectedDNSRecordIDs))
+		if refreshed, refreshErr := service.findDNSInstancePayload(ctx, identity.OrganizationID, result.ID); refreshErr == nil {
+			result = refreshed
+		}
+	}
 	return result, mapServiceError(err)
+}
+
+func dnsInstanceEvaluationInputsChanged(previous repo.DNSInstanceRecord, next repo.DNSInstanceRecord) bool {
+	return previous.ManagedRecordID != next.ManagedRecordID ||
+		previous.Priority != next.Priority ||
+		previous.Enabled != next.Enabled ||
+		previous.NodeGroupIDsJSON != next.NodeGroupIDsJSON ||
+		previous.AnswerCount != next.AnswerCount ||
+		previous.ConditionJSON != next.ConditionJSON ||
+		previous.ActionJSON != next.ActionJSON
 }
 
 func (service *ControlService) DeleteDNSInstance(ctx context.Context, identity InternalIdentity, instanceID string) error {

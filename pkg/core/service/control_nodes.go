@@ -761,7 +761,7 @@ func toNodePayload(node repo.NodeRecord) NodePayload {
 		AgentUpdateError:       node.AgentUpdateError,
 		AgentUpdateStartedAt:   node.AgentUpdateStartedAt,
 		AgentUpdateFinishedAt:  node.AgentUpdateFinishedAt,
-		GroupIDs:               append([]string(nil), node.GroupIDs...),
+		GroupIDs:               stringSlicePayload(node.GroupIDs),
 		ListenIPs:              toNodeListenIPPayloads(node.ListenIPs),
 		PortRanges:             toNodePortRangePayloads(node.PortRanges),
 		DNSPublishAddresses:    toNodeDNSPublishAddressPayloads(node.DNSPublishAddresses),
@@ -826,8 +826,15 @@ func toMonitorPayload(monitor repo.MonitorRecord) MonitorPayload {
 		AppliedConfigVersion: monitor.AppliedConfigVersion,
 		LastSeenAt:           monitor.LastSeenAt,
 		RegisteredAt:         monitor.RegisteredAt,
-		GroupIDs:             append([]string(nil), monitor.GroupIDs...),
+		GroupIDs:             stringSlicePayload(monitor.GroupIDs),
 	}
+}
+
+func stringSlicePayload(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	return append([]string(nil), values...)
 }
 
 func toMonitorPayloads(monitors []repo.MonitorRecord) []MonitorPayload {

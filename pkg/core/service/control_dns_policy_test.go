@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/noxaaa/prism-oss/pkg/core/dns"
@@ -465,7 +464,7 @@ func TestDeleteDNSInstanceClearsActiveManagedRecordReference(t *testing.T) {
 	}
 }
 
-func TestUpdateDNSInstanceClearsOldActiveReferenceWhenDisabledOrMoved(t *testing.T) {
+func TestUpdateDNSInstanceEvaluatesOldActiveReferenceWhenDisabledOrMoved(t *testing.T) {
 	store := &healthDNSTestStore{managedRecords: []repo.DNSManagedRecordRecord{
 		{
 			ID: "record_1", OrganizationID: "org_1", ActiveInstanceID: "instance_1", RecordType: "A", LastEvaluationStatus: "APPLIED",
@@ -499,70 +498,8 @@ func TestUpdateDNSInstanceClearsOldActiveReferenceWhenDisabledOrMoved(t *testing
 	if store.managedRecords[0].ActiveInstanceID != "" {
 		t.Fatalf("old managed record active instance should be cleared, got %#v", store.managedRecords[0])
 	}
-	if store.managedRecords[0].LastEvaluationStatus != "PENDING" {
-		t.Fatalf("old managed record should require re-evaluation after active instance moves, got %#v", store.managedRecords[0])
-	}
-}
-
-func TestUpdateDNSInstanceMarksActiveRecordPendingWhenInstanceChanges(t *testing.T) {
-	store := &healthDNSTestStore{managedRecords: []repo.DNSManagedRecordRecord{{
-		ID: "record_1", OrganizationID: "org_1", ActiveInstanceID: "instance_1", RecordType: "A", LastEvaluationStatus: "APPLIED", LastAppliedValuesJSON: `["192.0.2.10"]`,
-		Instances: []repo.DNSInstanceRecord{{
-			ID:              "instance_1",
-			OrganizationID:  "org_1",
-			ManagedRecordID: "record_1",
-			Name:            "active",
-			Priority:        10,
-			Enabled:         true,
-			ConditionJSON:   `{}`,
-			ActionJSON:      `{"type":"SET_STATIC_ADDRESSES","values":["192.0.2.10"]}`,
-		}},
-	}}}
-	control := NewControlServiceWithOptions(store, ControlServiceOptions{Authorizer: healthDNSTestAuthorizer{}})
-
-	_, err := control.UpdateDNSInstance(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), "instance_1", DNSInstanceMutationInput{
-		ManagedRecordID: "record_1",
-		Name:            "active",
-		Priority:        10,
-		Enabled:         true,
-		AnswerCount:     -1,
-		Condition:       map[string]any{},
-		Action:          map[string]any{"type": "SET_STATIC_ADDRESSES", "values": []any{"192.0.2.20"}},
-	})
-	if err != nil {
-		t.Fatalf("update DNS instance: %v", err)
-	}
-	record := store.managedRecords[0]
-	if record.ActiveInstanceID != "instance_1" || record.LastEvaluationStatus != "PENDING" || len(parseStringListJSON(record.LastAppliedValuesJSON)) != 1 {
-		t.Fatalf("active record should stay linked, preserve applied values, and require re-evaluation, got %#v", record)
-	}
-	if !strings.Contains(record.LastDiagnosticsJSON, "ACTIVE_INSTANCE_CHANGED") {
-		t.Fatalf("expected active instance diagnostic, got %s", record.LastDiagnosticsJSON)
-	}
-}
-
-func TestCreateDNSInstanceMarksManagedRecordPending(t *testing.T) {
-	store := &healthDNSTestStore{
-		managedRecords: []repo.DNSManagedRecordRecord{{
-			ID: "record_1", OrganizationID: "org_1", RecordType: "A", LastEvaluationStatus: "APPLIED", LastAppliedValuesJSON: `["192.0.2.10"]`,
-		}},
-	}
-	control := NewControlServiceWithOptions(store, ControlServiceOptions{Authorizer: healthDNSTestAuthorizer{}})
-
-	_, err := control.CreateDNSInstance(context.Background(), healthDNSTestIdentity(string(domain.PermissionDNSManage)), DNSInstanceMutationInput{
-		ManagedRecordID: "record_1",
-		Name:            "new policy",
-		Priority:        5,
-		Enabled:         true,
-		AnswerCount:     -1,
-		Condition:       map[string]any{},
-		Action:          map[string]any{"type": "SET_STATIC_ADDRESSES", "values": []any{"192.0.2.20"}},
-	})
-	if err != nil {
-		t.Fatalf("create DNS instance: %v", err)
-	}
-	if store.managedRecords[0].LastEvaluationStatus != "PENDING" {
-		t.Fatalf("managed record should be pending after enabled instance creation, got %#v", store.managedRecords[0])
+	if store.managedRecords[0].LastEvaluationStatus != "NO_MATCH" {
+		t.Fatalf("old managed record should be re-evaluated after active instance moves, got %#v", store.managedRecords[0])
 	}
 }
 

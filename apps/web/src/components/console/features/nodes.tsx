@@ -89,6 +89,10 @@ function nodePortRangesForSelection(protocol: string, startPort: number, endPort
   }));
 }
 
+function nodeGroupIDs(node: NodeResource): string[] {
+  return Array.isArray(node.group_ids) ? node.group_ids : [];
+}
+
 export function NodesPage({ mode }: { mode: "admin" | "user" }) {
   const { locale, t } = useI18n();
   const { session } = useConsoleSession();
@@ -214,7 +218,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                   <TableRow key={group.id}>
                     <TableCell>{group.name}</TableCell>
                     <TableCell>{group.description || t("common.none")}</TableCell>
-                    <TableCell>{nodes.data.filter((node) => node.group_ids.includes(group.id)).length}</TableCell>
+                    <TableCell>{nodes.data.filter((node) => nodeGroupIDs(node).includes(group.id)).length}</TableCell>
                     {canManage ? (
                       <TableCell>
                         <div className="flex flex-wrap gap-2">
@@ -273,7 +277,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                     </TableCell>
                     <TableCell><StatusBadge value={node.status} /></TableCell>
                     <TableCell><NodeAgentSummary node={node} /></TableCell>
-                    <TableCell>{node.group_ids.map((id) => groupName(nodeGroups.data, id)).join(", ")}</TableCell>
+                    <TableCell>{nodeGroupIDs(node).map((id) => groupName(nodeGroups.data, id)).join(", ")}</TableCell>
                     <TableCell>{node.listen_ips.map((item) => item.listen_ip).join(", ")}</TableCell>
                     <TableCell>{node.port_ranges.map((range) => `${localizeEnum(range.protocol, locale)} ${range.start_port}-${range.end_port}`).join(", ")}</TableCell>
                     <TableCell>{node.applied_config_version}/{node.desired_config_version}</TableCell>

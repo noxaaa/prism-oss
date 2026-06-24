@@ -103,7 +103,7 @@ export function MonitorsPage() {
               <TableHeader><TableRow><TableHead>{t("field.name")}</TableHead><TableHead>{t("field.description")}</TableHead><TableHead>{t("monitors.monitors")}</TableHead>{canManage ? <TableHead>{t("common.actions")}</TableHead> : null}</TableRow></TableHeader>
               <TableBody>
                 {monitorGroups.data.map((group) => {
-                  const members = monitors.data.filter((monitor) => monitor.group_ids.includes(group.id));
+                  const members = monitors.data.filter((monitor) => monitorGroupIDs(monitor).includes(group.id));
                   return (
                     <TableRow key={group.id}>
                       <TableCell>{group.name}</TableCell>
@@ -143,7 +143,7 @@ export function MonitorsPage() {
                   <TableRow key={monitor.id}>
                     <TableCell>{monitor.name}</TableCell>
                     <TableCell><StatusBadge value={monitor.status} /></TableCell>
-                    <TableCell>{monitor.group_ids.map((id) => monitorGroups.data.find((group) => group.id === id)?.name ?? id).join(", ") || t("common.none")}</TableCell>
+                    <TableCell>{monitorGroupIDs(monitor).map((id) => monitorGroups.data.find((group) => group.id === id)?.name ?? id).join(", ") || t("common.none")}</TableCell>
                     <TableCell>{shortDate(monitor.last_seen_at, locale)}</TableCell>
                     {canManage ? (
                       <TableCell className="flex gap-2">
@@ -321,7 +321,7 @@ function MonitorGroupEditDrawer({ group, onOpenChange, onSaved }: { group?: Moni
 
 function MonitorGroupDetailDrawer({ group, monitors, onOpenChange }: { group?: MonitorGroup; monitors: Monitor[]; onOpenChange: (open: boolean) => void }) {
   const { locale, t } = useI18n();
-  const members = monitors.filter((monitor) => group && monitor.group_ids.includes(group.id));
+  const members = monitors.filter((monitor) => group && monitorGroupIDs(monitor).includes(group.id));
   return (
     <MonitorGroupDrawerShell title={group?.name ?? t("monitors.group")} open={Boolean(group)} onOpenChange={onOpenChange}>
       <div className="grid gap-3 px-4 text-sm">
@@ -333,6 +333,10 @@ function MonitorGroupDetailDrawer({ group, monitors, onOpenChange }: { group?: M
       </div>
     </MonitorGroupDrawerShell>
   );
+}
+
+function monitorGroupIDs(monitor: Monitor): string[] {
+  return Array.isArray(monitor.group_ids) ? monitor.group_ids : [];
 }
 
 function MonitorCreateDrawer({ groups, open, onOpenChange, onSaved }: { groups: MonitorGroup[]; open: boolean; onOpenChange: (open: boolean) => void; onSaved: () => Promise<void> }) {
@@ -386,7 +390,7 @@ function MonitorDetailDrawer({ groups, monitor, onOpenChange }: { groups: Monito
     <MonitorDrawerShell title={monitor?.name ?? t("monitors.monitor")} open={Boolean(monitor)} onOpenChange={onOpenChange}>
       <div className="grid gap-3 px-4 text-sm">
         <DetailRow label={t("field.status")} value={monitor?.status ?? ""} />
-        <DetailRow label={t("monitors.groups")} value={monitor?.group_ids.map((id) => groups.find((group) => group.id === id)?.name ?? id).join(", ") || t("common.none")} />
+        <DetailRow label={t("monitors.groups")} value={monitor ? monitorGroupIDs(monitor).map((id) => groups.find((group) => group.id === id)?.name ?? id).join(", ") || t("common.none") : t("common.none")} />
         <DetailRow label={t("overview.lastSeen")} value={shortDate(monitor?.last_seen_at, locale)} />
         <DetailRow label={t("nodes.config")} value={`${monitor?.applied_config_version ?? 0}/${monitor?.desired_config_version ?? 0}`} />
       </div>

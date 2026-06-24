@@ -500,7 +500,7 @@ function DNSInstanceForm({ instance, managedRecords, instances, nodeGroups, chan
       <Field><FieldLabel htmlFor="dns-instance-priority">{t("dns.priority")}</FieldLabel><Input defaultValue={String(instance?.priority ?? 100)} id="dns-instance-priority" min="0" name="priority" required type="number" /></Field>
       <MultiSelectField defaultValues={instance?.node_group_ids ?? []} label={t("nodes.groups")} name="node_group_id" options={nodeGroups.map((group) => ({ value: group.value, label: group.label, disabled: group.disabled }))} required={false} />
       <Field><FieldLabel htmlFor="dns-answer-count">{t("dns.answerCount")}</FieldLabel><Input defaultValue={String(instance?.answer_count ?? -1)} id="dns-answer-count" name="answer_count" required type="number" /></Field>
-      <Field><FieldLabel htmlFor="dns-condition">{t("dns.condition")}</FieldLabel><Textarea defaultValue={jsonPretty(instance?.condition ?? defaultDNSCondition())} id="dns-condition" name="condition_json" rows={7} /></Field>
+      <DNSConditionBuilder value={instance?.condition ?? {}} />
       <EnumSelect label={t("dns.action")} onValueChange={setActionType} options={[{ value: "ROTATE_ONLINE_NODES", label: "ROTATE_ONLINE_NODES" }, { value: "SET_STATIC_ADDRESSES", label: "SET_STATIC_A/AAAA" }, { value: "SET_STATIC_CNAME", label: "SET_STATIC_CNAME" }, { value: "USE_INSTANCE_OUTPUT", label: "USE_INSTANCE_OUTPUT" }]} value={actionType} />
       <input name="action_type" type="hidden" value={actionType} />
       {actionType === "SET_STATIC_ADDRESSES" ? <Field><FieldLabel htmlFor="dns-action-values">{t("dns.values")}</FieldLabel><Input defaultValue={Array.isArray(instance?.action.values) ? instance?.action.values.join(", ") : ""} id="dns-action-values" name="action_values" /></Field> : null}
@@ -511,6 +511,92 @@ function DNSInstanceForm({ instance, managedRecords, instances, nodeGroups, chan
       <input name="enabled" type="hidden" value={enabled ? "true" : "false"} />
       <Button disabled={saving || managedRecords.length === 0} type="submit">{t("common.save")}</Button>
     </form>
+  );
+}
+
+export type DNSConditionNode = DNSConditionGroup | DNSConditionLeaf | DNSConditionRaw;
+export type DNSConditionGroup = { op: "AND" | "OR"; children: DNSConditionNode[]; preserveEmpty?: boolean; rawPayload?: Record<string, unknown> };
+export type DNSConditionLeaf = { metric: string; comparator: string; value: string };
+export type DNSConditionRaw = { raw: unknown };
+
+const dnsConditionMetrics = [
+  { value: "offline_node_count", labelKey: "dns.conditionOfflineCount" },
+  { value: "online_node_count", labelKey: "dns.conditionOnlineCount" },
+  { value: "offline_node_percent", labelKey: "dns.conditionOfflinePercent" },
+  { value: "online_node_percent", labelKey: "dns.conditionOnlinePercent" },
+];
+
+const dnsConditionComparators = [">", "<", ">=", "<=", "="];
+
+function DNSConditionBuilder({ value }: { value: Record<string, unknown> }) {
+  const { t } = useI18n();
+  const [condition, setCondition] = useState<DNSConditionGroup>(() => dnsConditionFromPayload(value));
+  return (
+    <Field>
+      <FieldLabel>{t("dns.condition")}</FieldLabel>
+      <div className="grid gap-2 rounded-md border p-3" data-testid="dns-condition-builder">
+        <DNSConditionGroupEditor node={condition} onChange={setCondition} />
+        {dnsConditionShowsAlwaysMatch(condition) ? <p className="text-sm text-muted-foreground">{t("dns.conditionAlways")}</p> : null}
+      </div>
+      <input data-testid="dns-condition-payload" name="condition_payload" type="hidden" value={JSON.stringify(dnsConditionToPayload(condition))} />
+    </Field>
+  );
+}
+
+function DNSConditionGroupEditor({ node, onChange, onRemove, depth = 0 }: { node: DNSConditionGroup; onChange: (node: DNSConditionGroup) => void; onRemove?: () => void; depth?: number }) {
+  const { t } = useI18n();
+  function updateChild(index: number, child: DNSConditionNode) {
+    onChange({ ...node, children: node.children.map((candidate, candidateIndex) => candidateIndex === index ? child : candidate) });
+  }
+  function removeChild(index: number) {
+    const children = node.children.filter((_, candidateIndex) => candidateIndex !== index);
+    onChange({ ...node, children, preserveEmpty: depth === 0 && children.length === 0 ? false : node.preserveEmpty });
+  }
+  return (
+    <div className={depth > 0 ? "grid gap-2 rounded-md border p-3" : "grid gap-2"}>
+      <div className="flex flex-wrap items-center gap-2">
+        <select className="h-9 rounded-md border bg-background px-3 text-sm" value={node.op} onChange={(event) => onChange({ ...node, op: event.currentTarget.value === "OR" ? "OR" : "AND" })}>
+          <option value="AND">AND</option>
+          <option value="OR">OR</option>
+        </select>
+        <Button data-testid="dns-condition-add-condition" onClick={() => onChange({ ...node, rawPayload: undefined, children: [...node.children, defaultDNSConditionLeaf()] })} size="sm" type="button" variant="outline"><PlusIcon data-icon="inline-start" />{t("dns.addCondition")}</Button>
+        <Button data-testid="dns-condition-add-group" onClick={() => onChange({ ...node, rawPayload: undefined, children: [...node.children, defaultDNSConditionGroup()] })} size="sm" type="button" variant="outline"><PlusIcon data-icon="inline-start" />{t("dns.addGroup")}</Button>
+        {onRemove ? <Button onClick={onRemove} size="icon-sm" type="button" variant="outline"><Trash2Icon /></Button> : null}
+      </div>
+      {node.rawPayload ? <DNSConditionRawEditor node={{ raw: node.rawPayload }} onRemove={() => onChange({ ...node, rawPayload: undefined })} /> : null}
+      <div className="grid gap-2">
+        {node.children.map((child, index) => isDNSConditionGroup(child)
+          ? <DNSConditionGroupEditor key={index} node={child} onChange={(next) => updateChild(index, next)} onRemove={() => removeChild(index)} depth={depth + 1} />
+          : isDNSConditionRaw(child)
+            ? <DNSConditionRawEditor key={index} node={child} onRemove={() => removeChild(index)} />
+            : <DNSConditionLeafEditor key={index} node={child} onChange={(next) => updateChild(index, next)} onRemove={() => removeChild(index)} />)}
+      </div>
+    </div>
+  );
+}
+
+function DNSConditionLeafEditor({ node, onChange, onRemove }: { node: DNSConditionLeaf; onChange: (node: DNSConditionLeaf) => void; onRemove: () => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-[1fr_auto_auto_auto]" data-testid="dns-condition-leaf">
+      <select className="h-9 rounded-md border bg-background px-3 text-sm" value={node.metric} onChange={(event) => onChange({ ...node, metric: event.currentTarget.value })}>
+        {dnsConditionMetrics.map((metric) => <option key={metric.value} value={metric.value}>{t(metric.labelKey)}</option>)}
+      </select>
+      <select className="h-9 rounded-md border bg-background px-3 text-sm" value={node.comparator} onChange={(event) => onChange({ ...node, comparator: event.currentTarget.value })}>
+        {dnsConditionComparators.map((comparator) => <option key={comparator} value={comparator}>{comparator}</option>)}
+      </select>
+      <Input className="sm:w-24" min="0" onChange={(event) => onChange({ ...node, value: event.currentTarget.value })} step="any" type="number" value={node.value} />
+      <Button onClick={onRemove} size="icon-sm" type="button" variant="outline"><Trash2Icon /></Button>
+    </div>
+  );
+}
+
+function DNSConditionRawEditor({ node, onRemove }: { node: DNSConditionRaw; onRemove: () => void }) {
+  return (
+    <div className="grid gap-2 rounded-md border p-3">
+      <Textarea readOnly rows={4} value={jsonPrettyRaw(node.raw)} />
+      <Button onClick={onRemove} size="icon-sm" type="button" variant="outline"><Trash2Icon /></Button>
+    </div>
   );
 }
 
@@ -579,7 +665,7 @@ function dnsInstancePayloadFromForm(formElement: HTMLFormElement) {
   if (actionType === "SET_STATIC_ADDRESSES") action.values = String(form.get("action_values") ?? "").split(/\s*,\s*/).filter(Boolean);
   if (actionType === "SET_STATIC_CNAME") action.value = String(form.get("action_value") ?? "");
   if (actionType === "USE_INSTANCE_OUTPUT") action.instance_id = String(form.get("action_instance_id") ?? "");
-  return { managed_record_id: String(form.get("managed_record_id") ?? ""), name: String(form.get("name") ?? ""), priority: Number(form.get("priority") ?? 100), enabled: String(form.get("enabled") ?? "true") === "true", node_group_ids: form.getAll("node_group_id").map(String).filter(Boolean), answer_count: Number(form.get("answer_count") ?? -1), condition: parseJSONFormField(form, "condition_json", {}), action, notification_channel_ids: form.getAll("notification_channel_id").map(String).filter(Boolean) };
+  return { managed_record_id: String(form.get("managed_record_id") ?? ""), name: String(form.get("name") ?? ""), priority: Number(form.get("priority") ?? 100), enabled: String(form.get("enabled") ?? "true") === "true", node_group_ids: form.getAll("node_group_id").map(String).filter(Boolean), answer_count: Number(form.get("answer_count") ?? -1), condition: parseJSONFormField(form, "condition_payload", {}), action, notification_channel_ids: form.getAll("notification_channel_id").map(String).filter(Boolean) };
 }
 
 function notificationChannelPayloadFromForm(formElement: HTMLFormElement) {
@@ -598,8 +684,8 @@ function jsonPretty(value: unknown) {
   return JSON.stringify(value ?? {}, null, 2);
 }
 
-function defaultDNSCondition() {
-  return {};
+function jsonPrettyRaw(value: unknown) {
+  return JSON.stringify(value, null, 2) ?? String(value);
 }
 
 function defaultNotificationConfig(channelType: string) {
@@ -610,4 +696,86 @@ function defaultNotificationConfig(channelType: string) {
 function dnsCredentialZoneWritable(status: string) {
   const normalized = status.trim().toUpperCase();
   return normalized === "ACTIVE" || normalized === "PENDING";
+}
+
+function defaultDNSConditionGroup(preserveEmpty = false): DNSConditionGroup {
+  return { op: "AND", children: [], preserveEmpty };
+}
+
+function defaultDNSConditionLeaf(): DNSConditionLeaf {
+  return { metric: "online_node_count", comparator: ">=", value: "1" };
+}
+
+export function dnsConditionFromPayload(value: Record<string, unknown>): DNSConditionGroup {
+  const node = dnsConditionNodeFromPayload(value);
+  if (isDNSConditionGroup(node)) return node;
+  if (isDNSConditionRaw(node) && isRecord(node.raw)) return { op: "AND", children: [], rawPayload: node.raw };
+  if (node) return { op: "AND", children: [node] };
+  return defaultDNSConditionGroup();
+}
+
+function dnsConditionNodeFromPayload(value: unknown, preserveMalformed = false): DNSConditionNode | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return preserveMalformed ? { raw: value } : null;
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).length === 0) return preserveMalformed ? { raw: { ...raw } } : null;
+  const op = normalizeDNSConditionOperator(raw.op);
+  if (op === "AND" || op === "OR") {
+    const children = Array.isArray(raw.children) ? raw.children.map((child) => dnsConditionNodeFromPayload(child, true)).filter((child): child is DNSConditionNode => Boolean(child)) : [];
+    return { op, children, preserveEmpty: true };
+  }
+  const metric = normalizeDNSConditionMetric(raw.metric);
+  const comparator = normalizeDNSConditionComparator(raw.comparator);
+  const numeric = typeof raw.value === "number" ? raw.value : Number.NaN;
+  if (dnsConditionMetrics.some((candidate) => candidate.value === metric) && dnsConditionComparators.includes(comparator) && Number.isFinite(numeric)) {
+    return { metric, comparator, value: String(numeric) };
+  }
+  return { raw: { ...raw } };
+}
+
+export function dnsConditionToPayload(node: DNSConditionGroup): Record<string, unknown> {
+  if (node.rawPayload && node.children.length === 0) return node.rawPayload;
+  const children = node.children.map(dnsConditionNodeToPayload).filter((child) => child !== dnsConditionOmit);
+  if (children.length === 0) return node.preserveEmpty ? { op: node.op, children: [] } : {};
+  return { op: node.op, children };
+}
+
+const dnsConditionOmit = Symbol("dns-condition-omit");
+
+function dnsConditionNodeToPayload(node: DNSConditionNode): unknown | typeof dnsConditionOmit {
+  if (isDNSConditionRaw(node)) return node.raw;
+  if (!isDNSConditionGroup(node)) {
+    const numeric = node.value.trim() === "" ? Number.NaN : Number(node.value);
+    return { metric: node.metric, comparator: node.comparator, value: Number.isFinite(numeric) ? numeric : node.value };
+  }
+  const children = node.children.map(dnsConditionNodeToPayload).filter((child) => child !== dnsConditionOmit);
+  if (children.length === 0) return node.preserveEmpty ? { op: node.op, children: [] } : dnsConditionOmit;
+  return { op: node.op, children };
+}
+
+export function dnsConditionShowsAlwaysMatch(node: DNSConditionGroup) {
+  return node.children.length === 0 && !node.rawPayload && !node.preserveEmpty;
+}
+
+function isDNSConditionGroup(node: DNSConditionNode | null): node is DNSConditionGroup {
+  return node !== null && "children" in node;
+}
+
+function isDNSConditionRaw(node: DNSConditionNode | null): node is DNSConditionRaw {
+  return node !== null && "raw" in node;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeDNSConditionOperator(value: unknown) {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+function normalizeDNSConditionMetric(value: unknown) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeDNSConditionComparator(value: unknown) {
+  return String(value ?? "").trim();
 }
