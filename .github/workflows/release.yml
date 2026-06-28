@@ -56,13 +56,13 @@ jobs:
             docker cp "$container:/usr/lib" "$out_dir/dataplane/haproxy/rootfs/usr/lib"
             docker rm "$container" >/dev/null
             trap - EXIT
-            cat > "$out_dir/dataplane/haproxy/haproxy" <<'EOF'
-#!/bin/sh
-set -eu
-dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-loader=$(find "$dir/rootfs/lib" -maxdepth 1 -name 'ld-musl-*.so.1' | head -n 1)
-exec "$loader" --library-path "$dir/rootfs/lib:$dir/rootfs/usr/lib" "$dir/haproxy.bin" "$@"
-EOF
+            printf '%s\n' \
+              '#!/bin/sh' \
+              'set -eu' \
+              'dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)' \
+              'loader=$(find "$dir/rootfs/lib" -maxdepth 1 -name '\''ld-musl-*.so.1'\'' | head -n 1)' \
+              'exec "$loader" --library-path "$dir/rootfs/lib:$dir/rootfs/usr/lib" "$dir/haproxy.bin" "$@"' \
+              > "$out_dir/dataplane/haproxy/haproxy"
             chmod 0755 "$out_dir/dataplane/haproxy/haproxy" "$out_dir/dataplane/haproxy/haproxy.bin"
             cp "$out_dir/control-plane-oss" "$assets_dir/control-plane-oss-linux-${arch}"
             tar -C "$out_dir" -czf "$assets_dir/node-agent-linux-${arch}.tar.gz" node-agent dataplane
