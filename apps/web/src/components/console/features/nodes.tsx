@@ -33,10 +33,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Field, FieldDescription, FieldGroup, FieldLabel, FieldSet, FieldLegend } from "@/components/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
-import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import {
   Sheet,
@@ -47,14 +45,20 @@ import {
 } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { bytes, controlDelete, controlPatch, controlPost, formatBitrateBps, shortDate } from "@/components/console/control-api";
+import { controlDelete, controlPatch, controlPost, shortDate } from "@/components/console/control-api";
 import { localizeControlError, localizeEnum, useI18n } from "@/components/console/i18n";
 import { hasPermission } from "@/components/console/permissions";
-import { ResourceMultiSelect } from "@/components/console/resource-select";
 import { useConsoleSession } from "@/components/console/shell";
 import {
+  NodeEnrollmentCreateDrawer,
+  NodeEnrollmentDeleteDialog,
+  NodeEnrollmentDetailDrawer,
+  NodeEnrollmentEditDrawer,
+} from "@/components/console/features/node-enrollment-profiles";
+import { NodeMutationForm } from "@/components/console/features/node-mutation-form";
+import { NodeMetricsPanel } from "@/components/console/features/node-metrics-panel";
+import {
   DataState,
-  EnumSelect,
   PageStack,
   StatusBadge,
   SummaryCard,
@@ -63,35 +67,20 @@ import {
   TextAreaField,
   TextField,
   copyText,
-  duration,
   groupName,
-  percent,
   useControlList,
 } from "@/components/console/shared";
 import type {
   AgentMetrics,
+  NodeEnrollmentProfile,
   NodeGroup,
   NodeGeoIP,
   NodeResource,
   RegistrationToken,
 } from "@/components/console/types";
 
-const protocolOptions = [
-  { value: "TCP", label: "TCP" },
-  { value: "UDP", label: "UDP" },
-  { value: "TCP_UDP", label: "TCP + UDP" },
-];
-
 const noMetricNodes: NodeResource[] = [];
-
-function nodePortRangesForSelection(protocol: string, startPort: number, endPort: number) {
-  const protocols = protocol === "TCP_UDP" ? ["TCP", "UDP"] : [protocol];
-  return protocols.map((rangeProtocol) => ({
-    protocol: rangeProtocol,
-    start_port: startPort,
-    end_port: endPort,
-  }));
-}
+const MAX_NODE_METRIC_STREAMS = 4;
 
 function nodeGroupIDs(node: NodeResource): string[] {
   return Array.isArray(node.group_ids) ? node.group_ids : [];
@@ -104,7 +93,9 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
   const canReadMetrics = hasPermission(session, "nodes.read") && hasPermission(session, "traffic.read_all");
   const nodeGroups = useControlList<NodeGroup>("/api/control/node-groups");
   const nodes = useControlList<NodeResource>("/api/control/nodes");
-  const metricsByNode = useNodeMetrics(canReadMetrics ? nodes.data : noMetricNodes);
+  const enrollmentProfiles = useControlList<NodeEnrollmentProfile>("/api/control/node-enrollment-profiles");
+  const metricNodes = canReadMetrics ? nodes.data : noMetricNodes;
+  const metricsByNode = useNodeMetrics(metricNodes);
   const [nodeGroupCreateOpen, setNodeGroupCreateOpen] = useState(false);
   const [nodeCreateOpen, setNodeCreateOpen] = useState(false);
   const [editingNodeGroup, setEditingNodeGroup] = useState<NodeGroup | null>(null);
@@ -112,10 +103,16 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
   const [editingNode, setEditingNode] = useState<NodeResource | null>(null);
   const [deletingNode, setDeletingNode] = useState<NodeResource | null>(null);
   const [installCommandFallback, setInstallCommandFallback] = useState<{ nodeName: string; command: string } | null>(null);
+  const [enrollmentCreateOpen, setEnrollmentCreateOpen] = useState(false);
+  const [editingEnrollmentProfile, setEditingEnrollmentProfile] = useState<NodeEnrollmentProfile | null>(null);
+  const [viewingEnrollmentProfile, setViewingEnrollmentProfile] = useState<NodeEnrollmentProfile | null>(null);
+  const [deletingEnrollmentProfile, setDeletingEnrollmentProfile] = useState<NodeEnrollmentProfile | null>(null);
+  const [enrollmentScriptFallback, setEnrollmentScriptFallback] = useState<{ profileName: string; script: string } | null>(null);
+  const [enrollmentActionID, setEnrollmentActionID] = useState<string | null>(null);
   const [agentActionNodeID, setAgentActionNodeID] = useState<string | null>(null);
 
   async function refreshAll() {
-    await Promise.all([nodeGroups.refresh(), nodes.refresh()]);
+    await Promise.all([nodeGroups.refresh(), nodes.refresh(), enrollmentProfiles.refresh()]);
   }
 
   async function copyInstallCommand(node: NodeResource) {
@@ -163,6 +160,30 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
     }
   }
 
+  async function rotateAndCopyEnrollmentScript(profile: NodeEnrollmentProfile) {
+    setEnrollmentActionID(profile.id);
+    try {
+      const result = await controlPost<NodeEnrollmentProfile>(`/api/control/node-enrollment-profiles/${profile.id}/rotate-token`, {});
+      const script = result.shell_script || result.install_command;
+      if (!script) {
+        toast.error(t("nodes.enrollmentScriptMissing"));
+        return;
+      }
+      try {
+        await copyText(script, t("nodes.enrollmentScriptCopied"));
+        setEnrollmentScriptFallback(null);
+      } catch {
+        setEnrollmentScriptFallback({ profileName: profile.name, script });
+        toast.error(t("nodes.installCommandCopyFailed"));
+      }
+      await enrollmentProfiles.refresh();
+    } catch (error) {
+      toast.error(localizeControlError(error, locale));
+    } finally {
+      setEnrollmentActionID(null);
+    }
+  }
+
   return (
     <PageStack>
       <SummaryGrid>
@@ -175,6 +196,10 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
         <>
           <NodeGroupCreateDrawer onCreated={refreshAll} onOpenChange={setNodeGroupCreateOpen} open={nodeGroupCreateOpen} />
           <NodeCreateDrawer groups={nodeGroups.data} onCreated={refreshAll} onOpenChange={setNodeCreateOpen} open={nodeCreateOpen} />
+          <NodeEnrollmentCreateDrawer groups={nodeGroups.data} onCreated={async (profile) => { await refreshAll(); setEnrollmentScriptFallback(profile.shell_script ? { profileName: profile.name, script: profile.shell_script } : null); }} onOpenChange={setEnrollmentCreateOpen} open={enrollmentCreateOpen} />
+          <NodeEnrollmentEditDrawer groups={nodeGroups.data} onOpenChange={(open) => !open && setEditingEnrollmentProfile(null)} onUpdated={refreshAll} profile={editingEnrollmentProfile} />
+          <NodeEnrollmentDetailDrawer onOpenChange={(open) => !open && setViewingEnrollmentProfile(null)} profile={viewingEnrollmentProfile} />
+          <NodeEnrollmentDeleteDialog onDeleted={refreshAll} onOpenChange={(open) => !open && setDeletingEnrollmentProfile(null)} profile={deletingEnrollmentProfile} />
           <NodeGroupEditDrawer group={editingNodeGroup} onOpenChange={(open) => !open && setEditingNodeGroup(null)} onUpdated={refreshAll} />
           <NodeGroupDeleteDialog group={deletingNodeGroup} onDeleted={refreshAll} onOpenChange={(open) => !open && setDeletingNodeGroup(null)} />
           <NodeEditDrawer groups={nodeGroups.data} node={editingNode} onOpenChange={(open) => !open && setEditingNode(null)} onUpdated={refreshAll} />
@@ -188,6 +213,10 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
               <PlusIcon data-icon="inline-start" />
               {t("nodes.createNode")}
             </Button>
+            <Button onClick={() => setEnrollmentCreateOpen(true)} type="button" variant="outline">
+              <PlusIcon data-icon="inline-start" />
+              {t("nodes.createEnrollmentProfile")}
+            </Button>
           </div>
         </>
       ) : null}
@@ -198,6 +227,16 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
           <AlertDescription className="flex flex-col gap-3">
             <span>{t("nodes.installCommandCopyFailedDescription", { name: installCommandFallback.nodeName })}</span>
             <Textarea readOnly value={installCommandFallback.command} />
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {enrollmentScriptFallback ? (
+        <Alert>
+          <AlertTitle>{t("nodes.enrollmentScriptReady")}</AlertTitle>
+          <AlertDescription className="flex flex-col gap-3">
+            <span>{t("nodes.enrollmentScriptDescription", { name: enrollmentScriptFallback.profileName })}</span>
+            <Textarea readOnly value={enrollmentScriptFallback.script} />
           </AlertDescription>
         </Alert>
       ) : null}
@@ -246,6 +285,84 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
         </CardContent>
       </Card>
 
+      {canManage ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("nodes.enrollmentProfiles")}</CardTitle>
+            <CardDescription>{t("nodes.enrollmentProfilesDescription")}</CardDescription>
+            <CardAction>
+              <Button onClick={() => setEnrollmentCreateOpen(true)} size="sm" type="button">
+                <PlusIcon data-icon="inline-start" />
+                {t("common.create")}
+              </Button>
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+            <DataState loading={enrollmentProfiles.loading} loadingFallback={<TableSkeleton columns={7} rows={4} />} error={enrollmentProfiles.error}>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t("field.name")}</TableHead>
+                    <TableHead>{t("overview.status")}</TableHead>
+                    <TableHead>{t("nodes.groups")}</TableHead>
+                    <TableHead>{t("nodes.uses")}</TableHead>
+                    <TableHead>{t("nodes.expiresAt")}</TableHead>
+                    <TableHead>{t("nodes.allowedCIDRs")}</TableHead>
+                    <TableHead>{t("common.actions")}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {enrollmentProfiles.data.map((profile) => (
+                    <TableRow key={profile.id}>
+                      <TableCell>
+                        <div className="flex flex-col gap-1">
+                          <span className="font-medium">{profile.name}</span>
+                          {profile.description ? <span className="text-xs text-muted-foreground">{profile.description}</span> : null}
+                        </div>
+                      </TableCell>
+                      <TableCell><StatusBadge value={profile.enabled ? "ENABLED" : "DISABLED"} /></TableCell>
+                      <TableCell>{profile.group_ids.map((id) => groupName(nodeGroups.data, id)).join(", ")}</TableCell>
+                      <TableCell>{profile.max_uses > 0 ? `${profile.used_count}/${profile.max_uses}` : String(profile.used_count)}</TableCell>
+                      <TableCell>{shortDate(profile.expires_at, locale)}</TableCell>
+                      <TableCell>{profile.allowed_cidrs.length ? profile.allowed_cidrs.join(", ") : t("common.none")}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-2">
+                          <Button disabled={enrollmentActionID === profile.id} onClick={() => void rotateAndCopyEnrollmentScript(profile)} size="sm" type="button" variant="outline">
+                            <CopyIcon data-icon="inline-start" />
+                            {t("nodes.rotateAndCopyScript")}
+                          </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button aria-label={t("common.actions")} size="icon-sm" type="button" variant="outline">
+                                <MoreHorizontalIcon />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-52">
+                              <DropdownMenuItem onSelect={() => setViewingEnrollmentProfile(profile)}>
+                                {t("common.view")}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => setEditingEnrollmentProfile(profile)}>
+                                <PencilIcon data-icon="inline-start" />
+                                {t("common.edit")}
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onSelect={() => setDeletingEnrollmentProfile(profile)} variant="destructive">
+                                <Trash2Icon data-icon="inline-start" />
+                                {t("common.delete")}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </DataState>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>{mode === "admin" ? t("nodes.nodes") : t("nodes.availableNodes")}</CardTitle>
@@ -257,7 +374,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
           </CardAction>
         </CardHeader>
         <CardContent>
-          <DataState loading={nodes.loading} loadingFallback={<TableSkeleton columns={canManage ? 9 : 8} rows={5} />} error={nodes.error}>
+          <DataState loading={nodes.loading} loadingFallback={<TableSkeleton columns={canManage ? 10 : 9} rows={5} />} error={nodes.error}>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -267,6 +384,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                   <TableHead>{t("nodes.agent")}</TableHead>
                   <TableHead>{t("nodes.groups")}</TableHead>
                   <TableHead>{t("nodes.listenIPs")}</TableHead>
+                  <TableHead>{t("nodes.sendIPs")}</TableHead>
                   <TableHead>{t("nodes.ports")}</TableHead>
                   <TableHead>{t("nodes.config")}</TableHead>
                   {canManage ? <TableHead>{t("common.actions")}</TableHead> : null}
@@ -279,6 +397,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                       <div className="flex flex-col gap-1">
                         <NodeSystemHover metrics={metricsByNode[node.id]} node={node} />
                         {node.public_description ? <span className="text-xs text-muted-foreground">{node.public_description}</span> : null}
+                        <span className="text-xs text-muted-foreground">{node.enrollment_profile?.name ? t("nodes.enrolledFrom", { name: node.enrollment_profile.name }) : t("nodes.manualRegistration")}</span>
                       </div>
                     </TableCell>
                     <TableCell><StatusBadge value={node.status} /></TableCell>
@@ -286,7 +405,13 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
                     <TableCell><NodeAgentSummary node={node} /></TableCell>
                     <TableCell>{nodeGroupIDs(node).map((id) => groupName(nodeGroups.data, id)).join(", ")}</TableCell>
                     <TableCell>{node.listen_ips.map((item) => item.listen_ip).join(", ")}</TableCell>
-                    <TableCell>{node.port_ranges.map((range) => `${localizeEnum(range.protocol, locale)} ${range.start_port}-${range.end_port}`).join(", ")}</TableCell>
+                    <TableCell>{node.send_ips?.length ? node.send_ips.map((item) => item.send_ip).join(", ") : t("rules.defaultSendIP")}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        <span>{node.port_ranges.map((range) => `${localizeEnum(range.protocol, locale)} ${range.start_port}-${range.end_port}`).join(", ")}</span>
+                        <span className="text-xs text-muted-foreground">{t("nodes.maxRulePortsShort", { count: node.max_rule_ports ?? 256 })}</span>
+                      </div>
+                    </TableCell>
                     <TableCell>{node.applied_config_version}/{node.desired_config_version}</TableCell>
                     {canManage ? (
                       <TableCell>
@@ -335,7 +460,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
         </CardContent>
       </Card>
 
-      {canReadMetrics ? <NodeMetricsPanel metricsByNode={metricsByNode} nodes={nodes.data} /> : null}
+      {canReadMetrics ? <NodeMetricsPanel metricsByNode={metricsByNode} nodes={metricNodes} /> : null}
     </PageStack>
   );
 }
@@ -344,13 +469,14 @@ function useNodeMetrics(nodes: NodeResource[]) {
   const [metricsByNode, setMetricsByNode] = useState<Record<string, AgentMetrics>>({});
 
   useEffect(() => {
-    const nodeIDs = new Set(nodes.map((node) => node.id));
+    const streamedNodes = nodes.slice(0, MAX_NODE_METRIC_STREAMS);
+    const nodeIDs = new Set(streamedNodes.map((node) => node.id));
     setMetricsByNode((current) => Object.fromEntries(Object.entries(current).filter(([nodeID]) => nodeIDs.has(nodeID))));
-    if (nodes.length === 0) {
+    if (streamedNodes.length === 0) {
       return undefined;
     }
 
-    const sources = nodes.map((node) => {
+    const sources = streamedNodes.map((node) => {
       const source = new EventSource(`/api/control/nodes/${node.id}/metrics/stream`);
       source.addEventListener("metrics", (event) => {
         setMetricsByNode((current) => ({
@@ -442,7 +568,7 @@ function virtualizationLabel(metrics: AgentMetrics | undefined, fallback: string
 }
 
 function NodeAgentDetails({ node }: { node: NodeResource }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   return (
     <div className="grid gap-3 rounded-md border p-3 text-sm md:grid-cols-2">
       <div>
@@ -465,6 +591,28 @@ function NodeAgentDetails({ node }: { node: NodeResource }) {
         <div className="text-xs text-muted-foreground">{t("nodes.dnsPublishAddress")}</div>
         <div>{formatDNSPublishAddresses(node)}</div>
       </div>
+      <div>
+        <div className="text-xs text-muted-foreground">{t("nodes.dataplaneMode")}</div>
+        <div>{localizeEnum(node.dataplane_mode || "AUTO", locale)}</div>
+      </div>
+      <div>
+        <div className="text-xs text-muted-foreground">{t("nodes.dataplaneStatus")}</div>
+        <StatusBadge value={node.dataplane_status || "UNKNOWN"} />
+      </div>
+      <div>
+        <div className="text-xs text-muted-foreground">{t("nodes.dataplaneInstanceID")}</div>
+        <div className="break-all font-mono">{node.dataplane_instance_id || t("common.unknown")}</div>
+      </div>
+      <div>
+        <div className="text-xs text-muted-foreground">{t("nodes.dataplaneLastHash")}</div>
+        <div className="break-all font-mono">{node.dataplane_last_hash || t("common.unknown")}</div>
+      </div>
+      {node.dataplane_error ? (
+        <div className="md:col-span-2">
+          <div className="text-xs text-muted-foreground">{t("nodes.dataplaneError")}</div>
+          <div className="break-words text-destructive">{node.dataplane_error}</div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -612,142 +760,6 @@ function NodeGroupCreateForm({ group, onCreated }: { group?: NodeGroup; onCreate
   );
 }
 
-function NodeMutationForm({ groups, node, onSaved }: { groups: NodeGroup[]; node?: NodeResource; onSaved: () => Promise<void> }) {
-  const { locale, t } = useI18n();
-  const initialProtocol = initialPortProtocol(node);
-  const initialPortRange = node?.port_ranges[0];
-  const initialStartPort = initialPortRange?.start_port ? String(initialPortRange.start_port) : "";
-  const initialEndPort = initialPortRange?.end_port ? String(initialPortRange.end_port) : "";
-  const [nodeGroupIDs, setNodeGroupIDs] = useState<string[]>(node?.group_ids ?? []);
-  const [protocol, setProtocol] = useState(initialProtocol);
-  const [listenIPs, setListenIPs] = useState<Array<{ listen_ip: string; display_name: string }>>(
-    node?.listen_ips?.length ? node.listen_ips.map((item) => ({ listen_ip: item.listen_ip, display_name: item.display_name })) : [{ listen_ip: "0.0.0.0", display_name: "default" }],
-  );
-  const groupOptions = groups.map((group) => ({ value: group.id, label: group.name }));
-  const localizedProtocolOptions = protocolOptions.map((option) => ({ ...option, label: localizeEnum(option.value, locale) }));
-
-  function updateListenIP(index: number, field: "listen_ip" | "display_name", value: string) {
-    setListenIPs((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, [field]: value } : item)));
-  }
-
-  function addListenIP() {
-    setListenIPs((current) => [...current, { listen_ip: "", display_name: "" }]);
-  }
-
-  function removeListenIP(index: number) {
-    setListenIPs((current) => current.filter((_, itemIndex) => itemIndex !== index));
-  }
-
-  async function saveNode(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const formElement = event.currentTarget;
-    const form = new FormData(formElement);
-    const normalizedListenIPs = listenIPs
-      .map((item) => ({ listen_ip: item.listen_ip.trim(), display_name: item.display_name.trim() }))
-      .filter((item) => item.listen_ip !== "");
-    if (normalizedListenIPs.length === 0) {
-      normalizedListenIPs.push({ listen_ip: "0.0.0.0", display_name: "default" });
-    }
-    const startPortValue = String(form.get("start_port") ?? "");
-    const endPortValue = String(form.get("end_port") ?? "");
-    const portControlsChanged = protocol !== initialProtocol || startPortValue !== initialStartPort || endPortValue !== initialEndPort;
-    const portRanges = node && node.port_ranges.length > 0 && !portControlsChanged
-      ? node.port_ranges.map((range) => ({ protocol: range.protocol, start_port: range.start_port, end_port: range.end_port }))
-      : nodePortRangesForSelection(protocol, Number(startPortValue || 10000), Number(endPortValue || 20000));
-    try {
-      const publishAddress = String(form.get("dns_publish_address") ?? "").trim();
-      const initialManualPublishAddress = node?.dns_publish_addresses?.find((address) => address.source === "MANUAL")?.address ?? "";
-      const publishAddressChanged = !node || publishAddress !== initialManualPublishAddress;
-      const payload: Record<string, unknown> = {
-        name: form.get("name"),
-        public_description: form.get("public_description"),
-        group_ids: nodeGroupIDs,
-        listen_ips: normalizedListenIPs,
-        port_ranges: portRanges,
-      };
-      if (publishAddressChanged) {
-        payload.dns_publish_addresses = nodeDNSPublishAddressPayload(node, publishAddress);
-      }
-      if (node) {
-        await controlPatch<NodeResource>(`/api/control/nodes/${node.id}`, payload);
-      } else {
-        await controlPost<NodeResource>("/api/control/nodes", payload);
-      }
-      formElement.reset();
-      setNodeGroupIDs([]);
-      toast.success(node ? t("nodes.nodeUpdated") : t("nodes.nodeCreated"));
-      await onSaved();
-    } catch (error) {
-      toast.error(localizeControlError(error, locale));
-    }
-  }
-
-  return (
-    <form className="flex flex-col gap-5" onSubmit={saveNode}>
-      <FieldGroup>
-        <TextField defaultValue={node?.name ?? ""} label={t("field.name")} name="name" placeholder="entry-node-a" />
-        <ResourceMultiSelect label={t("nodes.nodeGroups")} onValueChange={setNodeGroupIDs} options={groupOptions} values={nodeGroupIDs} />
-        <TextField defaultValue={node?.dns_publish_addresses?.find((address) => address.source === "MANUAL")?.address ?? ""} label={t("nodes.dnsPublishAddress")} name="dns_publish_address" placeholder="203.0.113.10" required={false} />
-        <FieldSet>
-          <FieldLegend>{t("nodes.listenIPs")}</FieldLegend>
-          <FieldDescription>{t("nodes.listenIPsDescription")}</FieldDescription>
-          <div className="flex flex-col gap-3">
-            {listenIPs.map((item, index) => (
-              <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]" key={index}>
-                <Field>
-                  <FieldLabel>{t("rules.listenIP")}</FieldLabel>
-                  <Input onChange={(event) => updateListenIP(index, "listen_ip", event.target.value)} placeholder="0.0.0.0" value={item.listen_ip} />
-                </Field>
-                <Field>
-                  <FieldLabel>{t("nodes.listenIPLabel")}</FieldLabel>
-                  <Input onChange={(event) => updateListenIP(index, "display_name", event.target.value)} placeholder="default" value={item.display_name} />
-                </Field>
-                <Button className="self-end" disabled={listenIPs.length === 1} onClick={() => removeListenIP(index)} type="button" variant="outline">
-                  <Trash2Icon />
-                </Button>
-              </div>
-            ))}
-          </div>
-          <Button onClick={addListenIP} type="button" variant="outline">
-            <PlusIcon data-icon="inline-start" />
-            {t("nodes.addListenIP")}
-          </Button>
-        </FieldSet>
-        <EnumSelect label={t("rules.protocol")} onValueChange={setProtocol} options={localizedProtocolOptions} value={protocol} />
-        <div className="grid gap-3 md:grid-cols-2">
-          <TextField defaultValue={initialStartPort} label={t("nodes.startPort")} name="start_port" placeholder="10000" required={false} type="number" />
-          <TextField defaultValue={initialEndPort} label={t("nodes.endPort")} name="end_port" placeholder="20000" required={false} type="number" />
-        </div>
-        <TextAreaField defaultValue={node?.public_description ?? ""} label={t("nodes.publicDescription")} name="public_description" placeholder="Connect through edge.example.com." />
-      </FieldGroup>
-      <Button disabled={nodeGroupIDs.length === 0} type="submit">
-        {node ? <PencilIcon data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
-        {node ? t("common.save") : t("nodes.createNode")}
-      </Button>
-    </form>
-  );
-}
-
-function nodeDNSPublishAddressPayload(node: NodeResource | undefined, primaryAddress: string) {
-  if (!primaryAddress) {
-    return [];
-  }
-  const existing = (node?.dns_publish_addresses ?? []).find((address) => address.source === "MANUAL" && address.address === primaryAddress);
-  return [{
-    address_type: existing?.address_type ?? "",
-    address: primaryAddress,
-    enabled: existing?.enabled ?? true,
-  }];
-}
-
-function initialPortProtocol(node?: NodeResource) {
-  const protocols = new Set((node?.port_ranges ?? []).map((range) => range.protocol));
-  if (protocols.has("TCP") && protocols.has("UDP")) {
-    return "TCP_UDP";
-  }
-  return node?.port_ranges[0]?.protocol ?? "TCP";
-}
-
 function NodeDeleteDialog({ node, onDeleted, onOpenChange }: { node: NodeResource | null; onDeleted: () => Promise<void>; onOpenChange: (open: boolean) => void }) {
   const { locale, t } = useI18n();
 
@@ -814,120 +826,6 @@ function NodeGroupDeleteDialog({ group, onDeleted, onOpenChange }: { group: Node
   );
 }
 
-function NodeMetricsPanel({ metricsByNode, nodes }: { metricsByNode: Record<string, AgentMetrics>; nodes: NodeResource[] }) {
-  const { locale, t } = useI18n();
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("nodes.nodeMetrics")}</CardTitle>
-        <CardDescription>{t("nodes.nodeMetricsDescription")}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="min-w-0 overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t("overview.node")}</TableHead>
-                <TableHead>{t("overview.status")}</TableHead>
-                <TableHead>{t("nodes.bandwidth")}</TableHead>
-                <TableHead>CPU</TableHead>
-                <TableHead>RAM</TableHead>
-                <TableHead>{t("nodes.uptime")}</TableHead>
-                <TableHead>{t("nodes.config")}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {nodes.map((node) => {
-                const metrics = metricsByNode[node.id] ?? {};
-                return (
-                  <TableRow key={node.id}>
-                    <TableCell>
-                      <div className="flex flex-col gap-1">
-                        <NodeSystemHover metrics={metrics} node={node} />
-                        {node.public_description ? <span className="text-xs text-muted-foreground">{node.public_description}</span> : null}
-                      </div>
-                    </TableCell>
-                    <TableCell><StatusBadge value={metrics.status ?? node.status} /></TableCell>
-                    <TableCell>
-                      <HoverCard>
-                        <HoverCardTrigger asChild>
-                          <span className="inline-flex cursor-default font-medium">{formatBitrateBps(metrics.bandwidth_bps)}</span>
-                        </HoverCardTrigger>
-                        <HoverCardContent align="start">
-                          <MetricDetail label={t("usage.upload")} value={bytes(metrics.upload_bytes)} />
-                          <MetricDetail label={t("usage.download")} value={bytes(metrics.download_bytes)} />
-                          <MetricDetail label="TCP" value={metrics.tcp_connections ?? 0} />
-                          <MetricDetail label="UDP/s" value={metrics.udp_packets_per_second ?? 0} />
-                        </HoverCardContent>
-                      </HoverCard>
-                    </TableCell>
-                    <TableCell><NodeCPUHover metrics={metrics} /></TableCell>
-                    <TableCell>
-                      <HoverCard>
-                        <HoverCardTrigger asChild>
-                          <div className="inline-flex w-32 cursor-default"><MetricProgress value={ramPercent(metrics)} label={ramLabel(metrics)} /></div>
-                        </HoverCardTrigger>
-                        <HoverCardContent align="start">
-                          <MetricDetail label="RAM" value={ramDetail(metrics)} />
-                        </HoverCardContent>
-                      </HoverCard>
-                    </TableCell>
-                    <TableCell>
-                      <HoverCard>
-                        <HoverCardTrigger asChild>
-                          <span className="inline-flex cursor-default">{duration(metrics.uptime_seconds)}</span>
-                        </HoverCardTrigger>
-                        <HoverCardContent align="start">
-                          <MetricDetail label={t("nodes.bootTime")} value={shortDate(metrics.boot_time, locale)} />
-                          <MetricDetail label={t("overview.lastSeen")} value={shortDate(metrics.last_seen_at ?? node.last_seen_at, locale)} />
-                        </HoverCardContent>
-                      </HoverCard>
-                    </TableCell>
-                    <TableCell>{metrics.applied_config_version ?? node.applied_config_version}/{metrics.desired_config_version ?? node.desired_config_version}</TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function MetricProgress({ label, value }: { label: string; value: number | undefined }) {
-  const normalized = Math.max(0, Math.min(100, value ?? 0));
-  return (
-    <div className="flex min-w-28 items-center gap-2">
-      <Progress className="w-16" value={normalized} />
-      <span className="tabular-nums text-xs text-muted-foreground">{label}</span>
-    </div>
-  );
-}
-
-function NodeCPUHover({ metrics }: { metrics: AgentMetrics }) {
-  const { t } = useI18n();
-  return (
-    <HoverCard>
-      <HoverCardTrigger asChild>
-        <div className="inline-flex cursor-default">
-          <MetricProgress value={metrics.cpu_percent} label={percent(metrics.cpu_percent)} />
-        </div>
-      </HoverCardTrigger>
-      <HoverCardContent align="start" className="w-80">
-        <MetricDetail label={t("nodes.cpuModel")} value={metrics.cpu_model || t("common.unknown")} />
-        <MetricDetail label={t("nodes.cpuLogicalCores")} value={positiveCountOrUnknown(metrics.cpu_logical_cores, t("common.unknown"))} />
-        <MetricDetail label={t("nodes.cpuPhysicalCores")} value={positiveCountOrUnknown(metrics.cpu_physical_cores, t("common.unknown"))} />
-      </HoverCardContent>
-    </HoverCard>
-  );
-}
-
-function positiveCountOrUnknown(value: number | undefined, fallback: string) {
-  return typeof value === "number" && value > 0 ? value : fallback;
-}
-
 function MetricDetail({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 py-1">
@@ -935,26 +833,4 @@ function MetricDetail({ label, value }: { label: string; value: ReactNode }) {
       <span className="min-w-0 break-words text-right font-medium tabular-nums">{value}</span>
     </div>
   );
-}
-
-function ramPercent(metrics: AgentMetrics): number | undefined {
-  if (!metrics.ram_total_bytes) {
-    return undefined;
-  }
-  return (Math.max(0, metrics.ram_used_bytes ?? 0) / metrics.ram_total_bytes) * 100;
-}
-
-function ramLabel(metrics: AgentMetrics): string {
-  if (!metrics.ram_total_bytes) {
-    return bytes(metrics.ram_used_bytes);
-  }
-  return percent(ramPercent(metrics));
-}
-
-function ramDetail(metrics: AgentMetrics): string {
-  const used = bytes(metrics.ram_used_bytes);
-  if (!metrics.ram_total_bytes) {
-    return used;
-  }
-  return `${used} / ${bytes(metrics.ram_total_bytes)}`;
 }

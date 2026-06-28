@@ -33,6 +33,8 @@ type InboundBinding struct {
 	ListenIP        string
 	Protocol        Protocol
 	Port            int
+	StartPort       int
+	EndPort         int
 	MatchType       MatchType
 	SNI             string
 	ProxyProtocolIn string
@@ -95,7 +97,25 @@ func sameEndpoint(left InboundBinding, right InboundBinding) bool {
 	return left.NodeID == right.NodeID &&
 		listenIPsOverlap(left.ListenIP, right.ListenIP) &&
 		protocolsOverlap(left.Protocol, right.Protocol) &&
-		left.Port == right.Port
+		portRangesOverlap(left, right)
+}
+
+func portRangesOverlap(left InboundBinding, right InboundBinding) bool {
+	leftStart, leftEnd := normalizedBindingPorts(left)
+	rightStart, rightEnd := normalizedBindingPorts(right)
+	return leftStart <= rightEnd && rightStart <= leftEnd
+}
+
+func normalizedBindingPorts(binding InboundBinding) (int, int) {
+	start := binding.StartPort
+	end := binding.EndPort
+	if start == 0 {
+		start = binding.Port
+	}
+	if end == 0 {
+		end = start
+	}
+	return start, end
 }
 
 func protocolsOverlap(left Protocol, right Protocol) bool {

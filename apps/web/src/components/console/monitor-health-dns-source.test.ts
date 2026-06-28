@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 const monitorSource = () => readFileSync(join(process.cwd(), "src/components/console/features/monitors.tsx"), "utf8");
 const dnsSource = () => readFileSync(join(process.cwd(), "src/components/console/features/dns.tsx"), "utf8");
 const nodesSource = () => readFileSync(join(process.cwd(), "src/components/console/features/nodes.tsx"), "utf8");
+const nodeMutationSource = () => readFileSync(join(process.cwd(), "src/components/console/features/node-mutation-form.tsx"), "utf8");
+const nodeMetricsSource = () => readFileSync(join(process.cwd(), "src/components/console/features/node-metrics-panel.tsx"), "utf8");
 
 describe("monitor health DNS console source", () => {
   it("keeps monitor, health, and DNS mutation forms inside drawers", () => {
@@ -45,6 +47,8 @@ describe("monitor health DNS console source", () => {
     const text = monitorSource();
     const dnsText = dnsSource();
     const nodesText = nodesSource();
+    const nodeMutationText = nodeMutationSource();
+    const nodeMetricsText = nodeMetricsSource();
 
     expect(text).toContain("target_scope");
     expect(text).toContain("summarizeHealthResults");
@@ -68,15 +72,32 @@ describe("monitor health DNS console source", () => {
     expect(text).not.toContain("monitor.group_ids.includes");
     expect(text).not.toContain("monitor.group_ids.map");
     expect(nodesText).toContain("function nodeGroupIDs(node: NodeResource): string[]");
+    expect(nodesText + nodeMutationText).toContain("send_ips");
+    expect(nodesText + nodeMutationText).toContain("max_rule_ports");
+    expect(nodesText + nodeMutationText).toContain("NodeSendIP");
     expect(nodesText).toContain("NodeGeoIPCell");
     expect(nodesText).toContain("NodeSystemHover");
-    expect(nodesText).toContain("NodeCPUHover");
-    expect(nodesText).toContain("cpu_model");
-    expect(nodesText).toContain("architecture");
-    expect(nodesText).toContain("virtualization_system");
+    expect(nodesText).toContain("MAX_NODE_METRIC_STREAMS");
+    expect(nodesText).toContain("const metricNodes = canReadMetrics ? nodes.data : noMetricNodes");
+    expect(nodesText).toContain("<NodeMetricsPanel metricsByNode={metricsByNode} nodes={metricNodes} />");
+    expect(nodesText).toContain("const streamedNodes = nodes.slice(0, MAX_NODE_METRIC_STREAMS)");
+    expect(nodesText).toContain("streamedNodes.map");
+    expect(nodesText).toContain("const nodeIDs = new Set(streamedNodes.map");
+    expect(nodesText).not.toContain("const sources = nodes.map");
+    expect(nodeMetricsText).toContain("NodeCPUHover");
+    expect(nodeMetricsText).toContain("cpu_model");
+    expect(nodeMetricsText).toContain("architecture");
+    expect(nodeMetricsText).toContain("virtualization_system");
+    expect(nodeMetricsText).toContain("disk_used_bytes");
+    expect(nodeMetricsText).toContain("disk_total_bytes");
+    expect(nodeMetricsText).toContain("diskPercent");
+    expect(nodeMetricsText).toContain("hasDiskMetrics");
+    expect(nodeMetricsText).toContain("nodes.metricsNotStreamed");
+    expect(nodeMetricsText).toContain("const metrics = metricsByNode[node.id];");
+    expect(nodeMetricsText).not.toContain("metricsByNode[node.id] ?? {}");
     expect(nodesText).toContain("geoip");
     expect(nodesText).toContain("https://db-ip.com/db/download/ip-to-country-lite");
-    expect(nodesText).toContain("positiveCountOrUnknown(metrics.cpu_logical_cores");
+    expect(nodeMetricsText).toContain("positiveCountOrUnknown(metrics.cpu_logical_cores");
     expect(nodesText).not.toContain("node.group_ids.includes");
     expect(nodesText).not.toContain("node.group_ids.map");
     expect(dnsText).toContain("/api/control/dns/managed-records");
@@ -108,13 +129,14 @@ describe("monitor health DNS console source", () => {
   it("preserves non-destructive edit state for DNS zones and harmless node publish address edits", () => {
     const dnsText = dnsSource();
     const nodesText = nodesSource();
+    const nodeMutationText = nodeMutationSource();
 
     expect(dnsText).toContain("zone.id === currentZoneID");
     expect(dnsText).toContain("candidate.id === nextCurrentZoneID");
-    expect(nodesText).toContain("publishAddressChanged");
-    expect(nodesText).toContain("payload.dns_publish_addresses = nodeDNSPublishAddressPayload(node, publishAddress)");
-    expect(nodesText).toContain("address.source === \"MANUAL\" && address.address === primaryAddress");
-    expect(nodesText).not.toContain("...rest");
-    expect(nodesText).not.toContain("rest.map(nodeDNSPublishAddressPayloadItem)");
+    expect(nodeMutationText).toContain("publishAddressChanged");
+    expect(nodeMutationText).toContain("payload.dns_publish_addresses = nodeDNSPublishAddressPayload(node, publishAddress)");
+    expect(nodeMutationText).toContain("address.source === \"MANUAL\" && address.address === primaryAddress");
+    expect(nodeMutationText).not.toContain("...rest");
+    expect(nodeMutationText).not.toContain("rest.map(nodeDNSPublishAddressPayloadItem)");
   });
 });

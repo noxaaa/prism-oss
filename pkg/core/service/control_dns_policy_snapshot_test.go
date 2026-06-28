@@ -73,3 +73,38 @@ func TestDNSManagedRecordEvaluationSnapshotMatchesPostgresTimestampText(t *testi
 		t.Fatalf("expected snapshot comparison to normalize PostgreSQL timestamptz text and microsecond precision")
 	}
 }
+
+func TestDNSManagedRecordEvaluationSnapshotNormalizesEmptyProviderRetirements(t *testing.T) {
+	snapshot := newDNSManagedRecordEvaluationSnapshot(repo.DNSManagedRecordRecord{
+		ID:                      "record_1",
+		OrganizationID:          "org_1",
+		DNSCredentialID:         "credential_1",
+		CredentialZoneID:        "zone_ref_1",
+		ZoneID:                  "zone_1",
+		ZoneName:                "example.com",
+		RecordHost:              "app",
+		RecordName:              "app.example.com",
+		RecordType:              "A",
+		TTL:                     60,
+		LastAppliedValuesJSON:   "[]",
+		LastEvaluationStatus:    "DELETE_PENDING",
+		ProviderRetirementsJSON: "",
+	})
+	if !snapshot.matches(repo.DNSManagedRecordRecord{
+		ID:                      "record_1",
+		OrganizationID:          "org_1",
+		DNSCredentialID:         "credential_1",
+		CredentialZoneID:        "zone_ref_1",
+		ZoneID:                  "zone_1",
+		ZoneName:                "example.com",
+		RecordHost:              "app",
+		RecordName:              "app.example.com",
+		RecordType:              "A",
+		TTL:                     60,
+		LastAppliedValuesJSON:   "[]",
+		LastEvaluationStatus:    "DELETE_PENDING",
+		ProviderRetirementsJSON: "[]",
+	}) {
+		t.Fatalf("expected snapshot comparison to normalize empty provider retirements")
+	}
+}

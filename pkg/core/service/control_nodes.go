@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
@@ -122,6 +123,9 @@ func (service *ControlService) DeleteNodeGroup(ctx context.Context, identity Int
 		if err := ensureNoDNSInstancesForNodeGroup(ctx, repositories, identity.OrganizationID, nodeGroupID); err != nil {
 			return err
 		}
+		if err := ensureNoNodeEnrollmentProfilesForNodeGroup(ctx, repositories, identity.OrganizationID, nodeGroupID); err != nil {
+			return err
+		}
 		deletedAt := service.timestamp()
 		if err := repositories.NodeGroups().DeleteNodeGroup(ctx, identity.OrganizationID, nodeGroupID, deletedAt); err != nil {
 			return err
@@ -145,6 +149,31 @@ func ensureNoNodesForNodeGroup(ctx context.Context, repositories repo.Repositori
 					Details: map[string]any{
 						"node_group_id": nodeGroupID,
 						"node_id":       node.ID,
+					},
+					Cause: ErrConflict,
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func ensureNoNodeEnrollmentProfilesForNodeGroup(ctx context.Context, repositories repo.Repositories, organizationID string, nodeGroupID string) error {
+	profiles, err := repositories.NodeEnrollmentProfiles().ListNodeEnrollmentProfiles(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	for _, profile := range profiles {
+		for _, groupID := range decodeJSONStringList(profile.GroupIDsJSON) {
+			if groupID == nodeGroupID {
+				return &controlServiceError{
+					Code:    "NODE_GROUP_IN_USE",
+					Message: "The node group is still referenced by one or more node enrollment profiles.",
+					Details: map[string]any{
+						"node_group_id":                  nodeGroupID,
+						"node_enrollment_profile_id":     profile.ID,
+						"node_enrollment_profile_name":   profile.Name,
+						"node_enrollment_profile_active": profile.Enabled && profile.RevokedAt == "",
 					},
 					Cause: ErrConflict,
 				}
@@ -238,6 +267,15 @@ func (service *ControlService) CreateNode(ctx context.Context, identity Internal
 	if !service.hasPermission(identity, string(domain.PermissionNodesManage)) {
 		return NodePayload{}, ErrForbidden
 	}
+	dataplaneMode, err := normalizeNodeDataplaneModeForMutation(input.DataplaneMode)
+	if err != nil {
+		return NodePayload{}, err
+	}
+	input.DataplaneMode = dataplaneMode
+	input.DataplaneConflictPolicy = defaultNodeDataplaneConflictPolicy(input.DataplaneConflictPolicy)
+	if err := validateNodeDataplaneConflictPolicy(input.DataplaneConflictPolicy); err != nil {
+		return NodePayload{}, err
+	}
 	if len(input.GroupIDs) == 0 && !service.canManageAllNodeGroups(identity) {
 		return NodePayload{}, ErrForbidden
 	}
@@ -246,25 +284,30 @@ func (service *ControlService) CreateNode(ctx context.Context, identity Internal
 	}
 	var result NodePayload
 	var affectedDNSRecordIDs []string
-	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+	err = service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if err := ensureNodeGroupsExist(ctx, repositories, identity.OrganizationID, input.GroupIDs); err != nil {
 			return err
 		}
 		now := service.timestamp()
 		node := repo.NodeRecord{
-			ID:                  service.newID(),
-			OrganizationID:      identity.OrganizationID,
-			Name:                input.Name,
-			Status:              "PENDING",
-			PublicDescription:   input.PublicDescription,
-			ConfigStatus:        "PENDING",
-			ConfigErrorMessage:  "",
-			CreatedAt:           now,
-			UpdatedAt:           now,
-			GroupIDs:            append([]string(nil), input.GroupIDs...),
-			ListenIPs:           toNodeListenIPRecords(input.ListenIPs),
-			PortRanges:          toNodePortRangeRecords(input.PortRanges),
-			DNSPublishAddresses: toNodeDNSPublishAddressRecords(input.DNSPublishAddresses),
+			ID:                      service.newID(),
+			OrganizationID:          identity.OrganizationID,
+			Name:                    input.Name,
+			Status:                  "PENDING",
+			PublicDescription:       input.PublicDescription,
+			ConfigStatus:            "PENDING",
+			ConfigErrorMessage:      "",
+			AgentAutoUpdateEnabled:  true,
+			DataplaneMode:           input.DataplaneMode,
+			DataplaneConflictPolicy: input.DataplaneConflictPolicy,
+			CreatedAt:               now,
+			UpdatedAt:               now,
+			GroupIDs:                append([]string(nil), input.GroupIDs...),
+			ListenIPs:               toNodeListenIPRecords(input.ListenIPs),
+			SendIPs:                 toNodeSendIPRecords(input.SendIPs),
+			PortRanges:              toNodePortRangeRecords(input.PortRanges),
+			MaxRulePorts:            defaultMaxRulePorts(input.MaxRulePorts),
+			DNSPublishAddresses:     toNodeDNSPublishAddressRecords(input.DNSPublishAddresses),
 		}
 		nodes, err := repositories.Nodes().ListNodesByOrganization(ctx, identity.OrganizationID)
 		if err != nil {
@@ -300,6 +343,19 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 	if !service.hasPermission(identity, string(domain.PermissionNodesManage)) {
 		return NodePayload{}, ErrForbidden
 	}
+	if input.DataplaneModeProvided {
+		dataplaneMode, err := normalizeNodeDataplaneModeForMutation(input.DataplaneMode)
+		if err != nil {
+			return NodePayload{}, err
+		}
+		input.DataplaneMode = dataplaneMode
+	}
+	if input.DataplaneConflictPolicyProvided {
+		input.DataplaneConflictPolicy = defaultNodeDataplaneConflictPolicy(input.DataplaneConflictPolicy)
+		if err := validateNodeDataplaneConflictPolicy(input.DataplaneConflictPolicy); err != nil {
+			return NodePayload{}, err
+		}
+	}
 	var result NodePayload
 	var affectedDNSRecordIDs []string
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
@@ -330,11 +386,26 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 		if input.PublicDescriptionProvided {
 			node.PublicDescription = input.PublicDescription
 		}
+		dataplaneConfigChanged := false
+		if input.DataplaneModeProvided && node.DataplaneMode != input.DataplaneMode {
+			node.DataplaneMode = input.DataplaneMode
+			dataplaneConfigChanged = true
+		}
+		if input.DataplaneConflictPolicyProvided && node.DataplaneConflictPolicy != input.DataplaneConflictPolicy {
+			node.DataplaneConflictPolicy = input.DataplaneConflictPolicy
+			dataplaneConfigChanged = true
+		}
 		if input.ListenIPsProvided {
 			node.ListenIPs = toNodeListenIPRecords(input.ListenIPs)
 		}
+		if input.SendIPsProvided {
+			node.SendIPs = toNodeSendIPRecords(input.SendIPs)
+		}
 		if input.PortRangesProvided {
 			node.PortRanges = toNodePortRangeRecords(input.PortRanges)
+		}
+		if input.MaxRulePortsProvided {
+			node.MaxRulePorts = defaultMaxRulePorts(input.MaxRulePorts)
 		}
 		if input.DNSPublishAddressesProvided {
 			node.DNSPublishAddresses = toNodeDNSPublishAddressRecords(input.DNSPublishAddresses)
@@ -373,7 +444,8 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 				return err
 			}
 		}
-		if input.GroupIDsProvided && !sameStringSet(previousGroupIDs, targetGroupIDs) {
+		groupMembershipChanged := input.GroupIDsProvided && !sameStringSet(previousGroupIDs, targetGroupIDs)
+		if dataplaneConfigChanged || groupMembershipChanged {
 			if err := repositories.Nodes().IncrementDesiredConfigForNode(ctx, identity.OrganizationID, node.ID, node.UpdatedAt); err != nil {
 				return err
 			}
@@ -381,7 +453,12 @@ func (service *ControlService) UpdateNode(ctx context.Context, identity Internal
 			if err != nil {
 				return err
 			}
-			if err := syncRuleDeploymentsForNodeMembershipChange(ctx, repositories, identity.OrganizationID, node, previousGroupIDs, targetGroupIDs, node.UpdatedAt, service.newID); err != nil {
+			if groupMembershipChanged {
+				if err := syncRuleDeploymentsForNodeMembershipChange(ctx, repositories, identity.OrganizationID, node, previousGroupIDs, targetGroupIDs, node.UpdatedAt, service.newID); err != nil {
+					return err
+				}
+			}
+			if err := syncRuleDeploymentsForNodeConfigChange(ctx, repositories, identity.OrganizationID, node, node.UpdatedAt, service.newID); err != nil {
 				return err
 			}
 		}
@@ -419,6 +496,14 @@ func (service *ControlService) DeleteNode(ctx context.Context, identity Internal
 			return err
 		}
 		deletedAt := service.timestamp()
+		releasedDNSRecordIDs, released, err := service.releasePendingNodeEnrollmentForNode(ctx, repositories, node, deletedAt)
+		if err != nil {
+			return err
+		}
+		if released {
+			affectedDNSRecordIDs = releasedDNSRecordIDs
+			return service.writeAudit(ctx, repositories, service.auditForIdentity(identity, "nodes.delete", "NODE", nodeID, ""))
+		}
 		if err := repositories.Nodes().DeleteNode(ctx, identity.OrganizationID, nodeID, deletedAt); err != nil {
 			return err
 		}
@@ -708,6 +793,12 @@ func toNodeListenIPRecords(inputs []NodeListenIPInput) []repo.NodeListenIPRecord
 }
 
 func toNodePortRangeRecords(inputs []NodePortRangeInput) []repo.NodePortRangeRecord {
+	if len(inputs) == 0 {
+		inputs = []NodePortRangeInput{
+			{Protocol: string(domain.ProtocolTCP), StartPort: 1, EndPort: 65535},
+			{Protocol: string(domain.ProtocolUDP), StartPort: 1, EndPort: 65535},
+		}
+	}
 	records := make([]repo.NodePortRangeRecord, 0, len(inputs))
 	for _, input := range inputs {
 		records = append(records, repo.NodePortRangeRecord{Protocol: input.Protocol, StartPort: input.StartPort, EndPort: input.EndPort, Enabled: true})
@@ -745,31 +836,56 @@ func toNodePayload(node repo.NodeRecord) NodePayload {
 
 func nodePayloadWithoutGeoIP(node repo.NodeRecord) NodePayload {
 	return NodePayload{
-		ID:                     node.ID,
-		Name:                   node.Name,
-		Status:                 node.Status,
-		PublicDescription:      node.PublicDescription,
-		DesiredConfigVersion:   node.DesiredConfigVersion,
-		AppliedConfigVersion:   node.AppliedConfigVersion,
-		ConfigStatus:           node.ConfigStatus,
-		ConfigErrorMessage:     node.ConfigErrorMessage,
-		ConfigStatusUpdatedAt:  node.ConfigStatusUpdatedAt,
-		LastSeenAt:             node.LastSeenAt,
-		RegisteredAt:           node.RegisteredAt,
-		AgentVersion:           node.AgentVersion,
-		AgentCommit:            node.AgentCommit,
-		AgentBuildTime:         node.AgentBuildTime,
-		AgentAutoUpdateEnabled: node.AgentAutoUpdateEnabled,
-		DesiredAgentVersion:    node.DesiredAgentVersion,
-		AgentUpdateStatus:      node.AgentUpdateStatus,
-		AgentUpdateError:       node.AgentUpdateError,
-		AgentUpdateStartedAt:   node.AgentUpdateStartedAt,
-		AgentUpdateFinishedAt:  node.AgentUpdateFinishedAt,
-		GroupIDs:               stringSlicePayload(node.GroupIDs),
-		ListenIPs:              toNodeListenIPPayloads(node.ListenIPs),
-		PortRanges:             toNodePortRangePayloads(node.PortRanges),
-		DNSPublishAddresses:    toNodeDNSPublishAddressPayloads(node.DNSPublishAddresses),
+		ID:                      node.ID,
+		Name:                    node.Name,
+		Status:                  node.Status,
+		PublicDescription:       node.PublicDescription,
+		DesiredConfigVersion:    node.DesiredConfigVersion,
+		AppliedConfigVersion:    node.AppliedConfigVersion,
+		ConfigStatus:            node.ConfigStatus,
+		ConfigErrorMessage:      node.ConfigErrorMessage,
+		ConfigStatusUpdatedAt:   node.ConfigStatusUpdatedAt,
+		LastSeenAt:              node.LastSeenAt,
+		RegisteredAt:            node.RegisteredAt,
+		AgentVersion:            node.AgentVersion,
+		AgentCommit:             node.AgentCommit,
+		AgentBuildTime:          node.AgentBuildTime,
+		AgentAutoUpdateEnabled:  node.AgentAutoUpdateEnabled,
+		DesiredAgentVersion:     node.DesiredAgentVersion,
+		AgentUpdateStatus:       node.AgentUpdateStatus,
+		AgentUpdateError:        node.AgentUpdateError,
+		AgentUpdateStartedAt:    node.AgentUpdateStartedAt,
+		AgentUpdateFinishedAt:   node.AgentUpdateFinishedAt,
+		DataplaneMode:           defaultNodeDataplaneMode(node.DataplaneMode),
+		DataplaneConflictPolicy: defaultNodeDataplaneConflictPolicy(node.DataplaneConflictPolicy),
+		DataplaneInstanceID:     node.DataplaneInstanceID,
+		DataplaneStatus:         defaultNodeDataplaneStatus(node.DataplaneStatus),
+		DataplaneError:          node.DataplaneError,
+		DataplaneLastHash:       node.DataplaneLastHash,
+		DataplaneLastAppliedAt:  node.DataplaneLastAppliedAt,
+		RegistrationSource:      nodeRegistrationSource(node),
+		EnrollmentProfile:       nodeEnrollmentProfileRef(node),
+		GroupIDs:                stringSlicePayload(node.GroupIDs),
+		ListenIPs:               toNodeListenIPPayloads(node.ListenIPs),
+		SendIPs:                 toNodeSendIPPayloads(node.SendIPs),
+		PortRanges:              toNodePortRangePayloads(node.PortRanges),
+		MaxRulePorts:            defaultMaxRulePorts(node.MaxRulePorts),
+		DNSPublishAddresses:     toNodeDNSPublishAddressPayloads(node.DNSPublishAddresses),
 	}
+}
+
+func nodeRegistrationSource(node repo.NodeRecord) string {
+	if strings.TrimSpace(node.EnrollmentProfileID) != "" {
+		return "ENROLLMENT_PROFILE"
+	}
+	return "MANUAL"
+}
+
+func nodeEnrollmentProfileRef(node repo.NodeRecord) *NodeEnrollmentProfileRef {
+	if strings.TrimSpace(node.EnrollmentProfileID) == "" {
+		return nil
+	}
+	return &NodeEnrollmentProfileRef{ID: node.EnrollmentProfileID, Name: node.EnrollmentProfileName}
 }
 
 func toNodeListenIPPayloads(listenIPs []repo.NodeListenIPRecord) []NodeListenIPPayload {

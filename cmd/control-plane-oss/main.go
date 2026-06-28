@@ -48,6 +48,7 @@ func main() {
 		AgentTokenSigningSecret: []byte(cfg.AgentTokenSigningSecret),
 		DNSSecretEncryptionKey:  cfg.DNSSecretEncryptionKey,
 		GeoIPResolver:           service.NewGeoIPResolver(cfg.GeoIPDBPath),
+		TrustedAgentProxyCIDRs:  cfg.TrustedAgentProxyCIDRs,
 		Edition:                 controlEdition,
 	})
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ type ControlServerOptions struct {
 	DNSProviders            dns.ProviderRegistry
 	GeoIPResolver           service.GeoIPResolver
 	AgentStateRegistry      *AgentStateRegistry
+	TrustedAgentProxyCIDRs  []string
 	Edition                 edition.Provider
 	RouteExtensions         []ControlRouteExtension
 }
@@ -41,6 +43,7 @@ type ControlServer struct {
 	webUserVerifier auth.WebUserTokenVerifier
 	controlService  *service.ControlService
 	agentStates     *AgentStateRegistry
+	trustedProxies  []*net.IPNet
 	edition         edition.Provider
 	routeExtensions []ControlRouteExtension
 	mux             *http.ServeMux
@@ -69,6 +72,7 @@ func NewControlServer(options ControlServerOptions) *ControlServer {
 		webUserVerifier: options.WebUserVerifier,
 		controlService:  controlService,
 		agentStates:     options.AgentStateRegistry,
+		trustedProxies:  parseTrustedProxyCIDRs(options.TrustedAgentProxyCIDRs),
 		edition:         provider,
 		routeExtensions: append([]ControlRouteExtension(nil), options.RouteExtensions...),
 		mux:             http.NewServeMux(),
@@ -112,6 +116,7 @@ func (server *ControlServer) routes() {
 	}
 	server.mux.HandleFunc("GET /internal/v1/resource-options/node-groups", server.withInternalIdentity(server.handleNodeGroupOptions))
 	server.mux.HandleFunc("GET /internal/v1/resource-options/node-group-listen-ips", server.withInternalIdentity(server.handleNodeGroupListenIPOptions))
+	server.mux.HandleFunc("GET /internal/v1/resource-options/node-group-send-ips", server.withInternalIdentity(server.handleNodeGroupSendIPOptions))
 	server.mux.HandleFunc("GET /internal/v1/resource-options/targets", server.withInternalIdentity(server.handleTargetOptions))
 	server.mux.HandleFunc("GET /internal/v1/resource-options/target-groups", server.withInternalIdentity(server.handleTargetGroupOptions))
 	server.mux.HandleFunc("GET /internal/v1/node-groups", server.withInternalIdentity(server.handleListNodeGroups))
@@ -130,6 +135,13 @@ func (server *ControlServer) routes() {
 	server.mux.HandleFunc("GET /internal/v1/nodes/{node_id}/registration-tokens", server.withInternalIdentity(server.handleListNodeRegistrationTokens))
 	server.mux.HandleFunc("POST /internal/v1/nodes/{node_id}/registration-token", server.withInternalIdentity(server.handleCreateNodeRegistrationToken))
 	server.mux.HandleFunc("DELETE /internal/v1/nodes/{node_id}/registration-tokens/{token_id}", server.withInternalIdentity(server.handleRevokeNodeRegistrationToken))
+	server.mux.HandleFunc("GET /internal/v1/node-enrollment-profiles", server.withInternalIdentity(server.handleListNodeEnrollmentProfiles))
+	server.mux.HandleFunc("POST /internal/v1/node-enrollment-profiles", server.withInternalIdentity(server.handleCreateNodeEnrollmentProfile))
+	server.mux.HandleFunc("GET /internal/v1/node-enrollment-profiles/{profile_id}", server.withInternalIdentity(server.handleGetNodeEnrollmentProfile))
+	server.mux.HandleFunc("PATCH /internal/v1/node-enrollment-profiles/{profile_id}", server.withInternalIdentity(server.handleUpdateNodeEnrollmentProfile))
+	server.mux.HandleFunc("DELETE /internal/v1/node-enrollment-profiles/{profile_id}", server.withInternalIdentity(server.handleDeleteNodeEnrollmentProfile))
+	server.mux.HandleFunc("POST /internal/v1/node-enrollment-profiles/{profile_id}/rotate-token", server.withInternalIdentity(server.handleRotateNodeEnrollmentProfileToken))
+	server.mux.HandleFunc("GET /internal/v1/node-enrollment-profiles/{profile_id}/events", server.withInternalIdentity(server.handleListNodeEnrollmentEvents))
 	if server.edition.Has(edition.CapabilityMonitors) {
 		server.mux.HandleFunc("GET /internal/v1/monitor-groups", server.withInternalIdentity(server.handleListMonitorGroups))
 		server.mux.HandleFunc("POST /internal/v1/monitor-groups", server.withInternalIdentity(server.handleCreateMonitorGroup))
@@ -289,6 +301,7 @@ func (server *ControlServer) handleNodeGroupListenIPOptions(response http.Respon
 	nodeGroupID := strings.TrimSpace(request.URL.Query().Get("node_group_id"))
 	protocol := strings.ToUpper(strings.TrimSpace(request.URL.Query().Get("protocol")))
 	portText := strings.TrimSpace(request.URL.Query().Get("port"))
+	portSegmentsText := strings.TrimSpace(request.URL.Query().Get("port_segments"))
 	port := 0
 	if portText != "" {
 		parsedPort, err := strconv.Atoi(portText)
@@ -298,11 +311,22 @@ func (server *ControlServer) handleNodeGroupListenIPOptions(response http.Respon
 		}
 		port = parsedPort
 	}
-	if nodeGroupID == "" || ((protocol == "") != (port == 0)) || (protocol != "" && protocol != "TCP" && protocol != "UDP" && protocol != "TCP_UDP") || port < 0 || port > 65535 {
+	segments, ok := parseListenIPOptionPortSegments(port, portSegmentsText)
+	if nodeGroupID == "" || protocol == "" && len(segments) > 0 || protocol != "" && (protocol != "TCP" && protocol != "UDP" && protocol != "TCP_UDP") || port < 0 || port > 65535 || !ok {
 		writeError(response, http.StatusBadRequest, "VALIDATION_FAILED")
 		return
 	}
-	result, err := server.controlService.NodeGroupListenIPOptions(request.Context(), internalIdentityFromClaims(claims, request), nodeGroupID, protocol, port)
+	result, err := server.controlService.NodeGroupListenIPOptions(request.Context(), internalIdentityFromClaims(claims, request), nodeGroupID, protocol, segments)
+	writeServiceResponse(response, http.StatusOK, result, err)
+}
+
+func (server *ControlServer) handleNodeGroupSendIPOptions(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
+	nodeGroupID := strings.TrimSpace(request.URL.Query().Get("node_group_id"))
+	if nodeGroupID == "" {
+		writeError(response, http.StatusBadRequest, "VALIDATION_FAILED")
+		return
+	}
+	result, err := server.controlService.NodeGroupSendIPOptions(request.Context(), internalIdentityFromClaims(claims, request), nodeGroupID)
 	writeServiceResponse(response, http.StatusOK, result, err)
 }
 
@@ -421,6 +445,49 @@ func (server *ControlServer) handleCreateNodeRegistrationToken(response http.Res
 func (server *ControlServer) handleRevokeNodeRegistrationToken(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
 	err := server.controlService.RevokeRegistrationToken(request.Context(), internalIdentityFromClaims(claims, request), "NODE", request.PathValue("node_id"), request.PathValue("token_id"))
 	writeServiceResponse(response, http.StatusOK, map[string]any{"revoked": true}, err)
+}
+
+func (server *ControlServer) handleListNodeEnrollmentProfiles(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
+	result, err := server.controlService.ListNodeEnrollmentProfiles(request.Context(), internalIdentityFromClaims(claims, request))
+	writeServiceResponse(response, http.StatusOK, result, err)
+}
+
+func (server *ControlServer) handleCreateNodeEnrollmentProfile(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
+	input, ok := decodeNodeEnrollmentProfileInput(response, request)
+	if !ok {
+		return
+	}
+	result, err := server.controlService.CreateNodeEnrollmentProfile(request.Context(), internalIdentityFromClaims(claims, request), input)
+	writeServiceResponse(response, http.StatusCreated, result, err)
+}
+
+func (server *ControlServer) handleGetNodeEnrollmentProfile(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
+	result, err := server.controlService.GetNodeEnrollmentProfile(request.Context(), internalIdentityFromClaims(claims, request), request.PathValue("profile_id"))
+	writeServiceResponse(response, http.StatusOK, result, err)
+}
+
+func (server *ControlServer) handleUpdateNodeEnrollmentProfile(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
+	input, ok := decodeNodeEnrollmentProfilePatchInput(response, request)
+	if !ok {
+		return
+	}
+	result, err := server.controlService.UpdateNodeEnrollmentProfile(request.Context(), internalIdentityFromClaims(claims, request), request.PathValue("profile_id"), input)
+	writeServiceResponse(response, http.StatusOK, result, err)
+}
+
+func (server *ControlServer) handleDeleteNodeEnrollmentProfile(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
+	err := server.controlService.DeleteNodeEnrollmentProfile(request.Context(), internalIdentityFromClaims(claims, request), request.PathValue("profile_id"))
+	writeServiceResponse(response, http.StatusOK, map[string]any{"deleted": true}, err)
+}
+
+func (server *ControlServer) handleRotateNodeEnrollmentProfileToken(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
+	result, err := server.controlService.RotateNodeEnrollmentProfileToken(request.Context(), internalIdentityFromClaims(claims, request), request.PathValue("profile_id"))
+	writeServiceResponse(response, http.StatusOK, result, err)
+}
+
+func (server *ControlServer) handleListNodeEnrollmentEvents(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
+	result, err := server.controlService.ListNodeEnrollmentEvents(request.Context(), internalIdentityFromClaims(claims, request), request.PathValue("profile_id"))
+	writeServiceResponse(response, http.StatusOK, result, err)
 }
 
 func (server *ControlServer) handleListMonitorGroups(response http.ResponseWriter, request *http.Request, claims auth.InternalClaims) {
@@ -598,9 +665,17 @@ func decodeNodeInput(response http.ResponseWriter, request *http.Request, update
 			input.ListenIPs = toServiceListenIPs(*normalized.ListenIPs)
 			input.ListenIPsProvided = true
 		}
+		if normalized.SendIPs != nil {
+			input.SendIPs = toServiceSendIPs(*normalized.SendIPs)
+			input.SendIPsProvided = true
+		}
 		if normalized.PortRanges != nil {
 			input.PortRanges = toServicePortRanges(*normalized.PortRanges)
 			input.PortRangesProvided = true
+		}
+		if normalized.MaxRulePorts != nil {
+			input.MaxRulePorts = *normalized.MaxRulePorts
+			input.MaxRulePortsProvided = true
 		}
 		if normalized.DNSPublishAddresses != nil {
 			input.DNSPublishAddresses = toServiceDNSPublishAddresses(*normalized.DNSPublishAddresses)
@@ -609,6 +684,14 @@ func decodeNodeInput(response http.ResponseWriter, request *http.Request, update
 		if normalized.PublicDescription != nil {
 			input.PublicDescription = *normalized.PublicDescription
 			input.PublicDescriptionProvided = true
+		}
+		if normalized.DataplaneMode != nil {
+			input.DataplaneMode = *normalized.DataplaneMode
+			input.DataplaneModeProvided = true
+		}
+		if normalized.DataplaneConflictPolicy != nil {
+			input.DataplaneConflictPolicy = *normalized.DataplaneConflictPolicy
+			input.DataplaneConflictPolicyProvided = true
 		}
 		return input, true
 	}
@@ -624,18 +707,26 @@ func decodeNodeInput(response http.ResponseWriter, request *http.Request, update
 		return service.NodeMutationInput{}, false
 	}
 	return service.NodeMutationInput{
-		Name:                        normalized.Name,
-		NameProvided:                true,
-		GroupIDs:                    normalized.GroupIDs,
-		GroupIDsProvided:            true,
-		ListenIPs:                   toServiceListenIPs(normalized.ListenIPs),
-		ListenIPsProvided:           true,
-		PortRanges:                  toServicePortRanges(normalized.PortRanges),
-		PortRangesProvided:          true,
-		DNSPublishAddresses:         toServiceDNSPublishAddresses(normalized.DNSPublishAddresses),
-		DNSPublishAddressesProvided: true,
-		PublicDescription:           normalized.PublicDescription,
-		PublicDescriptionProvided:   true,
+		Name:                            normalized.Name,
+		NameProvided:                    true,
+		GroupIDs:                        normalized.GroupIDs,
+		GroupIDsProvided:                true,
+		ListenIPs:                       toServiceListenIPs(normalized.ListenIPs),
+		ListenIPsProvided:               true,
+		SendIPs:                         toServiceSendIPs(normalized.SendIPs),
+		SendIPsProvided:                 true,
+		PortRanges:                      toServicePortRanges(normalized.PortRanges),
+		PortRangesProvided:              true,
+		MaxRulePorts:                    normalized.MaxRulePorts,
+		MaxRulePortsProvided:            true,
+		DNSPublishAddresses:             toServiceDNSPublishAddresses(normalized.DNSPublishAddresses),
+		DNSPublishAddressesProvided:     true,
+		PublicDescription:               normalized.PublicDescription,
+		PublicDescriptionProvided:       true,
+		DataplaneMode:                   normalized.DataplaneMode,
+		DataplaneModeProvided:           true,
+		DataplaneConflictPolicy:         normalized.DataplaneConflictPolicy,
+		DataplaneConflictPolicyProvided: true,
 	}, true
 }
 
@@ -736,6 +827,14 @@ func toServiceListenIPs(values []validator.NodeListenIP) []service.NodeListenIPI
 	inputs := make([]service.NodeListenIPInput, 0, len(values))
 	for _, value := range values {
 		inputs = append(inputs, service.NodeListenIPInput{ListenIP: value.ListenIP, DisplayName: value.DisplayName})
+	}
+	return inputs
+}
+
+func toServiceSendIPs(values []validator.NodeSendIP) []service.NodeSendIPInput {
+	inputs := make([]service.NodeSendIPInput, 0, len(values))
+	for _, value := range values {
+		inputs = append(inputs, service.NodeSendIPInput{SendIP: value.SendIP, DisplayName: value.DisplayName})
 	}
 	return inputs
 }

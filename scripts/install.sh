@@ -23,6 +23,7 @@ geoip_db_url=""
 geoip_db_url_provided=0
 skip_geoip_download=0
 version="latest"
+config_option_provided=0
 
 usage() {
   cat <<'USAGE'
@@ -42,6 +43,9 @@ Options:
   --geoip-db-url URL       GeoIP MMDB gzip URL. Defaults to DB-IP Country Lite for the current month.
   --skip-geoip-download    Skip optional GeoIP database download; country flags show unknown until a DB is mounted.
   --image-registry HOST    Image registry namespace. Defaults to ghcr.io/noxaaa.
+  Interactive install:
+                           When no configuration options are provided, a TTY install prompts
+                           for the web port, public web URL, and control-plane port.
   -h, --help              Show this help.
 USAGE
 }
@@ -50,16 +54,16 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --version) version="${2:?missing value for --version}"; shift 2 ;;
     --dir) install_dir="${2:?missing value for --dir}"; shift 2 ;;
-    --app-name) app_name="${2:?missing value for --app-name}"; app_name_provided=1; shift 2 ;;
-    --web-port) web_port="${2:?missing value for --web-port}"; web_port_provided=1; shift 2 ;;
-    --public-web-url) public_web_url="${2:?missing value for --public-web-url}"; public_web_url_provided=1; shift 2 ;;
-    --control-port) control_port="${2:?missing value for --control-port}"; control_port_provided=1; shift 2 ;;
-    --control-bind-host) control_bind_host="${2:?missing value for --control-bind-host}"; control_bind_host_provided=1; shift 2 ;;
-    --control-url) control_url="${2:?missing value for --control-url}"; control_url_provided=1; shift 2 ;;
-    --database-url) database_url="${2:?missing value for --database-url}"; database_url_provided=1; shift 2 ;;
+    --app-name) app_name="${2:?missing value for --app-name}"; app_name_provided=1; config_option_provided=1; shift 2 ;;
+    --web-port) web_port="${2:?missing value for --web-port}"; web_port_provided=1; config_option_provided=1; shift 2 ;;
+    --public-web-url) public_web_url="${2:?missing value for --public-web-url}"; public_web_url_provided=1; config_option_provided=1; shift 2 ;;
+    --control-port) control_port="${2:?missing value for --control-port}"; control_port_provided=1; config_option_provided=1; shift 2 ;;
+    --control-bind-host) control_bind_host="${2:?missing value for --control-bind-host}"; control_bind_host_provided=1; config_option_provided=1; shift 2 ;;
+    --control-url) control_url="${2:?missing value for --control-url}"; control_url_provided=1; config_option_provided=1; shift 2 ;;
+    --database-url) database_url="${2:?missing value for --database-url}"; database_url_provided=1; config_option_provided=1; shift 2 ;;
     --geoip-db-url) geoip_db_url="${2:?missing value for --geoip-db-url}"; geoip_db_url_provided=1; shift 2 ;;
     --skip-geoip-download) skip_geoip_download=1; shift ;;
-    --image-registry) image_registry="${2:?missing value for --image-registry}"; image_registry_provided=1; shift 2 ;;
+    --image-registry) image_registry="${2:?missing value for --image-registry}"; image_registry_provided=1; config_option_provided=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -165,6 +169,68 @@ public_url() {
   else
     printf 'http://%s:%s' "$(first_non_loopback_host)" "$web_port"
   fi
+}
+
+tty_can_open() {
+  true </dev/tty
+}
+
+interactive_requested() {
+  if [ "${PRISM_INSTALL_INTERACTIVE:-0}" = "1" ]; then
+    return 0
+  fi
+  if [ -t 0 ]; then
+    return 0
+  fi
+  if tty_can_open 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+read_prompt() {
+  label="$1"
+  default_value="$2"
+  answer=""
+  printf '%s [%s]: ' "$label" "$default_value" >&2
+  if [ "${PRISM_INSTALL_INTERACTIVE:-0}" = "1" ] || [ -t 0 ]; then
+    IFS= read -r answer || answer=""
+  else
+    IFS= read -r answer </dev/tty || answer=""
+  fi
+  [ -n "$answer" ] || answer="$default_value"
+  printf '%s' "$answer"
+}
+
+is_valid_port() {
+  case "$1" in
+    ""|*[!0123456789]*) return 1 ;;
+  esac
+  [ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
+}
+
+prompt_port() {
+  label="$1"
+  default_value="$2"
+  while :; do
+    value="$(read_prompt "$label" "$default_value")"
+    if is_valid_port "$value"; then
+      printf '%s' "$value"
+      return
+    fi
+    echo "Port must be a number from 1 to 65535." >&2
+  done
+}
+
+prompt_interactive_config() {
+  echo "Interactive Prism OSS configuration" >&2
+  web_port="$(prompt_port "Web console host port" "$web_port")"
+  web_port_provided=1
+  public_web_url="$(read_prompt "Public web console URL" "$(public_url)")"
+  public_web_url_provided=1
+  control_port="$(prompt_port "Control-plane API host port" "$control_port")"
+  control_port_provided=1
+  config_option_provided=1
 }
 
 agent_control_url() {
@@ -373,6 +439,7 @@ services:
       QUEUE_REDIS_URL: ${QUEUE_REDIS_URL:-redis://redis:6379/0}
       CACHE_REDIS_URL: ${CACHE_REDIS_URL:-redis://redis:6379/0}
       GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/data/geoip/dbip-country-lite.mmdb}
+      TRUSTED_AGENT_PROXY_CIDRS: ${TRUSTED_AGENT_PROXY_CIDRS:-}
       CONTROL_PLANE_HTTP_ADDR: 0.0.0.0:8080
     volumes:
       - ./geoip:/data/geoip:ro
@@ -389,6 +456,7 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000}}
       BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000},http://127.0.0.1:${WEB_PORT:-3000},http://localhost:${WEB_PORT:-3000}}
+      BETTER_AUTH_TRUST_PROXY_HEADERS: ${BETTER_AUTH_TRUST_PROXY_HEADERS:-false}
       OSS_SETUP_TOKEN: ${OSS_SETUP_TOKEN:?set OSS_SETUP_TOKEN in .env}
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       CONTROL_PLANE_INTERNAL_URL: ${CONTROL_PLANE_INTERNAL_URL:-http://control-plane:8080}
@@ -442,6 +510,7 @@ services:
       QUEUE_REDIS_URL: ${QUEUE_REDIS_URL:-redis://redis:6379/0}
       CACHE_REDIS_URL: ${CACHE_REDIS_URL:-redis://redis:6379/0}
       GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/data/geoip/dbip-country-lite.mmdb}
+      TRUSTED_AGENT_PROXY_CIDRS: ${TRUSTED_AGENT_PROXY_CIDRS:-}
       CONTROL_PLANE_HTTP_ADDR: 0.0.0.0:8080
     volumes:
       - ./geoip:/data/geoip:ro
@@ -458,6 +527,7 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000}}
       BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000},http://127.0.0.1:${WEB_PORT:-3000},http://localhost:${WEB_PORT:-3000}}
+      BETTER_AUTH_TRUST_PROXY_HEADERS: ${BETTER_AUTH_TRUST_PROXY_HEADERS:-false}
       OSS_SETUP_TOKEN: ${OSS_SETUP_TOKEN:?set OSS_SETUP_TOKEN in .env}
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       CONTROL_PLANE_INTERNAL_URL: ${CONTROL_PLANE_INTERNAL_URL:-http://control-plane:8080}
@@ -655,6 +725,9 @@ fi
 resolved_version="$(resolve_release_version)"
 mkdir -p "$install_dir"
 cd "$install_dir"
+if [ ! -f ".env" ] && [ "$config_option_provided" = "0" ] && interactive_requested; then
+  prompt_interactive_config
+fi
 write_upgrade_script
 write_uninstall_script
 

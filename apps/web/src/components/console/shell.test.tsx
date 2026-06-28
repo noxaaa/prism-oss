@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { I18nProvider } from "./i18n";
-import { AuthScreen } from "./shell";
+import { AuthScreen, readAuthError } from "./shell";
 
 describe("console shell auth screen", () => {
   it("hides sign-up controls when OSS registration is closed", () => {
@@ -31,5 +31,23 @@ describe("console shell auth screen", () => {
     );
 
     expect(markup).toContain("Create account");
+  });
+
+  it("reads BetterAuth flat error responses", async () => {
+    const error = await readAuthError(
+      Response.json(
+        {
+          code: "INVALID_ORIGIN",
+          message: "Invalid origin",
+        },
+        { status: 403 },
+      ),
+    );
+
+    expect(error).toEqual({
+      code: "INVALID_ORIGIN",
+      message: "Invalid origin",
+      details: undefined,
+    });
   });
 });

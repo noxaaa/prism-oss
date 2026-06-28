@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 
 	"github.com/noxaaa/prism-oss/pkg/core/agent"
@@ -116,8 +117,10 @@ func TestBasicAgentConfigCompilerIncrementsStableHashWhenRulesChange(t *testing.
 func TestBasicAgentConfigCompilerEmitsExecutableRuleWithTargetGroupBuckets(t *testing.T) {
 	compiler := BasicAgentConfigCompiler{}
 	config, err := compiler.Compile(context.Background(), AgentConfigInput{
-		NodeID:     "node_1",
-		NodeGroups: []string{"ng_01"},
+		NodeID:               "node_1",
+		NodeGroups:           []string{"ng_01"},
+		AgentProtocolVersion: agent.SendIPProtocolVersion(),
+		AgentProtocolKnown:   true,
 		Rules: []RuleConfig{
 			{
 				ID:               "rule_tls",
@@ -206,8 +209,10 @@ func TestAgentConfigHashIncludesProtocolVersion(t *testing.T) {
 func TestBasicAgentConfigCompilerSkipsUnsupportedForwardingTypeForClosingSnapshot(t *testing.T) {
 	compiler := BasicAgentConfigCompiler{}
 	config, err := compiler.Compile(context.Background(), AgentConfigInput{
-		NodeID:     "node_1",
-		NodeGroups: []string{"ng_01"},
+		NodeID:               "node_1",
+		NodeGroups:           []string{"ng_01"},
+		AgentProtocolVersion: agent.SendIPProtocolVersion(),
+		AgentProtocolKnown:   true,
 		Rules: []RuleConfig{
 			{
 				ID:             "rule_tunnel",
@@ -270,6 +275,205 @@ func TestBasicAgentConfigCompilerSkipsUnknownMatchTypeForClosingSnapshot(t *test
 	}
 	if len(config.Rules) != 0 || config.ConfigVersion != 14 {
 		t.Fatalf("expected unsupported rule to be removed while retaining closing version, got %#v", config)
+	}
+}
+
+func TestBasicAgentConfigCompilerGatesManagedDataplaneForLegacyAgent(t *testing.T) {
+	compiler := BasicAgentConfigCompiler{}
+	config, err := compiler.Compile(context.Background(), AgentConfigInput{
+		NodeID:               "node_1",
+		NodeGroups:           []string{"ng_01"},
+		AgentProtocolVersion: agent.ProtocolVersion{Major: 2, Minor: 0},
+		AgentProtocolKnown:   true,
+		DataplaneMode:        NodeDataplaneModeAuto,
+		Rules: []RuleConfig{
+			{
+				ID:           "rule_haproxy",
+				Enabled:      true,
+				Protocol:     domain.ProtocolTCP,
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				Dataplane:    NodeDataplaneModeHAProxy,
+			},
+			{
+				ID:           "rule_auto",
+				Enabled:      true,
+				Protocol:     domain.ProtocolTCP,
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				Dataplane:    NodeDataplaneModeAuto,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile legacy config: %v", err)
+	}
+	if config.DataplaneMode != NodeDataplaneModeNative || config.DataplaneInstanceID != "" || config.ConflictPolicy != "" {
+		t.Fatalf("legacy config must not carry managed dataplane fields: %#v", config)
+	}
+	if len(config.Rules) != 1 || config.Rules[0].ID != "rule_auto" || config.Rules[0].Dataplane != "" {
+		t.Fatalf("legacy config should only keep native-compatible rules without dataplane field, got %#v", config.Rules)
+	}
+}
+
+func TestBasicAgentConfigCompilerTreatsMissingProtocolAsLegacyAgent(t *testing.T) {
+	compiler := BasicAgentConfigCompiler{}
+	config, err := compiler.Compile(context.Background(), AgentConfigInput{
+		NodeID:        "node_1",
+		NodeGroups:    []string{"ng_01"},
+		DataplaneMode: NodeDataplaneModeAuto,
+		Rules: []RuleConfig{
+			{
+				ID:           "rule_haproxy",
+				Enabled:      true,
+				Protocol:     domain.ProtocolTCP,
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				Dataplane:    NodeDataplaneModeHAProxy,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile missing-protocol config: %v", err)
+	}
+	if config.DataplaneMode != NodeDataplaneModeNative || len(config.Rules) != 0 {
+		t.Fatalf("missing protocol version must be treated as legacy, got %#v", config)
+	}
+}
+
+func TestBasicAgentConfigCompilerDropsAllRulesForLegacyAgentWithManagedNodeMode(t *testing.T) {
+	compiler := BasicAgentConfigCompiler{}
+	config, err := compiler.Compile(context.Background(), AgentConfigInput{
+		NodeID:               "node_1",
+		NodeGroups:           []string{"ng_01"},
+		AgentProtocolVersion: agent.ProtocolVersion{Major: 2, Minor: 0},
+		AgentProtocolKnown:   true,
+		DataplaneMode:        NodeDataplaneModeHAProxy,
+		Rules: []RuleConfig{
+			{
+				ID:           "rule_auto",
+				Enabled:      true,
+				Protocol:     domain.ProtocolTCP,
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				Dataplane:    NodeDataplaneModeAuto,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile legacy managed-node config: %v", err)
+	}
+	if len(config.Rules) != 0 {
+		t.Fatalf("legacy agent must not receive rules when node mode requires managed dataplane, got %#v", config.Rules)
+	}
+}
+
+func TestBasicAgentConfigCompilerPreservesManagedDataplaneForCurrentAgent(t *testing.T) {
+	compiler := BasicAgentConfigCompiler{}
+	config, err := compiler.Compile(context.Background(), AgentConfigInput{
+		NodeID:                  "node_1",
+		NodeGroups:              []string{"ng_01"},
+		AgentProtocolVersion:    agent.CurrentProtocolVersion(),
+		AgentProtocolKnown:      true,
+		DataplaneMode:           NodeDataplaneModeHAProxy,
+		DataplaneInstanceID:     "instance_1",
+		DataplaneConflictPolicy: NodeDataplaneConflictPolicyFailFast,
+		Rules: []RuleConfig{
+			{
+				ID:           "rule_haproxy",
+				Enabled:      true,
+				Protocol:     domain.ProtocolTCP,
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				Dataplane:    NodeDataplaneModeHAProxy,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile current config: %v", err)
+	}
+	if config.DataplaneMode != NodeDataplaneModeHAProxy || config.DataplaneInstanceID != "instance_1" || config.ConflictPolicy != NodeDataplaneConflictPolicyFailFast {
+		t.Fatalf("current config lost managed dataplane fields: %#v", config)
+	}
+	if len(config.Rules) != 1 || config.Rules[0].Dataplane != NodeDataplaneModeHAProxy {
+		t.Fatalf("current config lost managed rule preference: %#v", config.Rules)
+	}
+}
+
+func TestBasicAgentConfigCompilerGatesSendIPAndPortRangesForProtocolBeforeTwoTwo(t *testing.T) {
+	compiler := BasicAgentConfigCompiler{}
+	config, err := compiler.Compile(context.Background(), AgentConfigInput{
+		NodeID:               "node_1",
+		NodeGroups:           []string{"ng_01"},
+		AgentProtocolVersion: agent.ManagedDataplaneProtocolVersion(),
+		AgentProtocolKnown:   true,
+		DataplaneMode:        NodeDataplaneModeHAProxy,
+		Rules: []RuleConfig{
+			{
+				ID:           "rule_source_ip",
+				Enabled:      true,
+				Protocol:     domain.ProtocolTCP,
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				Dataplane:    NodeDataplaneModeHAProxy,
+				SendIP:       "127.0.0.2",
+			},
+			{
+				ID:           "rule_plain",
+				Enabled:      true,
+				Protocol:     domain.ProtocolTCP,
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				Dataplane:    NodeDataplaneModeHAProxy,
+			},
+			{
+				ID:           "rule_range",
+				Enabled:      true,
+				Protocol:     domain.ProtocolTCP,
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				Dataplane:    NodeDataplaneModeHAProxy,
+				PortSegments: []agent.PortSegmentConfig{{StartPort: 10000, EndPort: 10001}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile protocol 2.1 config: %v", err)
+	}
+	if len(config.Rules) != 1 || config.Rules[0].ID != "rule_plain" {
+		t.Fatalf("expected send_ip rule to be withheld for protocol 2.1 agent, got %#v", config.Rules)
+	}
+}
+
+func TestBasicAgentConfigCompilerAssignsRuntimeIDsForExpandedPorts(t *testing.T) {
+	compiler := BasicAgentConfigCompiler{}
+	config, err := compiler.Compile(context.Background(), AgentConfigInput{
+		NodeID:               "node_1",
+		NodeGroups:           []string{"ng_01"},
+		AgentProtocolVersion: agent.SendIPProtocolVersion(),
+		AgentProtocolKnown:   true,
+		Rules: []RuleConfig{
+			{
+				ID:           "rule_range",
+				Enabled:      true,
+				Protocol:     domain.ProtocolTCP,
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				PortSegments: []agent.PortSegmentConfig{{StartPort: 10000, EndPort: 10002}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile port range config: %v", err)
+	}
+	if len(config.Rules) != 3 {
+		t.Fatalf("expected three expanded runtime rules, got %#v", config.Rules)
+	}
+	for index, rule := range config.Rules {
+		expectedPort := 10000 + index
+		if rule.ID != "rule_range" || rule.Port != expectedPort || rule.RuntimeID != "rule_range-p"+strconv.Itoa(expectedPort) {
+			t.Fatalf("expanded rule %d lost rule/runtime identity: %#v", index, rule)
+		}
 	}
 }
 
@@ -454,5 +658,51 @@ func TestRuleConfigConversionSkipsUnsupportedSchedulersOutsideExecutableRules(t 
 	}
 	if len(configs) != 1 || configs[0].ID != "rule_current_node" {
 		t.Fatalf("expected only current node rule to be converted, got %#v", configs)
+	}
+}
+
+func TestBasicAgentConfigCompilerExpandsPortSegmentsAndPreservesSendIP(t *testing.T) {
+	compiler := BasicAgentConfigCompiler{}
+	config, err := compiler.Compile(context.Background(), AgentConfigInput{
+		NodeID:               "node_1",
+		NodeGroups:           []string{"ng_01"},
+		AgentProtocolVersion: agent.SendIPProtocolVersion(),
+		AgentProtocolKnown:   true,
+		Rules: []RuleConfig{
+			{
+				ID:            "rule_segments",
+				ConfigVersion: 7,
+				Enabled:       true,
+				Protocol:      domain.ProtocolTCP,
+				ListenIP:      "127.0.0.1",
+				Port:          10000,
+				PortSegments: []agent.PortSegmentConfig{
+					{StartPort: 10000, EndPort: 10002},
+					{StartPort: 10010, EndPort: 10010},
+				},
+				SendIP:       "127.0.0.2",
+				MatchType:    string(domain.MatchTypeAnyInbound),
+				NodeGroupIDs: []string{"ng_01"},
+				Upstream: RuleUpstreamConfig{
+					Type:   "TARGET",
+					Target: &agent.TargetEndpoint{ID: "target_1", Host: "127.0.0.1", Port: 443, Enabled: true},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile config: %v", err)
+	}
+	expectedPorts := []int{10000, 10001, 10002, 10010}
+	if len(config.Rules) != len(expectedPorts) {
+		t.Fatalf("expected expanded rules for ports %#v, got %#v", expectedPorts, config.Rules)
+	}
+	for index, rule := range config.Rules {
+		if rule.ID != "rule_segments" || rule.Port != expectedPorts[index] || rule.SendIP != "127.0.0.2" {
+			t.Fatalf("unexpected expanded rule at %d: %#v", index, rule)
+		}
+		if len(rule.PortSegments) != 0 {
+			t.Fatalf("expanded runtime rule should be single-port, got segments %#v", rule.PortSegments)
+		}
 	}
 }

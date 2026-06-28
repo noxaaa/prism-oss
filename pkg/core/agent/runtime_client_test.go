@@ -932,7 +932,7 @@ func TestNodeRuntimeReturnsPermanentConfigurationErrors(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected static configuration error")
 	}
-	if !strings.Contains(err.Error(), "agent credential or registration token") {
+	if !strings.Contains(err.Error(), "agent credential") || !strings.Contains(err.Error(), "enrollment token") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

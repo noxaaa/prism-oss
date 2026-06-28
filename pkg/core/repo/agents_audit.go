@@ -132,7 +132,7 @@ func (store *PostgresStore) RevokeRegistrationToken(ctx context.Context, organiz
 func (store *PostgresStore) FindCredentialByHash(ctx context.Context, credentialHash string) (AgentCredentialRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, agent_type, agent_id, credential_hash,
-		       coalesce(registration_token_id::text, ''), coalesce(activated_at::text, ''),
+		       coalesce(registration_token_id::text, ''), coalesce(enrollment_profile_id::text, ''), coalesce(enrollment_token_hash, ''), coalesce(activated_at::text, ''),
 		       coalesce(revoked_at::text, ''), created_at, coalesce(rotated_at::text, '')
 		FROM agent_credentials
 		WHERE credential_hash = ?
@@ -143,7 +143,7 @@ func (store *PostgresStore) FindCredentialByHash(ctx context.Context, credential
 func (store *PostgresStore) FindPendingCredentialByRegistrationToken(ctx context.Context, organizationID string, registrationTokenID string) (AgentCredentialRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT id, organization_id, agent_type, agent_id, credential_hash,
-		       coalesce(registration_token_id::text, ''), coalesce(activated_at::text, ''),
+		       coalesce(registration_token_id::text, ''), coalesce(enrollment_profile_id::text, ''), coalesce(enrollment_token_hash, ''), coalesce(activated_at::text, ''),
 		       coalesce(revoked_at::text, ''), created_at, coalesce(rotated_at::text, '')
 		FROM agent_credentials
 		WHERE organization_id = ? AND registration_token_id = ?
@@ -154,12 +154,37 @@ func (store *PostgresStore) FindPendingCredentialByRegistrationToken(ctx context
 	return scanAgentCredential(row)
 }
 
+func (store *PostgresStore) ListPendingCredentialsByEnrollmentProfile(ctx context.Context, organizationID string, enrollmentProfileID string) ([]AgentCredentialRecord, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, organization_id, agent_type, agent_id, credential_hash,
+		       coalesce(registration_token_id::text, ''), coalesce(enrollment_profile_id::text, ''), coalesce(enrollment_token_hash, ''), coalesce(activated_at::text, ''),
+		       coalesce(revoked_at::text, ''), created_at, coalesce(rotated_at::text, '')
+		FROM agent_credentials
+		WHERE organization_id = ? AND enrollment_profile_id = ?
+		  AND activated_at IS NULL AND revoked_at IS NULL
+		ORDER BY created_at ASC, id ASC
+	`, organizationID, enrollmentProfileID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	credentials := make([]AgentCredentialRecord, 0)
+	for rows.Next() {
+		credential, err := scanAgentCredentialRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		credentials = append(credentials, credential)
+	}
+	return credentials, rows.Err()
+}
+
 func (store *PostgresStore) CreateCredential(ctx context.Context, credential AgentCredentialRecord) error {
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO agent_credentials (
-			id, organization_id, agent_type, agent_id, credential_hash, registration_token_id, activated_at, created_at, rotated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, credential.ID, credential.OrganizationID, credential.AgentType, credential.AgentID, credential.CredentialHash, nullable(credential.RegistrationTokenID), nullable(credential.ActivatedAt), credential.CreatedAt, nullable(credential.RotatedAt))
+			id, organization_id, agent_type, agent_id, credential_hash, registration_token_id, enrollment_profile_id, enrollment_token_hash, activated_at, created_at, rotated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, credential.ID, credential.OrganizationID, credential.AgentType, credential.AgentID, credential.CredentialHash, nullable(credential.RegistrationTokenID), nullable(credential.EnrollmentProfileID), credential.EnrollmentTokenHash, nullable(credential.ActivatedAt), credential.CreatedAt, nullable(credential.RotatedAt))
 	return mapWriteError(err)
 }
 
@@ -193,6 +218,7 @@ func (store *PostgresStore) RevokeCredential(ctx context.Context, organizationID
 		SET revoked_at = ?,
 		    rotated_at = ?
 		WHERE organization_id = ? AND id = ? AND revoked_at IS NULL
+		  AND activated_at IS NULL
 	`, revokedAt, revokedAt, organizationID, credentialID)
 	if err != nil {
 		return mapWriteError(err)

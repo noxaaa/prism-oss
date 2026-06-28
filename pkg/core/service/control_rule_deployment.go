@@ -6,12 +6,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/noxaaa/prism-oss/pkg/core/agent"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
 
 const (
 	FailurePolicyKeepEnabled               = "KEEP_ENABLED"
 	FailurePolicyDisableWhenAllNodesFailed = "DISABLE_WHEN_ALL_NODES_FAILED"
+	DataplanePreferenceAuto                = "AUTO"
+	DataplanePreferenceNative              = "NATIVE"
+	DataplanePreferenceHAProxy             = "HAPROXY"
+	DataplanePreferenceNFTables            = "NFTABLES"
 	RuleDeploymentAggregateDisabled        = "DISABLED"
 	RuleDeploymentStatusPending            = "PENDING"
 	RuleDeploymentStatusApplied            = "APPLIED"
@@ -26,6 +31,40 @@ func defaultFailurePolicy(value string) string {
 		return FailurePolicyKeepEnabled
 	}
 	return value
+}
+
+func defaultDataplanePreference(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	switch value {
+	case DataplanePreferenceNative, DataplanePreferenceHAProxy, DataplanePreferenceNFTables:
+		return value
+	default:
+		return DataplanePreferenceAuto
+	}
+}
+
+func normalizeDataplanePreferenceForMutation(value string) (string, error) {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if err := validateDataplanePreference(value); err != nil {
+		return "", err
+	}
+	if value == "" {
+		return DataplanePreferenceAuto, nil
+	}
+	return value, nil
+}
+
+func validateDataplanePreference(value string) error {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "":
+		return nil
+	case DataplanePreferenceAuto, DataplanePreferenceNative, DataplanePreferenceHAProxy, DataplanePreferenceNFTables:
+		return nil
+	default:
+		return validationFieldError("dataplane_preference", "Unsupported rule dataplane preference.", map[string]any{
+			"actual": value,
+		})
+	}
 }
 
 func validateFailurePolicy(value string) error {
@@ -127,6 +166,11 @@ func ruleDeploymentPayload(rule repo.RuleRecord, nodes []repo.NodeRecord, deploy
 			nodePayload.Protocol = deployment.Protocol
 			nodePayload.ListenIP = deployment.ListenIP
 			nodePayload.Port = deployment.Port
+			nodePayload.ExpectedDataplane = deployment.ExpectedDataplane
+			nodePayload.ActualDataplane = deployment.ActualDataplane
+			nodePayload.Owner = deployment.Owner
+			nodePayload.DriftStatus = deployment.DriftStatus
+			nodePayload.ExternalResource = deployment.ExternalResource
 			nodePayload.UpdatedAt = deployment.UpdatedAt
 		}
 		switch nodePayload.Status {
@@ -234,6 +278,32 @@ func syncRuleDeploymentsForNodeMembershipChange(ctx context.Context, repositorie
 	return nil
 }
 
+func syncRuleDeploymentsForNodeConfigChange(ctx context.Context, repositories repo.Repositories, organizationID string, node repo.NodeRecord, now string, nextID func() string) error {
+	if strings.TrimSpace(node.ID) == "" {
+		return nil
+	}
+	rules, err := repositories.Rules().ListRulesByOrganization(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+	nodeGroups := stringSet(node.GroupIDs)
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+		if _, ok := nodeGroups[rule.Binding.NodeGroupID]; !ok {
+			continue
+		}
+		if err := repositories.Rules().UpsertRuleDeploymentPending(ctx, organizationID, rule, repo.RuleDeploymentPendingRecord{
+			NodeID:        node.ID,
+			ConfigVersion: node.DesiredConfigVersion,
+		}, now, nextID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func stringSet(values []string) map[string]struct{} {
 	set := make(map[string]struct{}, len(values))
 	for _, value := range values {
@@ -245,36 +315,63 @@ func stringSet(values []string) map[string]struct{} {
 	return set
 }
 
-func ruleDeploymentAppliedRecordsForNode(ctx context.Context, repositories repo.Repositories, organizationID string, node repo.NodeRecord, rules []repo.RuleRecord) ([]repo.RuleDeploymentAppliedRecord, error) {
+func ruleDeploymentAppliedRecordsForNode(ctx context.Context, repositories repo.Repositories, organizationID string, node repo.NodeRecord, rules []repo.RuleRecord, protocolVersion agent.ProtocolVersion, protocolKnown bool, resolvedDataplanes map[string]string) ([]repo.RuleDeploymentAppliedRecord, bool, error) {
 	candidateRules := executableRulesForNode(node, rules)
 	targets, err := repositories.Targets().ListTargetsByOrganization(ctx, organizationID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	targetGroups, err := repositories.TargetGroups().ListTargetGroupsByOrganization(ctx, organizationID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	ruleConfigs, err := toRuleConfigs(candidateRules, targets, targetGroups)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	compiled, err := BasicAgentConfigCompiler{}.Compile(ctx, AgentConfigInput{
-		NodeID:     node.ID,
-		NodeGroups: node.GroupIDs,
-		Rules:      ruleConfigs,
+		NodeID:                  node.ID,
+		NodeGroups:              node.GroupIDs,
+		AgentProtocolVersion:    protocolVersion,
+		AgentProtocolKnown:      protocolKnown,
+		DataplaneMode:           node.DataplaneMode,
+		DataplaneInstanceID:     node.DataplaneInstanceID,
+		DataplaneConflictPolicy: node.DataplaneConflictPolicy,
+		Rules:                   ruleConfigs,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	applied := make([]repo.RuleDeploymentAppliedRecord, 0, len(compiled.Rules))
+	appliedRuleIDs := make(map[string]bool)
 	for _, rule := range compiled.Rules {
+		if appliedRuleIDs[rule.ID] {
+			continue
+		}
+		appliedRuleIDs[rule.ID] = true
+		actualDataplane := defaultDataplanePreference(rule.Dataplane)
+		if resolved := strings.TrimSpace(resolvedDataplanes[rule.ID]); resolved != "" {
+			actualDataplane = defaultDataplanePreference(resolved)
+		}
 		applied = append(applied, repo.RuleDeploymentAppliedRecord{
 			RuleID:            rule.ID,
 			RuleConfigVersion: rule.ConfigVersion,
+			ExpectedDataplane: defaultDataplanePreference(rule.Dataplane),
+			ActualDataplane:   actualDataplane,
 		})
 	}
-	return applied, nil
+	return applied, logicalRuleIDCount(compiled.Rules) == logicalRuleIDCount(ruleConfigs), nil
+}
+
+func logicalRuleIDCount(rules []RuleConfig) int {
+	seen := make(map[string]bool, len(rules))
+	for _, rule := range rules {
+		if strings.TrimSpace(rule.ID) == "" {
+			continue
+		}
+		seen[rule.ID] = true
+	}
+	return len(seen)
 }
 
 func ruleDeploymentFailuresFromApplyErrors(rulesByID map[string]repo.RuleRecord, errors []ConfigApplyErrorInput) []repo.RuleDeploymentFailureRecord {
@@ -298,6 +395,11 @@ func ruleDeploymentFailuresFromApplyErrors(rulesByID map[string]repo.RuleRecord,
 				Protocol:          string(applyErr.Protocol),
 				ListenIP:          truncateString(strings.TrimSpace(applyErr.ListenIP), 255),
 				Port:              applyErr.Port,
+				ExpectedDataplane: truncateString(defaultDataplanePreference(rule.DataplanePreference), 40),
+				ActualDataplane:   truncateString(defaultDataplanePreference(applyErr.Dataplane), 40),
+				Owner:             truncateString(strings.TrimSpace(applyErr.Owner), 255),
+				DriftStatus:       truncateString(strings.TrimSpace(applyErr.DriftStatus), 120),
+				ExternalResource:  truncateString(strings.TrimSpace(applyErr.ExternalResource), 255),
 			}
 		}
 	}

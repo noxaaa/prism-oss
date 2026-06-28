@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"net"
+	"os"
 	"strings"
 	"testing"
 
@@ -66,6 +67,30 @@ func TestNodePayloadGeoIPFallsBackToAutoPublishAddress(t *testing.T) {
 	}
 	if payload.GeoIP.CountryCode != "AU" || payload.GeoIP.FlagEmoji != "🇦🇺" {
 		t.Fatalf("expected AU GeoIP flag, got %#v", payload.GeoIP)
+	}
+}
+
+func TestNormalizeNodeDataplaneModeForMutationRejectsInvalidNonEmptyValue(t *testing.T) {
+	if _, err := normalizeNodeDataplaneModeForMutation("HAPR0XY"); err == nil {
+		t.Fatalf("expected invalid service node dataplane mode to be rejected")
+	}
+	value, err := normalizeNodeDataplaneModeForMutation("")
+	if err != nil {
+		t.Fatalf("normalize blank node dataplane mode: %v", err)
+	}
+	if value != NodeDataplaneModeAuto {
+		t.Fatalf("blank node dataplane mode = %q, want AUTO", value)
+	}
+}
+
+func TestUpdateNodeCoalescesDesiredConfigVersionIncrement(t *testing.T) {
+	source, err := os.ReadFile("control_nodes.go")
+	if err != nil {
+		t.Fatalf("read control_nodes.go: %v", err)
+	}
+	count := strings.Count(string(source), "IncrementDesiredConfigForNode(ctx, identity.OrganizationID, node.ID")
+	if count != 1 {
+		t.Fatalf("UpdateNode must coalesce dataplane and membership config bumps into one increment, found %d", count)
 	}
 }
 

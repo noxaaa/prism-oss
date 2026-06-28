@@ -7,7 +7,7 @@ func (store *PostgresStore) ListNodeGroupsByOrganization(ctx context.Context, or
 		SELECT id, organization_id, name, description, created_at, updated_at, coalesce(deleted_at::text, '')
 		FROM node_groups
 		WHERE organization_id = ? AND deleted_at IS NULL
-		ORDER BY name, id
+		ORDER BY node_groups.name, node_groups.id
 	`, organizationID)
 	if err != nil {
 		return nil, err
@@ -68,16 +68,23 @@ func (store *PostgresStore) DeleteNodeGroup(ctx context.Context, organizationID 
 
 func (store *PostgresStore) ListNodesByOrganization(ctx context.Context, organizationID string) ([]NodeRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, name, status, public_description, desired_config_version, applied_config_version,
-		       config_status, config_error_message, config_status_config_version, config_retry_count, coalesce(to_char(config_next_retry_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), ''),
-		       coalesce(config_status_updated_at::text, ''),
-		       coalesce(last_seen_at::text, ''), coalesce(registered_at::text, ''),
-		       agent_version, agent_commit, agent_build_time, agent_auto_update_enabled, desired_agent_version,
-		       agent_update_status, agent_update_error, coalesce(agent_update_started_at::text, ''), coalesce(agent_update_finished_at::text, ''),
-		       created_at, updated_at, coalesce(deleted_at::text, '')
+		SELECT nodes.id, nodes.organization_id, nodes.name, nodes.status, nodes.public_description, nodes.desired_config_version, nodes.applied_config_version,
+		       nodes.config_status, nodes.config_error_message, nodes.config_status_config_version, nodes.config_retry_count, coalesce(to_char(config_next_retry_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), ''),
+		       coalesce(nodes.config_status_updated_at::text, ''),
+		       coalesce(nodes.last_seen_at::text, ''), coalesce(nodes.registered_at::text, ''),
+		       nodes.agent_version, nodes.agent_commit, nodes.agent_build_time, nodes.agent_auto_update_enabled, nodes.desired_agent_version,
+		       nodes.agent_update_status, nodes.agent_update_error, coalesce(nodes.agent_update_started_at::text, ''), coalesce(nodes.agent_update_finished_at::text, ''),
+		       nodes.dataplane_mode, nodes.dataplane_conflict_policy, nodes.dataplane_instance_id, nodes.dataplane_status, nodes.dataplane_error, nodes.dataplane_last_hash,
+		       coalesce(nodes.dataplane_last_applied_at::text, ''),
+		       coalesce(nodes.enrollment_profile_id::text, ''), coalesce(node_enrollment_profiles.name, ''),
+		       nodes.max_rule_ports,
+		       nodes.created_at, nodes.updated_at, coalesce(nodes.deleted_at::text, '')
 		FROM nodes
-		WHERE organization_id = ? AND deleted_at IS NULL
-		ORDER BY name, id
+		LEFT JOIN node_enrollment_profiles
+		  ON node_enrollment_profiles.organization_id = nodes.organization_id
+		 AND node_enrollment_profiles.id = nodes.enrollment_profile_id
+		WHERE nodes.organization_id = ? AND nodes.deleted_at IS NULL
+		ORDER BY nodes.name, nodes.id
 	`, organizationID)
 	if err != nil {
 		return nil, err
@@ -108,15 +115,22 @@ func (store *PostgresStore) ListNodesByOrganization(ctx context.Context, organiz
 
 func (store *PostgresStore) FindNodeByID(ctx context.Context, organizationID string, nodeID string) (NodeRecord, error) {
 	row := store.db.QueryRowContext(ctx, `
-		SELECT id, organization_id, name, status, public_description, desired_config_version, applied_config_version,
-		       config_status, config_error_message, config_status_config_version, config_retry_count, coalesce(to_char(config_next_retry_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), ''),
-		       coalesce(config_status_updated_at::text, ''),
-		       coalesce(last_seen_at::text, ''), coalesce(registered_at::text, ''),
-		       agent_version, agent_commit, agent_build_time, agent_auto_update_enabled, desired_agent_version,
-		       agent_update_status, agent_update_error, coalesce(agent_update_started_at::text, ''), coalesce(agent_update_finished_at::text, ''),
-		       created_at, updated_at, coalesce(deleted_at::text, '')
+		SELECT nodes.id, nodes.organization_id, nodes.name, nodes.status, nodes.public_description, nodes.desired_config_version, nodes.applied_config_version,
+		       nodes.config_status, nodes.config_error_message, nodes.config_status_config_version, nodes.config_retry_count, coalesce(to_char(config_next_retry_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), ''),
+		       coalesce(nodes.config_status_updated_at::text, ''),
+		       coalesce(nodes.last_seen_at::text, ''), coalesce(nodes.registered_at::text, ''),
+		       nodes.agent_version, nodes.agent_commit, nodes.agent_build_time, nodes.agent_auto_update_enabled, nodes.desired_agent_version,
+		       nodes.agent_update_status, nodes.agent_update_error, coalesce(nodes.agent_update_started_at::text, ''), coalesce(nodes.agent_update_finished_at::text, ''),
+		       nodes.dataplane_mode, nodes.dataplane_conflict_policy, nodes.dataplane_instance_id, nodes.dataplane_status, nodes.dataplane_error, nodes.dataplane_last_hash,
+		       coalesce(nodes.dataplane_last_applied_at::text, ''),
+		       coalesce(nodes.enrollment_profile_id::text, ''), coalesce(node_enrollment_profiles.name, ''),
+		       nodes.max_rule_ports,
+		       nodes.created_at, nodes.updated_at, coalesce(nodes.deleted_at::text, '')
 		FROM nodes
-		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
+		LEFT JOIN node_enrollment_profiles
+		  ON node_enrollment_profiles.organization_id = nodes.organization_id
+		 AND node_enrollment_profiles.id = nodes.enrollment_profile_id
+		WHERE nodes.organization_id = ? AND nodes.id = ? AND nodes.deleted_at IS NULL
 	`, organizationID, nodeID)
 	node, err := scanNode(row)
 	if err != nil {
@@ -132,9 +146,10 @@ func (store *PostgresStore) CreateNode(ctx context.Context, node NodeRecord, gro
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO nodes (
 			id, organization_id, name, status, public_description, desired_config_version, applied_config_version,
-			config_status, config_error_message, config_status_updated_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, node.ID, node.OrganizationID, node.Name, node.Status, node.PublicDescription, node.DesiredConfigVersion, node.AppliedConfigVersion, node.ConfigStatus, node.ConfigErrorMessage, nullable(node.ConfigStatusUpdatedAt), node.CreatedAt, node.UpdatedAt)
+			config_status, config_error_message, config_status_updated_at, agent_auto_update_enabled, max_rule_ports,
+			dataplane_mode, dataplane_conflict_policy, enrollment_profile_id, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, node.ID, node.OrganizationID, node.Name, node.Status, node.PublicDescription, node.DesiredConfigVersion, node.AppliedConfigVersion, node.ConfigStatus, node.ConfigErrorMessage, nullable(node.ConfigStatusUpdatedAt), node.AgentAutoUpdateEnabled, defaultMaxRulePorts(node.MaxRulePorts), normalizeNodeDataplaneMode(node.DataplaneMode), normalizeNodeDataplaneConflictPolicy(node.DataplaneConflictPolicy), nullable(node.EnrollmentProfileID), node.CreatedAt, node.UpdatedAt)
 	if err != nil {
 		return mapWriteError(err)
 	}
@@ -144,15 +159,18 @@ func (store *PostgresStore) CreateNode(ctx context.Context, node NodeRecord, gro
 	if err := store.replaceNodeListenIPs(ctx, node.OrganizationID, node.ID, listenIPs, now, nextID); err != nil {
 		return err
 	}
+	if err := store.replaceNodeSendIPs(ctx, node.OrganizationID, node.ID, node.SendIPs, now, nextID); err != nil {
+		return err
+	}
 	return store.replaceNodePortRanges(ctx, node.OrganizationID, node.ID, portRanges, now, nextID)
 }
 
 func (store *PostgresStore) UpdateNode(ctx context.Context, node NodeRecord, replaceGroups bool, groupIDs []string, replaceListenIPs bool, listenIPs []NodeListenIPRecord, replacePortRanges bool, portRanges []NodePortRangeRecord, now string, nextID func() string) error {
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE nodes
-		SET name = ?, public_description = ?, updated_at = ?
+		SET name = ?, public_description = ?, dataplane_mode = ?, dataplane_conflict_policy = ?, max_rule_ports = ?, updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
-	`, node.Name, node.PublicDescription, node.UpdatedAt, node.OrganizationID, node.ID)
+	`, node.Name, node.PublicDescription, normalizeNodeDataplaneMode(node.DataplaneMode), normalizeNodeDataplaneConflictPolicy(node.DataplaneConflictPolicy), defaultMaxRulePorts(node.MaxRulePorts), node.UpdatedAt, node.OrganizationID, node.ID)
 	if err != nil {
 		return mapWriteError(err)
 	}
@@ -168,6 +186,9 @@ func (store *PostgresStore) UpdateNode(ctx context.Context, node NodeRecord, rep
 		if err := store.replaceNodeListenIPs(ctx, node.OrganizationID, node.ID, listenIPs, now, nextID); err != nil {
 			return err
 		}
+	}
+	if err := store.replaceNodeSendIPs(ctx, node.OrganizationID, node.ID, node.SendIPs, now, nextID); err != nil {
+		return err
 	}
 	if replacePortRanges {
 		if err := store.replaceNodePortRanges(ctx, node.OrganizationID, node.ID, portRanges, now, nextID); err != nil {
@@ -302,11 +323,27 @@ func (store *PostgresStore) RecordNodeConfigAck(ctx context.Context, organizatio
 		    config_retry_count = 0,
 		    config_next_retry_at = NULL,
 		    config_status_updated_at = ?,
+		    dataplane_status = CASE
+		      WHEN desired_config_version <= ? THEN ?
+		      ELSE dataplane_status
+		    END,
+		    dataplane_error = CASE
+		      WHEN desired_config_version <= ? THEN ''
+		      ELSE dataplane_error
+		    END,
+		    dataplane_last_hash = CASE
+		      WHEN desired_config_version <= ? THEN ?
+		      ELSE dataplane_last_hash
+		    END,
+		    dataplane_last_applied_at = CASE
+		      WHEN desired_config_version <= ? THEN ?
+		      ELSE dataplane_last_applied_at
+		    END,
 		    last_seen_at = ?,
 		    updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL AND applied_config_version <= ?
 		  AND ? <= desired_config_version
-	`, ack.ConfigVersion, ack.ConfigVersion, ack.ConfigVersion, now, now, now, organizationID, nodeID, ack.ConfigVersion, ack.ConfigVersion)
+	`, ack.ConfigVersion, ack.ConfigVersion, ack.ConfigVersion, now, ack.ConfigVersion, ack.DataplaneStatus, ack.ConfigVersion, ack.ConfigVersion, ack.DataplaneLastHash, ack.ConfigVersion, now, now, now, organizationID, nodeID, ack.ConfigVersion, ack.ConfigVersion)
 		if err != nil {
 			return mapWriteError(err)
 		}
@@ -326,11 +363,19 @@ func (store *PostgresStore) RecordNodeConfigAck(ctx context.Context, organizatio
 		    config_retry_count = ?,
 		    config_next_retry_at = ?,
 		    config_status_updated_at = ?,
+		    dataplane_status = CASE
+		      WHEN desired_config_version <= ? THEN ?
+		      ELSE dataplane_status
+		    END,
+		    dataplane_error = CASE
+		      WHEN desired_config_version <= ? THEN ?
+		      ELSE dataplane_error
+		    END,
 		    last_seen_at = ?,
 		    updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL AND applied_config_version <= ?
 		  AND ? <= desired_config_version
-	`, ack.ConfigVersion, ack.ConfigVersion, ack.ErrorMessage, ack.ConfigVersion, ack.RetryCount, nullable(ack.NextRetryAt), now, now, now, organizationID, nodeID, ack.ConfigVersion, ack.ConfigVersion)
+	`, ack.ConfigVersion, ack.ConfigVersion, ack.ErrorMessage, ack.ConfigVersion, ack.RetryCount, nullable(ack.NextRetryAt), now, ack.ConfigVersion, ack.DataplaneStatus, ack.ConfigVersion, ack.DataplaneError, now, now, organizationID, nodeID, ack.ConfigVersion, ack.ConfigVersion)
 	return mapWriteError(err)
 }
 
@@ -635,6 +680,10 @@ func (store *PostgresStore) loadNodeDetails(ctx context.Context, node *NodeRecor
 	if err != nil {
 		return err
 	}
+	sendIPs, err := store.listNodeSendIPs(ctx, node.OrganizationID, node.ID)
+	if err != nil {
+		return err
+	}
 	portRanges, err := store.listNodePortRanges(ctx, node.OrganizationID, node.ID)
 	if err != nil {
 		return err
@@ -645,6 +694,7 @@ func (store *PostgresStore) loadNodeDetails(ctx context.Context, node *NodeRecor
 	}
 	node.GroupIDs = groupIDs
 	node.ListenIPs = listenIPs
+	node.SendIPs = sendIPs
 	node.PortRanges = portRanges
 	node.DNSPublishAddresses = dnsPublishAddresses
 	return nil
@@ -698,6 +748,29 @@ func (store *PostgresStore) listNodeListenIPs(ctx context.Context, organizationI
 		listenIPs = append(listenIPs, listenIP)
 	}
 	return listenIPs, rows.Err()
+}
+
+func (store *PostgresStore) listNodeSendIPs(ctx context.Context, organizationID string, nodeID string) ([]NodeSendIPRecord, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, organization_id, node_id, send_ip, display_name, enabled, created_at, updated_at
+		FROM node_send_ips
+		WHERE organization_id = ? AND node_id = ?
+		ORDER BY send_ip, id
+	`, organizationID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	sendIPs := make([]NodeSendIPRecord, 0)
+	for rows.Next() {
+		sendIP, err := scanNodeSendIPRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		sendIPs = append(sendIPs, sendIP)
+	}
+	return sendIPs, rows.Err()
 }
 
 func (store *PostgresStore) listNodePortRanges(ctx context.Context, organizationID string, nodeID string) ([]NodePortRangeRecord, error) {
@@ -803,6 +876,13 @@ func (store *PostgresStore) DisableAutoNodeDNSPublishAddresses(ctx context.Conte
 	return nil
 }
 
+func defaultMaxRulePorts(value int) int {
+	if value <= 0 {
+		return 256
+	}
+	return value
+}
+
 func (store *PostgresStore) replaceNodeGroups(ctx context.Context, organizationID string, nodeID string, groupIDs []string, now string, nextID func() string) error {
 	if _, err := store.db.ExecContext(ctx, `DELETE FROM node_group_members WHERE organization_id = ? AND node_id = ?`, organizationID, nodeID); err != nil {
 		return mapWriteError(err)
@@ -831,6 +911,25 @@ func (store *PostgresStore) replaceNodeListenIPs(ctx context.Context, organizati
 			INSERT INTO node_listen_ips (id, organization_id, node_id, listen_ip, display_name, enabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		`, id, organizationID, nodeID, listenIP.ListenIP, listenIP.DisplayName, boolToDB(listenIP.Enabled), now, now); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	return nil
+}
+
+func (store *PostgresStore) replaceNodeSendIPs(ctx context.Context, organizationID string, nodeID string, sendIPs []NodeSendIPRecord, now string, nextID func() string) error {
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM node_send_ips WHERE organization_id = ? AND node_id = ?`, organizationID, nodeID); err != nil {
+		return mapWriteError(err)
+	}
+	for _, sendIP := range sendIPs {
+		id := sendIP.ID
+		if id == "" {
+			id = nextID()
+		}
+		if _, err := store.db.ExecContext(ctx, `
+			INSERT INTO node_send_ips (id, organization_id, node_id, send_ip, display_name, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, id, organizationID, nodeID, sendIP.SendIP, sendIP.DisplayName, boolToDB(sendIP.Enabled), now, now); err != nil {
 			return mapWriteError(err)
 		}
 	}

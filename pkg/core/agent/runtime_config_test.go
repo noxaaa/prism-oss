@@ -108,6 +108,41 @@ func TestLoadRuntimeConfigReadsInstallFlags(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeConfigReadsEnrollmentInstallFlag(t *testing.T) {
+	t.Setenv("APP_NAME", "Runtime Name")
+	t.Setenv("CONTROL_PLANE_URL", "")
+	t.Setenv("AGENT_REGISTRATION_TOKEN", "")
+	t.Setenv("AGENT_ENROLLMENT_TOKEN", "")
+
+	cfg, err := LoadRuntimeConfigFromArgs([]string{
+		"install",
+		"--control-url", "https://control.example.com",
+		"--enrollment-token", "enrollment-token",
+		"--credential-file", "/var/lib/agent/credential.json",
+	})
+	if err != nil {
+		t.Fatalf("load install config: %v", err)
+	}
+	if cfg.EnrollmentToken != "enrollment-token" {
+		t.Fatalf("expected enrollment token from install flag, got %q", cfg.EnrollmentToken)
+	}
+	if !cfg.preferRegistration {
+		t.Fatalf("expected install enrollment token to be preferred until a credential is finalized")
+	}
+}
+
+func TestLoadRuntimeConfigRejectsRegistrationAndEnrollmentTokensTogether(t *testing.T) {
+	t.Setenv("APP_NAME", "Runtime Name")
+	t.Setenv("CONTROL_PLANE_URL", "https://control.example.com")
+	t.Setenv("AGENT_REGISTRATION_TOKEN", "registration-token")
+	t.Setenv("AGENT_ENROLLMENT_TOKEN", "enrollment-token")
+
+	_, err := LoadRuntimeConfig()
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected mutually exclusive token error, got %v", err)
+	}
+}
+
 func TestLoadRuntimeConfigDefaultsLogLevel(t *testing.T) {
 	t.Setenv("APP_NAME", "Runtime Name")
 	t.Setenv("LOG_LEVEL", "")

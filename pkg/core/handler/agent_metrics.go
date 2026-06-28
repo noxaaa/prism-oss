@@ -90,6 +90,8 @@ func writeMetricsSSE(response http.ResponseWriter, state AgentMetricsState, incl
 		"cpu_percent":            state.Metrics.CPUPercent,
 		"ram_used_bytes":         state.Metrics.RAMUsedBytes,
 		"ram_total_bytes":        state.Metrics.RAMTotalBytes,
+		"disk_used_bytes":        state.Metrics.DiskUsedBytes,
+		"disk_total_bytes":       state.Metrics.DiskTotalBytes,
 		"upload_bytes":           state.Metrics.UploadBytes,
 		"download_bytes":         state.Metrics.DownloadBytes,
 		"uptime_seconds":         state.Metrics.UptimeSeconds,

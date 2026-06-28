@@ -391,15 +391,19 @@ export function AuthScreen({ appName, registrationClosed }: { appName: string; r
   );
 }
 
-async function readAuthError(response: Response): Promise<{ code: string; message?: string; details?: Record<string, unknown> } | null> {
-  const body = (await response.json().catch(() => ({}))) as { error?: { code?: unknown; message?: unknown; details?: unknown } };
-  if (!body.error || typeof body.error.code !== "string") {
+export async function readAuthError(response: Response): Promise<{ code: string; message?: string; details?: Record<string, unknown> } | null> {
+  const body = (await response.json().catch(() => ({}))) as unknown;
+  return normalizeAuthError(isRecord(body) ? body.error : undefined) ?? normalizeAuthError(body);
+}
+
+function normalizeAuthError(value: unknown): { code: string; message?: string; details?: Record<string, unknown> } | null {
+  if (!isRecord(value) || typeof value.code !== "string") {
     return null;
   }
   return {
-    code: body.error.code,
-    message: typeof body.error.message === "string" ? body.error.message : undefined,
-    details: isRecord(body.error.details) ? body.error.details : undefined,
+    code: value.code,
+    message: typeof value.message === "string" ? value.message : undefined,
+    details: isRecord(value.details) ? value.details : undefined,
   };
 }
 
@@ -573,14 +577,28 @@ function NavItem({
 }
 
 function SignOutButton({ compact = true }: { compact?: boolean }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
+  const [submitting, setSubmitting] = useState(false);
+
   async function signOut() {
-    await fetch("/api/auth/sign-out", { method: "POST" });
-    window.location.assign("/");
+    setSubmitting(true);
+    try {
+      const response = await fetch("/api/auth/sign-out", { credentials: "same-origin", method: "POST" });
+      if (!response.ok) {
+        const authError = await readAuthError(response);
+        toast.error(authError ? localizeControlError(authError, locale) : t("error.requestFailed"));
+        return;
+      }
+      window.location.assign("/");
+    } catch (requestError) {
+      toast.error(localizeControlError(requestError, locale));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
-    <Button onClick={signOut} size={compact ? "icon-sm" : "default"} title={t("shell.signOut")} type="button" variant="ghost">
+    <Button disabled={submitting} onClick={signOut} size={compact ? "icon-sm" : "default"} title={t("shell.signOut")} type="button" variant="ghost">
       <LogOutIcon />
       {compact ? <span className="sr-only">{t("shell.signOut")}</span> : t("shell.signOut")}
     </Button>

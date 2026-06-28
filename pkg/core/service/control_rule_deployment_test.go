@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/noxaaa/prism-oss/pkg/core/agent"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
@@ -76,7 +77,7 @@ func TestAcknowledgeNodeAgentConfigPersistsRuleFailureAndBackoff(t *testing.T) {
 	service := NewControlService(store)
 	service.now = func() time.Time { return now }
 
-	err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 5, "FAILED", "listen failed", []ConfigApplyErrorInput{
+	err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 5, "", "FAILED", "listen failed", []ConfigApplyErrorInput{
 		{
 			Code:     "LISTENER_BIND_FAILED",
 			RuleIDs:  []string{"rule_1"},
@@ -85,7 +86,7 @@ func TestAcknowledgeNodeAgentConfigPersistsRuleFailureAndBackoff(t *testing.T) {
 			Port:     443,
 			Message:  "address already in use",
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("ack failed config: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestAcknowledgeNodeAgentConfigDisablesRuleOnlyWhenEveryCurrentNodeFailed(t 
 		Port:     443,
 		Message:  "address already in use",
 	}}
-	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_a", 7, "FAILED", "node a failed", failure); err != nil {
+	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_a", 7, "", "FAILED", "node a failed", failure, nil); err != nil {
 		t.Fatalf("ack node_a failure: %v", err)
 	}
 	if !store.rules["rule_1"].Enabled {
@@ -131,7 +132,7 @@ func TestAcknowledgeNodeAgentConfigDisablesRuleOnlyWhenEveryCurrentNodeFailed(t 
 	}
 
 	service.now = func() time.Time { return now.Add(time.Second) }
-	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_b", 7, "FAILED", "node b failed", failure); err != nil {
+	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_b", 7, "", "FAILED", "node b failed", failure, nil); err != nil {
 		t.Fatalf("ack node_b failure: %v", err)
 	}
 	rule := store.rules["rule_1"]
@@ -167,14 +168,14 @@ func TestAcknowledgeNodeAgentConfigDoesNotAutoDisableFromStaleNodeFailure(t *tes
 	service := NewControlService(store)
 	service.now = func() time.Time { return now }
 
-	err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_b", 8, "FAILED", "node b failed", []ConfigApplyErrorInput{{
+	err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_b", 8, "", "FAILED", "node b failed", []ConfigApplyErrorInput{{
 		Code:     "LISTENER_BIND_FAILED",
 		RuleIDs:  []string{"rule_1"},
 		Protocol: domain.ProtocolTCP,
 		ListenIP: "0.0.0.0",
 		Port:     443,
 		Message:  "address already in use",
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatalf("ack node_b failure: %v", err)
 	}
@@ -204,6 +205,26 @@ func TestSyncRuleDeploymentPendingUsesNodeDesiredConfigVersion(t *testing.T) {
 	}
 }
 
+func TestRuleDeploymentAppliedRecordsTreatExpandedPortRangeAsComplete(t *testing.T) {
+	store := newRuleDeploymentTestStore()
+	store.nodes["node_1"] = repo.NodeRecord{ID: "node_1", OrganizationID: "org_1", GroupIDs: []string{"group_1"}}
+	rule := ruleDeploymentTestRule("rule_range", "group_1", FailurePolicyKeepEnabled)
+	rule.Binding.PortSegments = []repo.InboundBindingPortSegmentRecord{{StartPort: 10000, EndPort: 10002}}
+	rule.Binding.Port = 10000
+	store.rules[rule.ID] = rule
+
+	applied, complete, err := ruleDeploymentAppliedRecordsForNode(context.Background(), ruleDeploymentTestRepositories{store: store}, "org_1", store.nodes["node_1"], []repo.RuleRecord{rule}, agent.SendIPProtocolVersion(), true, nil)
+	if err != nil {
+		t.Fatalf("build applied records: %v", err)
+	}
+	if !complete {
+		t.Fatalf("expanded port range should be complete when the logical rule is compiled")
+	}
+	if len(applied) != 1 || applied[0].RuleID != "rule_range" {
+		t.Fatalf("expected one logical applied record for expanded range, got %#v", applied)
+	}
+}
+
 func TestAcknowledgeNodeAgentConfigIgnoresStaleRuleDeploymentFailure(t *testing.T) {
 	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
 	store := newRuleDeploymentTestStore()
@@ -220,14 +241,14 @@ func TestAcknowledgeNodeAgentConfigIgnoresStaleRuleDeploymentFailure(t *testing.
 	service := NewControlService(store)
 	service.now = func() time.Time { return now }
 
-	err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 7, "FAILED", "stale failed", []ConfigApplyErrorInput{{
+	err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 7, "", "FAILED", "stale failed", []ConfigApplyErrorInput{{
 		Code:     "LISTENER_BIND_FAILED",
 		RuleIDs:  []string{"rule_1"},
 		Protocol: domain.ProtocolTCP,
 		ListenIP: "0.0.0.0",
 		Port:     443,
 		Message:  "old failure",
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatalf("ack stale failed config: %v", err)
 	}
@@ -248,12 +269,78 @@ func TestAcknowledgeNodeAgentConfigUpsertsAppliedDeploymentWhenMissing(t *testin
 	service := NewControlService(store)
 	service.now = func() time.Time { return now }
 
-	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 5, "APPLIED", "", nil); err != nil {
+	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 5, "", "APPLIED", "", nil, nil); err != nil {
 		t.Fatalf("ack applied config: %v", err)
 	}
 	deployment := store.deployments["rule_1|node_1"]
 	if deployment.Status != RuleDeploymentStatusApplied || deployment.ConfigVersion != 5 || deployment.RuleConfigVersion != store.rules["rule_1"].ConfigVersion {
 		t.Fatalf("expected missing deployment row to be upserted as applied, got %#v", deployment)
+	}
+}
+
+func TestAcknowledgeNodeAgentConfigPersistsResolvedDataplane(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	store := newRuleDeploymentTestStore()
+	store.nodes["node_1"] = repo.NodeRecord{ID: "node_1", OrganizationID: "org_1", DesiredConfigVersion: 5, AppliedConfigVersion: 4, GroupIDs: []string{"group_1"}}
+	store.rules["rule_1"] = ruleDeploymentTestRule("rule_1", "group_1", FailurePolicyKeepEnabled)
+	rule := store.rules["rule_1"]
+	rule.DataplanePreference = "AUTO"
+	store.rules["rule_1"] = rule
+	service := NewControlService(store)
+	service.now = func() time.Time { return now }
+
+	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 5, "", "APPLIED", "", nil, map[string]string{"rule_1": "HAPROXY"}); err != nil {
+		t.Fatalf("ack applied config: %v", err)
+	}
+	deployment := store.deployments["rule_1|node_1"]
+	if deployment.ExpectedDataplane != "AUTO" || deployment.ActualDataplane != "HAPROXY" {
+		t.Fatalf("expected resolved dataplane to be persisted, got %#v", deployment)
+	}
+}
+
+func TestAcknowledgeNodeAgentConfigAppliesManagedNodeModeRules(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	store := newRuleDeploymentTestStore()
+	store.nodes["node_1"] = repo.NodeRecord{ID: "node_1", OrganizationID: "org_1", DesiredConfigVersion: 5, AppliedConfigVersion: 4, GroupIDs: []string{"group_1"}, DataplaneMode: NodeDataplaneModeHAProxy}
+	store.rules["rule_1"] = ruleDeploymentTestRule("rule_1", "group_1", FailurePolicyKeepEnabled)
+	service := NewControlService(store)
+	service.now = func() time.Time { return now }
+
+	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 5, "", "APPLIED", "", nil, map[string]string{"rule_1": "HAPROXY"}); err != nil {
+		t.Fatalf("ack applied config: %v", err)
+	}
+	deployment := store.deployments["rule_1|node_1"]
+	if deployment.Status != RuleDeploymentStatusApplied || deployment.ActualDataplane != "HAPROXY" {
+		t.Fatalf("expected managed node mode rule to be recorded as applied, got %#v", deployment)
+	}
+}
+
+func TestAcknowledgeNodeAgentConfigDoesNotApplyManagedRulesFilteredForLegacyAgent(t *testing.T) {
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	store := newRuleDeploymentTestStore()
+	store.nodes["node_1"] = repo.NodeRecord{ID: "node_1", OrganizationID: "org_1", DesiredConfigVersion: 5, AppliedConfigVersion: 4, GroupIDs: []string{"group_1"}, DataplaneMode: NodeDataplaneModeHAProxy}
+	store.rules["rule_1"] = ruleDeploymentTestRule("rule_1", "group_1", FailurePolicyKeepEnabled)
+	store.deployments["rule_1|node_1"] = repo.RuleDeploymentRecord{
+		OrganizationID:    "org_1",
+		RuleID:            "rule_1",
+		NodeID:            "node_1",
+		ConfigVersion:     5,
+		RuleConfigVersion: store.rules["rule_1"].ConfigVersion,
+		Status:            RuleDeploymentStatusPending,
+	}
+	service := NewControlService(store)
+	service.now = func() time.Time { return now }
+
+	err := service.AcknowledgeNodeAgentConfigForAgentProtocol(context.Background(), "org_1", "node_1", 5, "", agent.ProtocolVersion{Major: 2, Minor: 0}, true, "APPLIED", "", nil, nil)
+	if err != nil {
+		t.Fatalf("ack legacy applied config: %v", err)
+	}
+	deployment := store.deployments["rule_1|node_1"]
+	if deployment.Status != RuleDeploymentStatusPending {
+		t.Fatalf("legacy-filtered managed rule must remain pending, got %#v", deployment)
+	}
+	if node := store.nodes["node_1"]; node.AppliedConfigVersion >= node.DesiredConfigVersion || node.ConfigStatus != "FAILED" {
+		t.Fatalf("legacy partial apply must not advance node to desired config, got %#v", node)
 	}
 }
 
@@ -285,7 +372,7 @@ func TestAcknowledgeNodeAgentConfigOnlyAppliesRulesSentToAgent(t *testing.T) {
 	service := NewControlService(store)
 	service.now = func() time.Time { return now }
 
-	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 5, "APPLIED", "", nil); err != nil {
+	if err := service.AcknowledgeNodeAgentConfig(context.Background(), "org_1", "node_1", 5, "", "APPLIED", "", nil, nil); err != nil {
 		t.Fatalf("ack applied config: %v", err)
 	}
 	if got := store.deployments["rule_supported|node_1"].Status; got != RuleDeploymentStatusApplied {
@@ -330,9 +417,17 @@ func TestRuleDeploymentPayloadCanHideNodeDetails(t *testing.T) {
 
 func TestPortableRulePayloadPreservesFailurePolicy(t *testing.T) {
 	rule := ruleDeploymentTestRule("rule_1", "group_1", FailurePolicyDisableWhenAllNodesFailed)
+	rule.DataplanePreference = DataplanePreferenceHAProxy
+	rule.SendIP = "127.0.0.2"
 	portable := toPortableRulePayload(rule, map[string]string{"target_1": "target_1"}, nil)
 	if portable.FailurePolicy != FailurePolicyDisableWhenAllNodesFailed {
 		t.Fatalf("expected exported failure policy to be preserved, got %#v", portable)
+	}
+	if portable.DataplanePreference != DataplanePreferenceHAProxy {
+		t.Fatalf("expected exported dataplane preference to be preserved, got %#v", portable)
+	}
+	if portable.SendIP != "127.0.0.2" {
+		t.Fatalf("expected exported send_ip to be preserved, got %#v", portable)
 	}
 
 	input, err := ruleInputFromPortablePayload(portable, RuleImportEntry{NodeGroupID: "group_1", ListenIP: "0.0.0.0"}, map[string]string{"target_1": "target_1"}, nil)
@@ -341,6 +436,35 @@ func TestPortableRulePayloadPreservesFailurePolicy(t *testing.T) {
 	}
 	if input.FailurePolicy != FailurePolicyDisableWhenAllNodesFailed {
 		t.Fatalf("expected imported failure policy to be preserved, got %#v", input)
+	}
+	if input.DataplanePreference != DataplanePreferenceHAProxy {
+		t.Fatalf("expected imported dataplane preference to be preserved, got %#v", input)
+	}
+	if input.SendIP != "127.0.0.2" {
+		t.Fatalf("expected imported send_ip to be preserved, got %#v", input)
+	}
+
+	portable.DataplanePreference = "HAPR0XY"
+	if _, err := ruleInputFromPortablePayload(portable, RuleImportEntry{NodeGroupID: "group_1", ListenIP: "0.0.0.0"}, map[string]string{"target_1": "target_1"}, nil); err == nil {
+		t.Fatalf("expected invalid imported dataplane preference to be rejected")
+	}
+	portable.DataplanePreference = DataplanePreferenceHAProxy
+	portable.SendIP = "not-ip"
+	if _, err := ruleInputFromPortablePayload(portable, RuleImportEntry{NodeGroupID: "group_1", ListenIP: "0.0.0.0"}, map[string]string{"target_1": "target_1"}, nil); err == nil {
+		t.Fatalf("expected invalid imported send_ip to be rejected")
+	}
+}
+
+func TestNormalizeDataplanePreferenceForMutationRejectsInvalidNonEmptyValue(t *testing.T) {
+	if _, err := normalizeDataplanePreferenceForMutation("HAPR0XY"); err == nil {
+		t.Fatalf("expected invalid service dataplane preference to be rejected")
+	}
+	value, err := normalizeDataplanePreferenceForMutation("")
+	if err != nil {
+		t.Fatalf("normalize blank dataplane preference: %v", err)
+	}
+	if value != DataplanePreferenceAuto {
+		t.Fatalf("blank dataplane preference = %q, want AUTO", value)
 	}
 }
 
@@ -436,6 +560,9 @@ func (repositories ruleDeploymentTestRepositories) Rules() repo.RuleRepository {
 }
 func (repositories ruleDeploymentTestRepositories) Quotas() repo.QuotaRepository { return nil }
 func (repositories ruleDeploymentTestRepositories) AgentRegistrationTokens() repo.AgentRegistrationTokenRepository {
+	return nil
+}
+func (repositories ruleDeploymentTestRepositories) NodeEnrollmentProfiles() repo.NodeEnrollmentProfileRepository {
 	return nil
 }
 func (repositories ruleDeploymentTestRepositories) AgentCredentials() repo.AgentCredentialRepository {
@@ -672,6 +799,8 @@ func (rules ruleDeploymentTestRuleRepository) RecordRuleDeploymentApplied(_ cont
 			ConfigVersion:     configVersion,
 			RuleConfigVersion: deployment.RuleConfigVersion,
 			Status:            RuleDeploymentStatusApplied,
+			ExpectedDataplane: deployment.ExpectedDataplane,
+			ActualDataplane:   deployment.ActualDataplane,
 			UpdatedAt:         now,
 		}
 	}
@@ -696,6 +825,11 @@ func (rules ruleDeploymentTestRuleRepository) RecordRuleDeploymentFailures(_ con
 			Protocol:          failure.Protocol,
 			ListenIP:          failure.ListenIP,
 			Port:              failure.Port,
+			ExpectedDataplane: failure.ExpectedDataplane,
+			ActualDataplane:   failure.ActualDataplane,
+			Owner:             failure.Owner,
+			DriftStatus:       failure.DriftStatus,
+			ExternalResource:  failure.ExternalResource,
 			UpdatedAt:         now,
 		}
 	}

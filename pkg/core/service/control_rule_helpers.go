@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,24 +18,25 @@ import (
 func simulatedEnabledRule(identity InternalIdentity, input RuleMutationInput, ruleID string, now string) repo.RuleRecord {
 	binding := inboundBindingForRule(identity.OrganizationID, input, now)
 	return repo.RuleRecord{
-		ID:               ruleID,
-		OrganizationID:   identity.OrganizationID,
-		OwnerUserID:      identity.UserID,
-		Name:             input.Name,
-		Enabled:          true,
-		Status:           "ENABLED",
-		FailurePolicy:    defaultFailurePolicy(input.FailurePolicy),
-		ForwardingType:   defaultForwardingType(input.ForwardingType),
-		Protocol:         input.Protocol,
-		MatchType:        input.Match.Type,
-		InboundBindingID: binding.ID,
-		SNIHostname:      input.Match.SNIHostname,
-		TargetType:       input.Upstream.Type,
-		TargetID:         input.Upstream.TargetID,
-		TargetGroupID:    input.Upstream.TargetGroupID,
-		ProxyProtocolIn:  defaultProxyProtocol(input.ProxyProtocol.In),
-		ProxyProtocolOut: defaultProxyProtocol(input.ProxyProtocol.Out),
-		Binding:          binding,
+		ID:                  ruleID,
+		OrganizationID:      identity.OrganizationID,
+		OwnerUserID:         identity.UserID,
+		Name:                input.Name,
+		Enabled:             true,
+		Status:              "ENABLED",
+		FailurePolicy:       defaultFailurePolicy(input.FailurePolicy),
+		DataplanePreference: defaultDataplanePreference(input.DataplanePreference),
+		ForwardingType:      defaultForwardingType(input.ForwardingType),
+		Protocol:            input.Protocol,
+		MatchType:           input.Match.Type,
+		InboundBindingID:    binding.ID,
+		SNIHostname:         input.Match.SNIHostname,
+		TargetType:          input.Upstream.Type,
+		TargetID:            input.Upstream.TargetID,
+		TargetGroupID:       input.Upstream.TargetGroupID,
+		ProxyProtocolIn:     defaultProxyProtocol(input.ProxyProtocol.In),
+		ProxyProtocolOut:    defaultProxyProtocol(input.ProxyProtocol.Out),
+		Binding:             binding,
 	}
 }
 
@@ -76,10 +78,13 @@ func validateEnabledRulesForNodeSet(ctx context.Context, repositories repo.Repos
 	seenBindings := make([]domain.InboundBinding, 0)
 	for _, rule := range rules {
 		groupNodes := nodesInGroupFromSet(nodes, rule.Binding.NodeGroupID)
-		if !nodesCoverListenIPAndPort(groupNodes, rule.Binding.ListenIP, rule.Protocol, rule.Binding.Port) {
+		if !nodesCoverListenIPAndPortSegments(groupNodes, rule.Binding.ListenIP, rule.Protocol, rulePortSegments(rule.Binding)) {
 			return ErrConflict
 		}
-		ruleBindings := bindingsForNodes(groupNodes, rule.Binding.NodeGroupID, rule.Binding.ListenIP, rule.Protocol, rule.Binding.Port, rule.MatchType, rule.SNIHostname, rule.ProxyProtocolIn, rule.ID)
+		if !nodesShareSendIP(groupNodes, rule.SendIP) {
+			return ErrConflict
+		}
+		ruleBindings := bindingsForNodes(groupNodes, rule.Binding.NodeGroupID, rule.Binding.ListenIP, rule.Protocol, rulePortSegments(rule.Binding), rule.MatchType, rule.SNIHostname, rule.ProxyProtocolIn, rule.ID)
 		for _, binding := range ruleBindings {
 			if err := domain.ValidateInboundBindingConflict(seenBindings, binding); err != nil {
 				return err
@@ -130,14 +135,14 @@ func removeNodeFromSet(nodes []repo.NodeRecord, nodeID string) []repo.NodeRecord
 	return result
 }
 
-func listenIPOptionsForNodes(nodes []repo.NodeRecord, protocol string, port int) []ResourceOption {
+func listenIPOptionsForNodes(nodes []repo.NodeRecord, protocol string, segments []repo.InboundBindingPortSegmentRecord) []ResourceOption {
 	counts := map[string]int{}
 	for _, node := range nodes {
 		for _, listenIP := range node.ListenIPs {
 			if !listenIP.Enabled {
 				continue
 			}
-			if protocol != "" && port > 0 && !nodeCoversPort(node, protocol, port) {
+			if protocol != "" && len(segments) > 0 && !nodeCoversPortSegments(node, protocol, segments) {
 				continue
 			}
 			counts[listenIP.ListenIP]++
@@ -153,7 +158,43 @@ func listenIPOptionsForNodes(nodes []repo.NodeRecord, protocol string, port int)
 	return options
 }
 
-func nodesCoverListenIPAndPort(nodes []repo.NodeRecord, listenIP string, protocol string, port int) bool {
+func sendIPOptionsForNodes(nodes []repo.NodeRecord) []ResourceOption {
+	counts := map[string]int{}
+	labels := map[string]string{}
+	for _, node := range nodes {
+		seenForNode := map[string]struct{}{}
+		for _, sendIP := range node.SendIPs {
+			if !sendIP.Enabled {
+				continue
+			}
+			if _, seen := seenForNode[sendIP.SendIP]; seen {
+				continue
+			}
+			seenForNode[sendIP.SendIP] = struct{}{}
+			counts[sendIP.SendIP]++
+			if labels[sendIP.SendIP] == "" {
+				labels[sendIP.SendIP] = sendIP.DisplayName
+			}
+		}
+	}
+	options := make([]ResourceOption, 0)
+	for sendIP, count := range counts {
+		if count != len(nodes) || count == 0 {
+			continue
+		}
+		label := labels[sendIP]
+		if label == "" || label == sendIP {
+			label = fmt.Sprintf("%s (%d nodes)", sendIP, count)
+		} else {
+			label = fmt.Sprintf("%s - %s (%d nodes)", label, sendIP, count)
+		}
+		options = append(options, ResourceOption{Value: sendIP, Label: label})
+	}
+	sort.SliceStable(options, func(i int, j int) bool { return options[i].Value < options[j].Value })
+	return options
+}
+
+func nodesCoverListenIPAndPortSegments(nodes []repo.NodeRecord, listenIP string, protocol string, segments []repo.InboundBindingPortSegmentRecord) bool {
 	if len(nodes) == 0 {
 		return false
 	}
@@ -165,7 +206,7 @@ func nodesCoverListenIPAndPort(nodes []repo.NodeRecord, listenIP string, protoco
 				break
 			}
 		}
-		if !hasListenIP || !nodeCoversPort(node, protocol, port) {
+		if !hasListenIP || !nodeCoversPortSegments(node, protocol, segments) || expandedPortCount(segments) > defaultMaxRulePorts(node.MaxRulePorts) {
 			return false
 		}
 	}
@@ -203,8 +244,55 @@ func nodeCoversPort(node repo.NodeRecord, protocol string, port int) bool {
 	return false
 }
 
+func nodeCoversPortSegments(node repo.NodeRecord, protocol string, segments []repo.InboundBindingPortSegmentRecord) bool {
+	for _, segment := range segments {
+		for port := segment.StartPort; port <= segment.EndPort; port++ {
+			if !nodeCoversPort(node, protocol, port) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func expandedPortCount(segments []repo.InboundBindingPortSegmentRecord) int {
+	count := 0
+	for _, segment := range segments {
+		count += segment.EndPort - segment.StartPort + 1
+	}
+	return count
+}
+
+func nodesShareSendIP(nodes []repo.NodeRecord, sendIP string) bool {
+	if strings.TrimSpace(sendIP) == "" {
+		return true
+	}
+	if len(nodes) == 0 {
+		return false
+	}
+	for _, node := range nodes {
+		found := false
+		for _, candidate := range node.SendIPs {
+			if candidate.Enabled && candidate.SendIP == sendIP {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 func inboundBindingForRule(organizationID string, input RuleMutationInput, now string) repo.InboundBindingRecord {
-	idSource := organizationID + "|" + input.NodeGroupID + "|" + input.ListenIP + "|" + input.Protocol + "|" + strconv.Itoa(input.Port) + "|" + input.Match.Type
+	segments := toInboundBindingPortSegments(organizationID, "", input.PortSegments, now)
+	idSource := organizationID + "|" + input.NodeGroupID + "|" + input.ListenIP + "|" + input.Protocol + "|" + portSegmentsKey(segments) + "|" + input.Match.Type
+	bindingID := uuid.NewHash(sha256.New(), uuid.Nil, []byte(idSource), 5).String()
+	for index := range segments {
+		segments[index].OrganizationID = organizationID
+		segments[index].InboundBindingID = bindingID
+	}
 	return repo.InboundBindingRecord{
 		ID:             uuid.NewHash(sha256.New(), uuid.Nil, []byte(idSource), 5).String(),
 		OrganizationID: organizationID,
@@ -212,9 +300,57 @@ func inboundBindingForRule(organizationID string, input RuleMutationInput, now s
 		ListenIP:       input.ListenIP,
 		Protocol:       input.Protocol,
 		Port:           input.Port,
+		PortSegments:   segments,
 		MatchType:      input.Match.Type,
 		CreatedAt:      now,
 	}
+}
+
+func toInboundBindingPortSegments(organizationID string, bindingID string, inputs []RulePortSegmentInput, now string) []repo.InboundBindingPortSegmentRecord {
+	segments := make([]repo.InboundBindingPortSegmentRecord, 0, len(inputs))
+	for _, input := range inputs {
+		segments = append(segments, repo.InboundBindingPortSegmentRecord{OrganizationID: organizationID, InboundBindingID: bindingID, StartPort: input.StartPort, EndPort: input.EndPort, CreatedAt: now})
+	}
+	return segments
+}
+
+func portSegmentsKey(segments []repo.InboundBindingPortSegmentRecord) string {
+	parts := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		parts = append(parts, strconv.Itoa(segment.StartPort)+"-"+strconv.Itoa(segment.EndPort))
+	}
+	return strings.Join(parts, ",")
+}
+
+func rulePortSegments(binding repo.InboundBindingRecord) []repo.InboundBindingPortSegmentRecord {
+	if len(binding.PortSegments) == 0 {
+		return []repo.InboundBindingPortSegmentRecord{{StartPort: binding.Port, EndPort: binding.Port}}
+	}
+	return binding.PortSegments
+}
+
+func toRulePortSegmentInputs(segments []repo.InboundBindingPortSegmentRecord) []RulePortSegmentInput {
+	result := make([]RulePortSegmentInput, 0, len(segments))
+	for _, segment := range segments {
+		result = append(result, RulePortSegmentInput{StartPort: segment.StartPort, EndPort: segment.EndPort})
+	}
+	return result
+}
+
+func toRulePortSegmentInputsFromPayload(segments []RulePortSegmentPayload) []RulePortSegmentInput {
+	result := make([]RulePortSegmentInput, 0, len(segments))
+	for _, segment := range segments {
+		result = append(result, RulePortSegmentInput(segment))
+	}
+	return result
+}
+
+func toRulePortSegmentPayloads(segments []repo.InboundBindingPortSegmentRecord) []RulePortSegmentPayload {
+	result := make([]RulePortSegmentPayload, 0, len(segments))
+	for _, segment := range segments {
+		result = append(result, RulePortSegmentPayload{StartPort: segment.StartPort, EndPort: segment.EndPort})
+	}
+	return result
 }
 
 func defaultProxyProtocol(value string) string {
@@ -254,15 +390,18 @@ func validateRuleMatchType(value string) error {
 
 func inputFromRule(rule repo.RuleRecord) RuleMutationInput {
 	return RuleMutationInput{
-		Name:           rule.Name,
-		Tags:           rule.Tags,
-		NodeGroupID:    rule.Binding.NodeGroupID,
-		ListenIP:       rule.Binding.ListenIP,
-		FailurePolicy:  defaultFailurePolicy(rule.FailurePolicy),
-		ForwardingType: defaultForwardingType(rule.ForwardingType),
-		Protocol:       rule.Protocol,
-		Port:           rule.Binding.Port,
-		Match:          RuleMatchInput{Type: rule.MatchType, SNIHostname: rule.SNIHostname},
+		Name:                rule.Name,
+		Tags:                rule.Tags,
+		NodeGroupID:         rule.Binding.NodeGroupID,
+		ListenIP:            rule.Binding.ListenIP,
+		SendIP:              rule.SendIP,
+		FailurePolicy:       defaultFailurePolicy(rule.FailurePolicy),
+		DataplanePreference: defaultDataplanePreference(rule.DataplanePreference),
+		ForwardingType:      defaultForwardingType(rule.ForwardingType),
+		Protocol:            rule.Protocol,
+		Port:                rule.Binding.Port,
+		PortSegments:        toRulePortSegmentInputs(rulePortSegments(rule.Binding)),
+		Match:               RuleMatchInput{Type: rule.MatchType, SNIHostname: rule.SNIHostname},
 		ProxyProtocol: RuleProxyProtocolInput{
 			In:  rule.ProxyProtocolIn,
 			Out: rule.ProxyProtocolOut,
@@ -303,15 +442,18 @@ func ruleInputFromPortablePayload(rule PortableRulePayload, entry RuleImportEntr
 	}
 
 	input := RuleMutationInput{
-		Name:           rule.Name,
-		Tags:           append([]string{}, rule.Tags...),
-		NodeGroupID:    entry.NodeGroupID,
-		ListenIP:       entry.ListenIP,
-		FailurePolicy:  rule.FailurePolicy,
-		ForwardingType: rule.ForwardingType,
-		Protocol:       rule.Protocol,
-		Port:           rule.Port,
-		Match:          RuleMatchInput{Type: rule.Match.Type, SNIHostname: rule.Match.SNIHostname},
+		Name:                rule.Name,
+		Tags:                append([]string{}, rule.Tags...),
+		NodeGroupID:         entry.NodeGroupID,
+		ListenIP:            entry.ListenIP,
+		SendIP:              rule.SendIP,
+		FailurePolicy:       rule.FailurePolicy,
+		DataplanePreference: rule.DataplanePreference,
+		ForwardingType:      rule.ForwardingType,
+		Protocol:            rule.Protocol,
+		Port:                rule.Port,
+		PortSegments:        toRulePortSegmentInputsFromPayload(rule.PortSegments),
+		Match:               RuleMatchInput{Type: rule.Match.Type, SNIHostname: rule.Match.SNIHostname},
 		ProxyProtocol: RuleProxyProtocolInput{
 			In:  rule.ProxyProtocol.In,
 			Out: rule.ProxyProtocol.Out,
@@ -326,7 +468,12 @@ func validateRuleMutationInput(input RuleMutationInput) (RuleMutationInput, erro
 	input.Name = strings.TrimSpace(input.Name)
 	input.NodeGroupID = strings.TrimSpace(input.NodeGroupID)
 	input.ListenIP = strings.TrimSpace(input.ListenIP)
+	input.SendIP = strings.TrimSpace(input.SendIP)
 	input.FailurePolicy = defaultFailurePolicy(input.FailurePolicy)
+	input.DataplanePreference = strings.ToUpper(strings.TrimSpace(input.DataplanePreference))
+	if input.DataplanePreference == "" {
+		input.DataplanePreference = DataplanePreferenceAuto
+	}
 	input.ForwardingType = defaultForwardingType(input.ForwardingType)
 	input.Protocol = strings.ToUpper(strings.TrimSpace(input.Protocol))
 	input.Match.Type = strings.ToUpper(strings.TrimSpace(input.Match.Type))
@@ -351,17 +498,21 @@ func validateRuleMutationInput(input RuleMutationInput) (RuleMutationInput, erro
 	if input.ListenIP == "" {
 		return RuleMutationInput{}, validationFieldError("listen_ip", "Rule listen_ip is required.", nil)
 	}
-	if input.Port < 1 || input.Port > 65535 {
-		return RuleMutationInput{}, validationFieldError("port", "Rule port must be between 1 and 65535.", map[string]any{
-			"actual": input.Port,
-			"min":    1,
-			"max":    65535,
-		})
+	input.PortSegments = normalizeRulePortSegments(input.Port, input.PortSegments)
+	if len(input.PortSegments) == 0 {
+		return RuleMutationInput{}, validationFieldError("port", "Rule port must be between 1 and 65535.", map[string]any{"actual": input.Port, "min": 1, "max": 65535})
+	}
+	input.Port = input.PortSegments[0].StartPort
+	if input.SendIP != "" && (strings.Contains(input.SendIP, "/") || net.ParseIP(input.SendIP) == nil) {
+		return RuleMutationInput{}, validationFieldError("send_ip", "Rule send_ip must be a literal IP address.", nil)
 	}
 	if err := validateRuleForwardingType(input.ForwardingType); err != nil {
 		return RuleMutationInput{}, err
 	}
 	if err := validateFailurePolicy(input.FailurePolicy); err != nil {
+		return RuleMutationInput{}, err
+	}
+	if err := validateDataplanePreference(input.DataplanePreference); err != nil {
 		return RuleMutationInput{}, err
 	}
 	if input.Protocol != "TCP" && input.Protocol != "UDP" && input.Protocol != "TCP_UDP" {
@@ -431,13 +582,16 @@ func toPortableRulePayload(rule repo.RuleRecord, targetRefsByID map[string]strin
 		upstream.TargetGroupRef = targetGroupRefsByID[rule.TargetGroupID]
 	}
 	return PortableRulePayload{
-		Name:           rule.Name,
-		Tags:           append([]string{}, rule.Tags...),
-		FailurePolicy:  defaultFailurePolicy(rule.FailurePolicy),
-		ForwardingType: defaultForwardingType(rule.ForwardingType),
-		Protocol:       rule.Protocol,
-		Port:           rule.Binding.Port,
-		Match:          RuleMatchPayload{Type: rule.MatchType, SNIHostname: rule.SNIHostname},
+		Name:                rule.Name,
+		Tags:                append([]string{}, rule.Tags...),
+		FailurePolicy:       defaultFailurePolicy(rule.FailurePolicy),
+		DataplanePreference: defaultDataplanePreference(rule.DataplanePreference),
+		ForwardingType:      defaultForwardingType(rule.ForwardingType),
+		Protocol:            rule.Protocol,
+		Port:                rule.Binding.Port,
+		PortSegments:        toRulePortSegmentPayloads(rulePortSegments(rule.Binding)),
+		SendIP:              rule.SendIP,
+		Match:               RuleMatchPayload{Type: rule.MatchType, SNIHostname: rule.SNIHostname},
 		ProxyProtocol: RuleProxyProtocolInput{
 			In:  rule.ProxyProtocolIn,
 			Out: rule.ProxyProtocolOut,
@@ -481,6 +635,42 @@ func normalizeRuleTags(values []string) []string {
 	}
 	sort.Strings(normalized)
 	return normalized
+}
+
+func normalizeRulePortSegments(port int, values []RulePortSegmentInput) []RulePortSegmentInput {
+	if len(values) == 0 {
+		if port < 1 || port > 65535 {
+			return nil
+		}
+		return []RulePortSegmentInput{{StartPort: port, EndPort: port}}
+	}
+	segments := make([]RulePortSegmentInput, 0, len(values))
+	for _, value := range values {
+		if value.EndPort == 0 {
+			value.EndPort = value.StartPort
+		}
+		if value.StartPort < 1 || value.StartPort > 65535 || value.EndPort < 1 || value.EndPort > 65535 || value.StartPort > value.EndPort {
+			return nil
+		}
+		segments = append(segments, value)
+	}
+	sort.Slice(segments, func(i int, j int) bool {
+		if segments[i].StartPort == segments[j].StartPort {
+			return segments[i].EndPort < segments[j].EndPort
+		}
+		return segments[i].StartPort < segments[j].StartPort
+	})
+	result := make([]RulePortSegmentInput, 0, len(segments))
+	for _, segment := range segments {
+		if len(result) == 0 || segment.StartPort > result[len(result)-1].EndPort+1 {
+			result = append(result, segment)
+			continue
+		}
+		if segment.EndPort > result[len(result)-1].EndPort {
+			result[len(result)-1].EndPort = segment.EndPort
+		}
+	}
+	return result
 }
 
 func validRuleProxyProtocol(value string) bool {
@@ -623,18 +813,21 @@ func toRulePayloadWithDeploymentDetails(rule repo.RuleRecord, nodes []repo.NodeR
 	}
 	sort.Strings(descriptions)
 	return RulePayload{
-		ID:             rule.ID,
-		Name:           rule.Name,
-		Status:         rule.Status,
-		Enabled:        rule.Enabled,
-		Tags:           append([]string{}, rule.Tags...),
-		NodeGroupID:    rule.Binding.NodeGroupID,
-		ListenIP:       rule.Binding.ListenIP,
-		FailurePolicy:  defaultFailurePolicy(rule.FailurePolicy),
-		ForwardingType: defaultForwardingType(rule.ForwardingType),
-		Protocol:       rule.Protocol,
-		Port:           rule.Binding.Port,
-		Match:          RuleMatchPayload{Type: rule.MatchType, SNIHostname: rule.SNIHostname},
+		ID:                  rule.ID,
+		Name:                rule.Name,
+		Status:              rule.Status,
+		Enabled:             rule.Enabled,
+		Tags:                append([]string{}, rule.Tags...),
+		NodeGroupID:         rule.Binding.NodeGroupID,
+		ListenIP:            rule.Binding.ListenIP,
+		SendIP:              rule.SendIP,
+		FailurePolicy:       defaultFailurePolicy(rule.FailurePolicy),
+		DataplanePreference: defaultDataplanePreference(rule.DataplanePreference),
+		ForwardingType:      defaultForwardingType(rule.ForwardingType),
+		Protocol:            rule.Protocol,
+		Port:                rule.Binding.Port,
+		PortSegments:        toRulePortSegmentPayloads(rulePortSegments(rule.Binding)),
+		Match:               RuleMatchPayload{Type: rule.MatchType, SNIHostname: rule.SNIHostname},
 		ProxyProtocol: RuleProxyProtocolInput{
 			In:  rule.ProxyProtocolIn,
 			Out: rule.ProxyProtocolOut,

@@ -17,6 +17,7 @@ import (
 
 	"github.com/noxaaa/prism-oss/pkg/core/buildinfo"
 	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"nhooyr.io/websocket"
@@ -28,6 +29,12 @@ type ConfigApplier interface {
 
 type MetricsProvider interface {
 	AgentMetrics() MetricsPayload
+}
+
+var diskUsage = disk.Usage
+
+type DataplaneResolver interface {
+	ResolvedDataplanes() map[string]string
 }
 
 type NodeRuntime struct {
@@ -161,6 +168,7 @@ func (runtime *NodeRuntime) runOnce(ctx context.Context) error {
 			if err := json.Unmarshal(envelope.Payload, &snapshot); err != nil {
 				_ = runtime.write(ctx, conn, "config_ack", map[string]any{
 					"config_version": snapshot.ConfigVersion,
+					"config_hash":    snapshot.ConfigHash,
 					"status":         "FAILED",
 					"error_message":  "invalid config snapshot",
 				})
@@ -179,11 +187,18 @@ func (runtime *NodeRuntime) runOnce(ctx context.Context) error {
 			if status == "APPLIED" {
 				runtime.setAppliedConfigVersion(snapshot.ConfigVersion)
 			}
+			resolvedDataplanes := map[string]string(nil)
+			if resolver, ok := runtime.applier.(DataplaneResolver); ok && status == "APPLIED" {
+				resolvedDataplanes = resolver.ResolvedDataplanes()
+			}
 			if err := runtime.write(ctx, conn, "config_ack", map[string]any{
-				"config_version": snapshot.ConfigVersion,
-				"status":         status,
-				"error_message":  nullableString(errorMessage),
-				"errors":         applyErrors,
+				"config_version":         snapshot.ConfigVersion,
+				"config_hash":            snapshot.ConfigHash,
+				"agent_protocol_version": CurrentProtocolVersion(),
+				"status":                 status,
+				"error_message":          nullableString(errorMessage),
+				"errors":                 applyErrors,
+				"resolved_dataplanes":    resolvedDataplanes,
 			}); err != nil {
 				return err
 			}
@@ -245,18 +260,24 @@ func (runtime *NodeRuntime) dialControlPlane(ctx context.Context, connectURL str
 	headers.Set("Authorization", "Bearer "+token)
 	headers.Set("X-Agent-Type", runtime.getAgentType())
 	headers.Set("X-Agent-Version", buildinfo.Version)
+	if hostname, err := os.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
+		headers.Set("X-Agent-Hostname", strings.TrimSpace(hostname))
+	}
 	return websocket.Dial(ctx, connectURL, &websocket.DialOptions{HTTPHeader: headers})
 }
 
 func (runtime *NodeRuntime) authFallbackToken(tokenSource string) (string, string, bool) {
 	switch tokenSource {
-	case "registration":
+	case "registration", "enrollment":
 		if credential := runtime.getAgentCredential(); credential != "" {
 			return credential, "credential", true
 		}
 	case "credential":
 		if registrationToken := runtime.getRegistrationToken(); registrationToken != "" {
 			return registrationToken, "registration", true
+		}
+		if enrollmentToken := runtime.getEnrollmentToken(); enrollmentToken != "" {
+			return enrollmentToken, "enrollment", true
 		}
 	}
 	return "", "", false
@@ -319,6 +340,7 @@ func (runtime *NodeRuntime) writeHello(ctx context.Context, conn *websocket.Conn
 		"agent_version":          buildinfo.Version,
 		"agent_commit":           buildinfo.Commit,
 		"agent_build_time":       buildinfo.BuildTime,
+		"agent_protocol_version": CurrentProtocolVersion(),
 	})
 }
 
@@ -432,7 +454,7 @@ func (runtime *NodeRuntime) handleAuthEnvelope(envelope runtimeEnvelope) error {
 
 func (runtime *NodeRuntime) validateStaticConfig() error {
 	if runtime.getControlPlaneURL() == "" || runtime.authToken() == "" {
-		return errors.New("CONTROL_PLANE_URL and agent credential or registration token are required")
+		return errors.New("CONTROL_PLANE_URL and agent credential, registration token, or enrollment token are required")
 	}
 	return nil
 }
@@ -491,6 +513,7 @@ func (runtime *NodeRuntime) reportRuntime(ctx context.Context, conn *websocket.C
 				"agent_id":               runtime.getAgentID(),
 				"agent_type":             runtime.getAgentType(),
 				"applied_config_version": runtime.getAppliedConfigVersion(),
+				"agent_protocol_version": CurrentProtocolVersion(),
 			})
 		case <-metricsTicker.C:
 			_ = runtime.write(ctx, conn, "metrics", runtime.collectMetrics())
@@ -514,6 +537,10 @@ func (runtime *NodeRuntime) collectMetrics() MetricsPayload {
 	if memory, err := mem.VirtualMemory(); err == nil && memory != nil {
 		metrics.RAMUsedBytes = memory.Used
 		metrics.RAMTotalBytes = memory.Total
+	}
+	if usage, err := diskUsage("/"); err == nil && usage != nil {
+		metrics.DiskUsedBytes = usage.Used
+		metrics.DiskTotalBytes = usage.Total
 	}
 	metrics.CPUModel = runtime.staticMetrics.CPUModel
 	metrics.CPULogicalCores = runtime.staticMetrics.CPULogicalCores
@@ -595,6 +622,12 @@ func (runtime *NodeRuntime) getRegistrationToken() string {
 	return runtime.config.RegistrationToken
 }
 
+func (runtime *NodeRuntime) getEnrollmentToken() string {
+	runtime.configMu.RLock()
+	defer runtime.configMu.RUnlock()
+	return runtime.config.EnrollmentToken
+}
+
 func (runtime *NodeRuntime) getAgentCredential() string {
 	runtime.configMu.RLock()
 	defer runtime.configMu.RUnlock()
@@ -635,11 +668,17 @@ func (runtime *NodeRuntime) authToken() string {
 func (runtime *NodeRuntime) authTokenWithSource() (string, string) {
 	runtime.configMu.RLock()
 	defer runtime.configMu.RUnlock()
-	if runtime.config.AgentCredential != "" && (runtime.config.credentialFinalized || !runtime.config.preferRegistration || runtime.config.RegistrationToken == "") {
+	bootstrapToken := runtime.config.RegistrationToken
+	bootstrapSource := "registration"
+	if bootstrapToken == "" {
+		bootstrapToken = runtime.config.EnrollmentToken
+		bootstrapSource = "enrollment"
+	}
+	if runtime.config.AgentCredential != "" && (runtime.config.credentialFinalized || runtime.config.EnrollmentToken != "" || !runtime.config.preferRegistration || bootstrapToken == "") {
 		return runtime.config.AgentCredential, "credential"
 	}
-	if runtime.config.RegistrationToken != "" {
-		return runtime.config.RegistrationToken, "registration"
+	if bootstrapToken != "" {
+		return bootstrapToken, bootstrapSource
 	}
 	return runtime.config.AgentCredential, "credential"
 }
@@ -652,10 +691,14 @@ func (runtime *NodeRuntime) finalizeCredential() error {
 	if err := runtime.persistCredential(credential, true); err != nil {
 		return err
 	}
+	if err := scrubBootstrapTokens(runtime.config.ConfigFile); err != nil {
+		return err
+	}
 	runtime.configMu.Lock()
 	defer runtime.configMu.Unlock()
 	runtime.config.credentialFinalized = true
 	runtime.config.RegistrationToken = ""
+	runtime.config.EnrollmentToken = ""
 	runtime.config.preferRegistration = false
 	return nil
 }
@@ -664,6 +707,34 @@ func (runtime *NodeRuntime) needsCredentialFinalization() bool {
 	runtime.configMu.RLock()
 	defer runtime.configMu.RUnlock()
 	return runtime.config.AgentCredential != "" && !runtime.config.credentialFinalized
+}
+
+func scrubBootstrapTokens(configFile string) error {
+	configFile = strings.TrimSpace(configFile)
+	if configFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	changed := false
+	for index, line := range lines {
+		key, _, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "AGENT_REGISTRATION_TOKEN", "AGENT_ENROLLMENT_TOKEN":
+			lines[index] = strings.TrimSpace(key) + "=''"
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return os.WriteFile(configFile, []byte(strings.Join(lines, "\n")), 0o600)
 }
 
 func (runtime *NodeRuntime) getAppliedConfigVersion() int {

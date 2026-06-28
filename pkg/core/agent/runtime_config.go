@@ -10,13 +10,17 @@ import (
 
 type RuntimeConfig struct {
 	AppName             string
+	ConfigFile          string
 	ControlPlaneURL     string
 	AgentID             string
 	RegistrationToken   string
+	EnrollmentToken     string
 	AgentCredential     string
 	AgentCredentialFile string
 	ServiceName         string
 	InstallDir          string
+	DataplaneMode       string
+	DataplaneInstanceID string
 	LogLevel            string
 	preferRegistration  bool
 	credentialFinalized bool
@@ -32,10 +36,13 @@ func LoadRuntimeConfigFromArgs(args []string) (RuntimeConfig, error) {
 		ControlPlaneURL:     os.Getenv("CONTROL_PLANE_URL"),
 		AgentID:             os.Getenv("AGENT_ID"),
 		RegistrationToken:   os.Getenv("AGENT_REGISTRATION_TOKEN"),
+		EnrollmentToken:     os.Getenv("AGENT_ENROLLMENT_TOKEN"),
 		AgentCredential:     os.Getenv("AGENT_CREDENTIAL"),
 		AgentCredentialFile: os.Getenv("AGENT_CREDENTIAL_FILE"),
 		ServiceName:         envOrDefault("AGENT_SERVICE_NAME", "prism-node-agent"),
 		InstallDir:          envOrDefault("AGENT_INSTALL_DIR", "/opt/prism-node-agent"),
+		DataplaneMode:       envOrDefault("AGENT_DATAPLANE_MODE", "NATIVE"),
+		DataplaneInstanceID: os.Getenv("AGENT_DATAPLANE_INSTANCE_ID"),
 		LogLevel:            envOrDefault("LOG_LEVEL", "info"),
 	}
 	if cfg.AgentCredential != "" {
@@ -60,7 +67,10 @@ func LoadRuntimeConfigFromArgs(args []string) (RuntimeConfig, error) {
 		cfg.AgentCredential = credential
 		cfg.credentialFinalized = finalized
 	}
-	if cfg.AgentCredential != "" && !cfg.credentialFinalized && cfg.RegistrationToken != "" {
+	if cfg.RegistrationToken != "" && cfg.EnrollmentToken != "" {
+		return RuntimeConfig{}, errors.New("AGENT_REGISTRATION_TOKEN and AGENT_ENROLLMENT_TOKEN are mutually exclusive")
+	}
+	if cfg.AgentCredential != "" && !cfg.credentialFinalized && (cfg.RegistrationToken != "" || cfg.EnrollmentToken != "") {
 		cfg.preferRegistration = true
 	}
 	return cfg, nil
@@ -71,11 +81,14 @@ func applyInstallFlags(cfg *RuntimeConfig, args []string) error {
 	flags.SetOutput(io.Discard)
 	controlURL := flags.String("control-url", "", "control plane URL")
 	registrationToken := flags.String("registration-token", "", "agent registration token")
+	enrollmentToken := flags.String("enrollment-token", "", "node enrollment token")
 	agentID := flags.String("agent-id", "", "agent ID")
 	credential := flags.String("agent-credential", "", "agent credential")
 	credentialFile := flags.String("credential-file", "", "agent credential file")
 	serviceName := flags.String("service-name", "", "system service name")
 	installDir := flags.String("install-dir", "", "agent installation directory")
+	dataplaneMode := flags.String("dataplane-mode", "", "agent dataplane mode")
+	dataplaneInstanceID := flags.String("dataplane-instance-id", "", "agent dataplane instance id")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -84,6 +97,10 @@ func applyInstallFlags(cfg *RuntimeConfig, args []string) error {
 	}
 	if *registrationToken != "" {
 		cfg.RegistrationToken = *registrationToken
+		cfg.preferRegistration = true
+	}
+	if *enrollmentToken != "" {
+		cfg.EnrollmentToken = *enrollmentToken
 		cfg.preferRegistration = true
 	}
 	if *agentID != "" {
@@ -101,6 +118,12 @@ func applyInstallFlags(cfg *RuntimeConfig, args []string) error {
 	}
 	if *installDir != "" {
 		cfg.InstallDir = *installDir
+	}
+	if *dataplaneMode != "" {
+		cfg.DataplaneMode = *dataplaneMode
+	}
+	if *dataplaneInstanceID != "" {
+		cfg.DataplaneInstanceID = *dataplaneInstanceID
 	}
 	return nil
 }

@@ -73,6 +73,59 @@ func TestSupervisorAppliesSnapshotAndForwardsTCP(t *testing.T) {
 	})
 }
 
+func TestSupervisorBindsConfiguredSendIPForTCPUpstream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	targetAddr, sourceAddresses, closeTarget := startTCPSourceRecorder(t)
+	defer closeTarget()
+	if err := probeTCPSourceIP("127.0.0.2", targetAddr); err != nil {
+		t.Skipf("local platform cannot bind 127.0.0.2 as TCP source: %v", err)
+	}
+	_ = readTCPSourceAddress(t, sourceAddresses)
+	listenPort := reserveLocalTCPPort(t)
+
+	supervisor := NewSupervisor()
+	defer supervisor.Close()
+	if err := supervisor.Apply(ctx, agent.ConfigSnapshot{
+		NodeID:        "node_1",
+		ConfigVersion: 1,
+		Rules: []agent.RuleConfig{
+			{
+				ID:        "rule_tcp_source",
+				Enabled:   true,
+				Protocol:  domain.ProtocolTCP,
+				ListenIP:  "127.0.0.1",
+				Port:      listenPort,
+				SendIP:    "127.0.0.2",
+				MatchType: "ANY_INBOUND",
+				Upstream: agent.RuleUpstreamConfig{
+					Type:   "TARGET",
+					Target: &agent.TargetEndpoint{ID: "target_tcp", Host: "127.0.0.1", Port: mustPort(t, targetAddr), Enabled: true},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("apply snapshot: %v", err)
+	}
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)), time.Second)
+	if err != nil {
+		t.Fatalf("dial supervisor listener: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte("hello")); err != nil {
+		t.Fatalf("write through supervisor: %v", err)
+	}
+	sourceHost, _, err := net.SplitHostPort(readTCPSourceAddress(t, sourceAddresses))
+	if err != nil {
+		t.Fatalf("split source address: %v", err)
+	}
+	if sourceHost != "127.0.0.2" {
+		t.Fatalf("expected upstream source 127.0.0.2, got %s", sourceHost)
+	}
+}
+
 func TestSupervisorAgentMetricsIncludesPerTargetDiagnostics(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -654,6 +707,10 @@ func TestSupervisorPreservesUDPClientMappingAcrossPackets(t *testing.T) {
 
 	targetAddr, sourceAddresses, closeTarget := startUDPSourceRecorder(t)
 	defer closeTarget()
+	if err := probeUDPSourceIP("127.0.0.2", targetAddr); err != nil {
+		t.Skipf("local platform cannot bind 127.0.0.2 as UDP source: %v", err)
+	}
+	_ = readUDPSourceAddress(t, sourceAddresses)
 	listenPort := reserveLocalUDPPort(t)
 
 	supervisor := NewSupervisor()
@@ -701,6 +758,24 @@ func TestSupervisorPreservesUDPClientMappingAcrossPackets(t *testing.T) {
 	second := readUDPSourceAddress(t, sourceAddresses)
 	if first != second {
 		t.Fatalf("expected UDP target to see stable source address, got first=%s second=%s", first, second)
+	}
+}
+
+func TestSupervisorBindsConfiguredSendIPForUDPUpstream(t *testing.T) {
+	targetAddr, _, closeTarget := startUDPSourceRecorder(t)
+	defer closeTarget()
+	upstreamAddress, err := net.ResolveUDPAddr("udp", targetAddr)
+	if err != nil {
+		t.Fatalf("resolve udp target: %v", err)
+	}
+	conn, err := dialUDPUpstream("127.0.0.2", upstreamAddress)
+	if err != nil {
+		t.Skipf("local platform cannot bind 127.0.0.2 as UDP source: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	localAddress, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || localAddress.IP.String() != "127.0.0.2" {
+		t.Fatalf("expected UDP local source 127.0.0.2, got %#v", conn.LocalAddr())
 	}
 }
 

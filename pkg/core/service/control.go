@@ -63,6 +63,7 @@ type ControlServiceOptions struct {
 	GeoIPResolver           GeoIPResolver
 	HealthActionExecutors   []HealthActionExecutor
 	HealthEventExecutors    []HealthEventExecutor
+	Now                     func() time.Time
 }
 
 type TargetGroupSchedulerSupportFunc func(scheduler string) bool
@@ -88,6 +89,9 @@ func NewControlServiceWithOptions(store repo.UnitOfWork, options ControlServiceO
 		dnsSecretEncryptionKey:  options.DNSSecretEncryptionKey,
 		dnsProviders:            options.DNSProviders,
 		geoIPResolver:           options.GeoIPResolver,
+	}
+	if options.Now != nil {
+		service.now = options.Now
 	}
 	healthActionExecutors := append([]HealthActionExecutor(nil), options.HealthActionExecutors...)
 	healthActionExecutors = append(healthActionExecutors, service.defaultHealthActionExecutors()...)

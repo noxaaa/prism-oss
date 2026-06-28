@@ -108,7 +108,7 @@ func newDNSManagedRecordEvaluationSnapshot(record repo.DNSManagedRecordRecord) d
 		ActiveInstanceID:        record.ActiveInstanceID,
 		LastAppliedValuesJSON:   stringListJSON(parseStringListJSON(record.LastAppliedValuesJSON)),
 		LastEvaluationStatus:    record.LastEvaluationStatus,
-		ProviderRetirementsJSON: record.ProviderRetirementsJSON,
+		ProviderRetirementsJSON: dnsProviderRetirementsJSON(parseDNSProviderRetirements(record.ProviderRetirementsJSON)),
 		UpdatedAt:               normalizeDNSSnapshotTimestamp(record.UpdatedAt),
 		InstancesJSON:           string(instancesJSON),
 	}

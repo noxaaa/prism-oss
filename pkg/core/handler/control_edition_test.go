@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -306,6 +305,17 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 		ExpiresAt:      time.Now().Add(time.Minute),
 	})
 	group := createOSSNodeGroupViaAPI(t, server, token, "OSS API Group")
+	enrollmentProfile := createOSSNodeEnrollmentProfileViaAPI(t, server, token, group.ID)
+	limitedEnrollmentProfile := createOSSNodeEnrollmentProfileWithMaxUsesViaAPI(t, server, token, group.ID, 1)
+	rotatedLimitedEnrollmentProfile := createOSSNodeEnrollmentProfileWithMaxUsesViaAPI(t, server, token, group.ID, 1)
+	disabledEnrollmentProfile := createOSSNodeEnrollmentProfileWithEnabledViaAPI(t, server, token, group.ID, false)
+	rotatedDisabledEnrollmentProfile := rotateOSSNodeEnrollmentProfileTokenViaAPI(t, server, token, disabledEnrollmentProfile.ID)
+	if rotatedDisabledEnrollmentProfile.Enabled {
+		t.Fatalf("expected rotating disabled enrollment profile to preserve disabled state")
+	}
+	enrollmentOnlyGroup := createOSSNodeGroupViaAPI(t, server, token, "OSS API Enrollment Only Group")
+	enrollmentOnlyProfile := createOSSNodeEnrollmentProfileViaAPI(t, server, token, enrollmentOnlyGroup.ID)
+	assertOSSNodeGroupDeleteConflictViaAPI(t, server, token, enrollmentOnlyGroup.ID)
 	node := createOSSNodeViaAPI(t, server, token, group.ID, "OSS API Node")
 	monitorGroup := createOSSMonitorGroupViaAPI(t, server, token, "OSS API Monitor Group")
 	monitor := createOSSMonitorViaAPI(t, server, token, monitorGroup.ID, "OSS API Monitor")
@@ -316,13 +326,148 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 	dnsManagedRecord := createOSSDNSManagedRecordViaAPI(t, server, token, dnsCredential, "smart", "A")
 	dnsInstance := createOSSDNSInstanceViaAPI(t, server, token, dnsManagedRecord.ID, "OSS API DNS Instance")
 	assertOSSDNSManagedRecordTypeConflictViaAPI(t, server, token, dnsCredential, "smart", "CNAME")
+	serviceNow := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	controlService := service.NewControlServiceWithOptions(store, service.ControlServiceOptions{
 		Edition:                 edition.OSSProvider(),
 		AppName:                 "OSS Control Console",
 		ControlPlaneURL:         "http://127.0.0.1:8080",
 		AgentReleaseVersion:     "v0.0.0-test",
 		AgentTokenSigningSecret: []byte("agent-token-secret-32-byte-test-key"),
+		Now: func() time.Time {
+			return serviceNow
+		},
 	})
+	enrollmentAuth, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", limitedEnrollmentProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-one",
+		RemoteIP: "203.0.113.10",
+	})
+	if err != nil {
+		t.Fatalf("expected limited enrollment token to create node, got %v", err)
+	}
+	if _, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", limitedEnrollmentProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-two",
+		RemoteIP: "203.0.113.11",
+	}); err == nil {
+		t.Fatalf("expected limited enrollment token to reject second concurrent use")
+	}
+	assertOSSNodeEnrollmentEventsIncludeFailureViaAPI(t, server, token, limitedEnrollmentProfile.ID, "ENROLLMENT_MAX_USES_EXCEEDED")
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), enrollmentAuth); err != nil {
+		t.Fatalf("release unfinalized enrollment: %v", err)
+	}
+	reusedEnrollmentAuth, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", limitedEnrollmentProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-three",
+		RemoteIP: "203.0.113.12",
+	})
+	if err != nil {
+		t.Fatalf("expected released enrollment reservation to become reusable, got %v", err)
+	}
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), reusedEnrollmentAuth); err != nil {
+		t.Fatalf("release reused enrollment: %v", err)
+	}
+	staleLimitedEnrollmentProfile := createOSSNodeEnrollmentProfileWithMaxUsesViaAPI(t, server, token, group.ID, 1)
+	staleEnrollmentAuth, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", staleLimitedEnrollmentProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-stale-one",
+		RemoteIP: "203.0.113.13",
+	})
+	if err != nil {
+		t.Fatalf("expected stale enrollment setup to create node, got %v", err)
+	}
+	serviceNow = serviceNow.Add(10 * time.Minute)
+	if _, err := controlService.ValidateAgentToken(context.Background(), "NODE", staleLimitedEnrollmentProfile.Token); err != nil {
+		t.Fatalf("expected stale enrollment preflight to reclaim abandoned reservation, got %v", err)
+	}
+	reclaimedEnrollmentAuth, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", staleLimitedEnrollmentProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-stale-two",
+		RemoteIP: "203.0.113.14",
+	})
+	if err != nil {
+		t.Fatalf("expected stale enrollment reservation to be reclaimed, got %v", err)
+	}
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), staleEnrollmentAuth); err != nil {
+		t.Fatalf("release stale enrollment reservation after cleanup: %v", err)
+	}
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), reclaimedEnrollmentAuth); err != nil {
+		t.Fatalf("release reclaimed enrollment reservation: %v", err)
+	}
+	pendingReconnectProfile := createOSSNodeEnrollmentProfileWithMaxUsesViaAPI(t, server, token, group.ID, 1)
+	pendingReconnectAuth, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", pendingReconnectProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-pending-reconnect",
+		RemoteIP: "203.0.113.15",
+	})
+	if err != nil {
+		t.Fatalf("expected pending reconnect setup to create node, got %v", err)
+	}
+	reconnectedAuth, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", pendingReconnectAuth.AgentCredential, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-pending-reconnect",
+		RemoteIP: "203.0.113.15",
+	})
+	if err != nil {
+		t.Fatalf("expected pending enrollment credential reconnect to authenticate, got %v", err)
+	}
+	if reconnectedAuth.AgentID != pendingReconnectAuth.AgentID {
+		t.Fatalf("expected pending enrollment credential reconnect to reuse node %q, got %q", pendingReconnectAuth.AgentID, reconnectedAuth.AgentID)
+	}
+	if _, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", pendingReconnectProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-pending-duplicate",
+		RemoteIP: "203.0.113.16",
+	}); err == nil {
+		t.Fatalf("expected pending credential reconnect to keep enrollment max uses consumed")
+	}
+	duplicateReleaseProfile := createOSSNodeEnrollmentProfileWithMaxUsesViaAPI(t, server, token, group.ID, 2)
+	duplicateReleaseA, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", duplicateReleaseProfile.Token, service.AgentEnrollmentMetadata{Hostname: "autoscale-duplicate-a", RemoteIP: "203.0.113.17"})
+	if err != nil {
+		t.Fatalf("expected duplicate release setup A to create node, got %v", err)
+	}
+	duplicateReleaseB, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", duplicateReleaseProfile.Token, service.AgentEnrollmentMetadata{Hostname: "autoscale-duplicate-b", RemoteIP: "203.0.113.18"})
+	if err != nil {
+		t.Fatalf("expected duplicate release setup B to create node, got %v", err)
+	}
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), duplicateReleaseA); err != nil {
+		t.Fatalf("release duplicate A: %v", err)
+	}
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), duplicateReleaseA); err != nil {
+		t.Fatalf("duplicate release duplicate A: %v", err)
+	}
+	duplicateReleaseC, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", duplicateReleaseProfile.Token, service.AgentEnrollmentMetadata{Hostname: "autoscale-duplicate-c", RemoteIP: "203.0.113.19"})
+	if err != nil {
+		t.Fatalf("expected one released enrollment use to be reusable, got %v", err)
+	}
+	if _, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", duplicateReleaseProfile.Token, service.AgentEnrollmentMetadata{Hostname: "autoscale-duplicate-d", RemoteIP: "203.0.113.23"}); err == nil {
+		t.Fatalf("expected duplicate release not to undercount live enrollment uses")
+	}
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), duplicateReleaseB); err != nil {
+		t.Fatalf("release duplicate B: %v", err)
+	}
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), duplicateReleaseC); err != nil {
+		t.Fatalf("release duplicate C: %v", err)
+	}
+	rotatedOldAuth, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", rotatedLimitedEnrollmentProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-before-rotate",
+		RemoteIP: "203.0.113.20",
+	})
+	if err != nil {
+		t.Fatalf("expected old limited enrollment token to create node before rotation, got %v", err)
+	}
+	rotatedLimitedEnrollmentProfile = rotateOSSNodeEnrollmentProfileTokenViaAPI(t, server, token, rotatedLimitedEnrollmentProfile.ID)
+	rotatedNewAuth, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", rotatedLimitedEnrollmentProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-after-rotate",
+		RemoteIP: "203.0.113.21",
+	})
+	if err != nil {
+		t.Fatalf("expected rotated enrollment token to create node, got %v", err)
+	}
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), rotatedOldAuth); err != nil {
+		t.Fatalf("release old rotated enrollment reservation: %v", err)
+	}
+	if _, err := controlService.AuthenticateAgentTokenWithMetadata(context.Background(), "NODE", rotatedLimitedEnrollmentProfile.Token, service.AgentEnrollmentMetadata{
+		Hostname: "autoscale-after-old-release",
+		RemoteIP: "203.0.113.22",
+	}); err == nil {
+		t.Fatalf("expected rotated token max uses to remain consumed after releasing old token reservation")
+	}
+	if err := controlService.ReleaseAgentRegistrationCredential(context.Background(), rotatedNewAuth); err != nil {
+		t.Fatalf("release new rotated enrollment reservation: %v", err)
+	}
 	if _, err := controlService.CreateRule(context.Background(), service.InternalIdentity{
 		UserID:         "user_owner",
 		OrganizationID: bootstrapResponse.Data.Organization.ID,
@@ -365,6 +510,9 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 
 	for _, path := range []string{
 		"/internal/v1/node-groups",
+		"/internal/v1/node-enrollment-profiles",
+		"/internal/v1/node-enrollment-profiles/" + enrollmentProfile.ID,
+		"/internal/v1/node-enrollment-profiles/" + enrollmentProfile.ID + "/events",
 		"/internal/v1/nodes",
 		"/internal/v1/nodes/" + node.ID,
 		"/internal/v1/nodes/" + node.ID + "/registration-tokens",
@@ -399,11 +547,19 @@ func TestOSSControlServerPostgresCoreListAPIs(t *testing.T) {
 		}
 	}
 	assertOSSRouteNotFound(t, server, token, "/internal/v1/dns/"+"records")
+	rotateOSSNodeEnrollmentProfileTokenViaAPI(t, server, token, enrollmentProfile.ID)
 	revokeNodeRegistrationTokenViaAPI(t, server, token, node.ID, registrationToken.TokenID)
 	revokeMonitorRegistrationTokenViaAPI(t, server, token, monitor.ID, monitorRegistrationToken.TokenID)
 	deleteOSSDNSInstanceViaAPI(t, server, token, dnsInstance.ID)
 	deleteOSSDNSManagedRecordViaAPI(t, server, token, dnsManagedRecord.ID)
 	deleteOSSDNSCredentialViaAPI(t, server, token, dnsCredential.ID)
+	deleteOSSNodeEnrollmentProfileViaAPI(t, server, token, enrollmentProfile.ID)
+	deleteOSSNodeEnrollmentProfileViaAPI(t, server, token, staleLimitedEnrollmentProfile.ID)
+	deleteOSSNodeEnrollmentProfileViaAPI(t, server, token, pendingReconnectProfile.ID)
+	deleteOSSNodeEnrollmentProfileViaAPI(t, server, token, duplicateReleaseProfile.ID)
+	deleteOSSNodeEnrollmentProfileViaAPI(t, server, token, disabledEnrollmentProfile.ID)
+	deleteOSSNodeEnrollmentProfileViaAPI(t, server, token, enrollmentOnlyProfile.ID)
+	deleteOSSNodeGroupViaAPI(t, server, token, enrollmentOnlyGroup.ID)
 }
 
 type testControlRouteExtension struct {
@@ -484,10 +640,6 @@ func assertMissingPermission(t *testing.T, permissions []string, expected string
 	}
 }
 
-type ossNodeGroupPayload struct {
-	ID string `json:"id"`
-}
-
 type ossNodePayload struct {
 	ID string `json:"id"`
 }
@@ -537,24 +689,6 @@ type ossDNSInstancePayload struct {
 
 type ossRegistrationTokenPayload struct {
 	TokenID string `json:"token_id"`
-}
-
-func createOSSNodeGroupViaAPI(t *testing.T, server http.Handler, token string, name string) ossNodeGroupPayload {
-	t.Helper()
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/internal/v1/node-groups", bytes.NewBufferString(`{"name":"`+name+`","description":"OSS core group"}`))
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
-	server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("expected OSS node group create 201, got %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	var response struct {
-		Data ossNodeGroupPayload `json:"data"`
-	}
-	decodeJSON(t, recorder, &response)
-	return response.Data
 }
 
 func createOSSNodeViaAPI(t *testing.T, server http.Handler, token string, groupID string, name string) ossNodePayload {
@@ -861,93 +995,5 @@ func deleteOSSDNSManagedRecordViaAPI(t *testing.T, server http.Handler, token st
 	server.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected OSS DNS managed record delete 200, got %d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func createOSSNodeRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, nodeID string) ossRegistrationTokenPayload {
-	t.Helper()
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/internal/v1/nodes/"+nodeID+"/registration-token", bytes.NewBufferString(`{"ttl_hours":1}`))
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
-	server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("expected OSS node registration token create 201, got %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	var response struct {
-		Data ossRegistrationTokenPayload `json:"data"`
-	}
-	decodeJSON(t, recorder, &response)
-	return response.Data
-}
-
-func revokeNodeRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, nodeID string, tokenID string) {
-	t.Helper()
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/nodes/"+nodeID+"/registration-tokens/"+tokenID, nil)
-	request.Header.Set("Authorization", "Bearer "+token)
-	server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected OSS node registration token revoke 200, got %d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func createOSSMonitorRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, monitorID string) ossRegistrationTokenPayload {
-	t.Helper()
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/internal/v1/monitors/"+monitorID+"/registration-token", bytes.NewBufferString(`{"ttl_hours":1}`))
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
-	server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("expected OSS monitor registration token create 201, got %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	var response struct {
-		Data ossRegistrationTokenPayload `json:"data"`
-	}
-	decodeJSON(t, recorder, &response)
-	return response.Data
-}
-
-func revokeMonitorRegistrationTokenViaAPI(t *testing.T, server http.Handler, token string, monitorID string, tokenID string) {
-	t.Helper()
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/monitors/"+monitorID+"/registration-tokens/"+tokenID, nil)
-	request.Header.Set("Authorization", "Bearer "+token)
-	server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected OSS monitor registration token revoke 200, got %d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func deleteOSSDNSCredentialViaAPI(t *testing.T, server http.Handler, token string, credentialID string) {
-	t.Helper()
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodDelete, "/internal/v1/dns/credentials/"+credentialID, nil)
-	request.Header.Set("Authorization", "Bearer "+token)
-	server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected OSS DNS credential delete 200, got %d body=%s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func assertOSSErrorCode(t *testing.T, recorder *httptest.ResponseRecorder, expected string) {
-	t.Helper()
-
-	var response struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode error response: %v body=%s", err, recorder.Body.String())
-	}
-	if response.Error.Code != expected {
-		t.Fatalf("expected error code %s, got %s body=%s", expected, response.Error.Code, recorder.Body.String())
 	}
 }

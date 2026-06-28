@@ -354,6 +354,9 @@ func (repositories targetGroupServiceTestRepositories) Quotas() repo.QuotaReposi
 func (repositories targetGroupServiceTestRepositories) AgentRegistrationTokens() repo.AgentRegistrationTokenRepository {
 	return nil
 }
+func (repositories targetGroupServiceTestRepositories) NodeEnrollmentProfiles() repo.NodeEnrollmentProfileRepository {
+	return nil
+}
 func (repositories targetGroupServiceTestRepositories) AgentCredentials() repo.AgentCredentialRepository {
 	return nil
 }

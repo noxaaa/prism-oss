@@ -10,7 +10,7 @@ import (
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
 
-func (service *ControlService) NodeGroupListenIPOptions(ctx context.Context, identity InternalIdentity, nodeGroupID string, protocol string, port int) ([]ResourceOption, error) {
+func (service *ControlService) NodeGroupListenIPOptions(ctx context.Context, identity InternalIdentity, nodeGroupID string, protocol string, segments []repo.InboundBindingPortSegmentRecord) ([]ResourceOption, error) {
 	if !service.hasPermission(identity, string(domain.PermissionRulesManageOwn)) && !service.hasPermission(identity, string(domain.PermissionRulesManageAll)) && !service.hasPermission(identity, string(domain.PermissionNodesManage)) {
 		return nil, ErrForbidden
 	}
@@ -26,7 +26,29 @@ func (service *ControlService) NodeGroupListenIPOptions(ctx context.Context, ide
 		if err != nil {
 			return err
 		}
-		result = listenIPOptionsForNodes(nodes, protocol, port)
+		result = listenIPOptionsForNodes(nodes, protocol, segments)
+		return nil
+	})
+	return result, mapServiceError(err)
+}
+
+func (service *ControlService) NodeGroupSendIPOptions(ctx context.Context, identity InternalIdentity, nodeGroupID string) ([]ResourceOption, error) {
+	if !service.hasPermission(identity, string(domain.PermissionRulesManageOwn)) && !service.hasPermission(identity, string(domain.PermissionRulesManageAll)) && !service.hasPermission(identity, string(domain.PermissionNodesManage)) {
+		return nil, ErrForbidden
+	}
+	if !service.canUseNodeGroup(identity, nodeGroupID) {
+		return []ResourceOption{}, nil
+	}
+	var result []ResourceOption
+	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		if _, err := repositories.NodeGroups().FindNodeGroupByID(ctx, identity.OrganizationID, nodeGroupID); err != nil {
+			return err
+		}
+		nodes, err := nodesInGroup(ctx, repositories, identity.OrganizationID, nodeGroupID)
+		if err != nil {
+			return err
+		}
+		result = sendIPOptionsForNodes(nodes)
 		return nil
 	})
 	return result, mapServiceError(err)
@@ -36,10 +58,18 @@ func (service *ControlService) CreateRule(ctx context.Context, identity Internal
 	if !service.hasPermission(identity, string(domain.PermissionRulesManageOwn)) && !service.hasPermission(identity, string(domain.PermissionRulesManageAll)) {
 		return RulePayload{}, ErrForbidden
 	}
-	input.ForwardingType = defaultForwardingType(input.ForwardingType)
-	input.FailurePolicy = defaultFailurePolicy(input.FailurePolicy)
+	normalized, err := validateRuleMutationInput(input)
+	if err != nil {
+		return RulePayload{}, err
+	}
+	input = normalized
+	dataplanePreference, err := normalizeDataplanePreferenceForMutation(input.DataplanePreference)
+	if err != nil {
+		return RulePayload{}, err
+	}
+	input.DataplanePreference = dataplanePreference
 	var result RulePayload
-	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+	err = service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if err := service.prepareRuleMutation(ctx, repositories, identity, "", input, input.Enabled); err != nil {
 			return err
 		}
@@ -53,25 +83,27 @@ func (service *ControlService) CreateRule(ctx context.Context, identity Internal
 		}
 		binding := inboundBindingForRule(identity.OrganizationID, input, now)
 		rule := repo.RuleRecord{
-			ID:               service.newID(),
-			OrganizationID:   identity.OrganizationID,
-			OwnerUserID:      identity.UserID,
-			Name:             input.Name,
-			Enabled:          input.Enabled,
-			Status:           status,
-			ForwardingType:   input.ForwardingType,
-			Protocol:         input.Protocol,
-			MatchType:        input.Match.Type,
-			InboundBindingID: binding.ID,
-			SNIHostname:      input.Match.SNIHostname,
-			TargetType:       input.Upstream.Type,
-			TargetID:         input.Upstream.TargetID,
-			TargetGroupID:    input.Upstream.TargetGroupID,
-			ProxyProtocolIn:  defaultProxyProtocol(input.ProxyProtocol.In),
-			ProxyProtocolOut: defaultProxyProtocol(input.ProxyProtocol.Out),
-			FailurePolicy:    defaultFailurePolicy(input.FailurePolicy),
-			CreatedAt:        now,
-			UpdatedAt:        now,
+			ID:                  service.newID(),
+			OrganizationID:      identity.OrganizationID,
+			OwnerUserID:         identity.UserID,
+			Name:                input.Name,
+			Enabled:             input.Enabled,
+			Status:              status,
+			ForwardingType:      input.ForwardingType,
+			Protocol:            input.Protocol,
+			MatchType:           input.Match.Type,
+			InboundBindingID:    binding.ID,
+			SNIHostname:         input.Match.SNIHostname,
+			TargetType:          input.Upstream.Type,
+			TargetID:            input.Upstream.TargetID,
+			TargetGroupID:       input.Upstream.TargetGroupID,
+			ProxyProtocolIn:     defaultProxyProtocol(input.ProxyProtocol.In),
+			ProxyProtocolOut:    defaultProxyProtocol(input.ProxyProtocol.Out),
+			FailurePolicy:       defaultFailurePolicy(input.FailurePolicy),
+			DataplanePreference: defaultDataplanePreference(input.DataplanePreference),
+			SendIP:              input.SendIP,
+			CreatedAt:           now,
+			UpdatedAt:           now,
 		}
 		if err := repositories.Rules().CreateRule(ctx, rule, binding, input.Tags, now, service.newID); err != nil {
 			return err
@@ -128,10 +160,18 @@ func (service *ControlService) GetRule(ctx context.Context, identity InternalIde
 }
 
 func (service *ControlService) UpdateRule(ctx context.Context, identity InternalIdentity, ruleID string, input RuleMutationInput) (RulePayload, error) {
-	input.ForwardingType = defaultForwardingType(input.ForwardingType)
-	input.FailurePolicy = defaultFailurePolicy(input.FailurePolicy)
+	normalized, err := validateRuleMutationInput(input)
+	if err != nil {
+		return RulePayload{}, err
+	}
+	input = normalized
+	dataplanePreference, err := normalizeDataplanePreferenceForMutation(input.DataplanePreference)
+	if err != nil {
+		return RulePayload{}, err
+	}
+	input.DataplanePreference = dataplanePreference
 	var result RulePayload
-	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+	err = service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		rule, err := repositories.Rules().FindRuleByID(ctx, identity.OrganizationID, ruleID)
 		if err != nil {
 			return err
@@ -164,6 +204,8 @@ func (service *ControlService) UpdateRule(ctx context.Context, identity Internal
 		rule.ProxyProtocolIn = defaultProxyProtocol(input.ProxyProtocol.In)
 		rule.ProxyProtocolOut = defaultProxyProtocol(input.ProxyProtocol.Out)
 		rule.FailurePolicy = defaultFailurePolicy(input.FailurePolicy)
+		rule.DataplanePreference = defaultDataplanePreference(input.DataplanePreference)
+		rule.SendIP = input.SendIP
 		rule.ConfigVersion++
 		rule.UpdatedAt = now
 		binding := inboundBindingForRule(identity.OrganizationID, input, now)
@@ -264,6 +306,7 @@ func (service *ControlService) CopyRule(ctx context.Context, identity InternalId
 		copied.Status = "DISABLED"
 		copied.ForwardingType = defaultForwardingType(source.ForwardingType)
 		copied.FailurePolicy = defaultFailurePolicy(source.FailurePolicy)
+		copied.DataplanePreference = defaultDataplanePreference(source.DataplanePreference)
 		copied.CreatedAt = now
 		copied.UpdatedAt = now
 		copied.ConfigVersion = 0
@@ -763,12 +806,19 @@ func (service *ControlService) prepareRuleMutation(ctx context.Context, reposito
 	if err != nil {
 		return err
 	}
-	if !nodesCoverListenIPAndPort(nodes, input.ListenIP, input.Protocol, input.Port) {
-		return validationError("Selected entry does not cover the rule listen_ip, protocol, and port.", map[string]any{
+	segments := toInboundBindingPortSegments(identity.OrganizationID, "", input.PortSegments, "")
+	if !nodesCoverListenIPAndPortSegments(nodes, input.ListenIP, input.Protocol, segments) {
+		return validationError("Selected entry does not cover the rule listen_ip, protocol, and port segments.", map[string]any{
 			"node_group_id": input.NodeGroupID,
 			"listen_ip":     input.ListenIP,
 			"protocol":      input.Protocol,
-			"port":          input.Port,
+			"port_segments": input.PortSegments,
+		})
+	}
+	if !nodesShareSendIP(nodes, input.SendIP) {
+		return validationError("Selected send_ip is not allowed by every node in the node group.", map[string]any{
+			"node_group_id": input.NodeGroupID,
+			"send_ip":       input.SendIP,
 		})
 	}
 	if occupiesPort {
@@ -784,7 +834,7 @@ func (service *ControlService) prepareRuleMutation(ctx context.Context, reposito
 }
 
 func ensureNoRuleConflicts(ctx context.Context, repositories repo.Repositories, organizationID string, existing []repo.RuleRecord, ruleID string, input RuleMutationInput, candidateNodes []repo.NodeRecord) error {
-	candidates := bindingsForNodes(candidateNodes, input.NodeGroupID, input.ListenIP, input.Protocol, input.Port, input.Match.Type, input.Match.SNIHostname, defaultProxyProtocol(input.ProxyProtocol.In), ruleID)
+	candidates := bindingsForNodes(candidateNodes, input.NodeGroupID, input.ListenIP, input.Protocol, toInboundBindingPortSegments(organizationID, "", input.PortSegments, ""), input.Match.Type, input.Match.SNIHostname, defaultProxyProtocol(input.ProxyProtocol.In), ruleID)
 	for _, existingRule := range existing {
 		if existingRule.ID == ruleID {
 			continue
@@ -793,7 +843,7 @@ func ensureNoRuleConflicts(ctx context.Context, repositories repo.Repositories, 
 		if err != nil {
 			return err
 		}
-		existingBindings := bindingsForNodes(existingNodes, existingRule.Binding.NodeGroupID, existingRule.Binding.ListenIP, existingRule.Protocol, existingRule.Binding.Port, existingRule.MatchType, existingRule.SNIHostname, existingRule.ProxyProtocolIn, existingRule.ID)
+		existingBindings := bindingsForNodes(existingNodes, existingRule.Binding.NodeGroupID, existingRule.Binding.ListenIP, existingRule.Protocol, rulePortSegments(existingRule.Binding), existingRule.MatchType, existingRule.SNIHostname, existingRule.ProxyProtocolIn, existingRule.ID)
 		for _, candidate := range candidates {
 			if err := domain.ValidateInboundBindingConflict(existingBindings, candidate); err != nil {
 				return err
@@ -803,21 +853,25 @@ func ensureNoRuleConflicts(ctx context.Context, repositories repo.Repositories, 
 	return nil
 }
 
-func bindingsForNodes(nodes []repo.NodeRecord, nodeGroupID string, listenIP string, protocol string, port int, matchType string, sni string, proxyProtocolIn string, ruleID string) []domain.InboundBinding {
-	bindings := make([]domain.InboundBinding, 0, len(nodes))
+func bindingsForNodes(nodes []repo.NodeRecord, nodeGroupID string, listenIP string, protocol string, segments []repo.InboundBindingPortSegmentRecord, matchType string, sni string, proxyProtocolIn string, ruleID string) []domain.InboundBinding {
+	bindings := make([]domain.InboundBinding, 0, len(nodes)*len(segments))
 	for _, node := range nodes {
-		bindings = append(bindings, domain.InboundBinding{NodeID: node.ID, ListenIP: listenIP, Protocol: domain.Protocol(protocol), Port: port, MatchType: domain.MatchType(matchType), SNI: sni, ProxyProtocolIn: proxyProtocolIn, ForwardRule: ruleID})
+		for _, segment := range segments {
+			bindings = append(bindings, domain.InboundBinding{NodeID: node.ID, ListenIP: listenIP, Protocol: domain.Protocol(protocol), Port: segment.StartPort, StartPort: segment.StartPort, EndPort: segment.EndPort, MatchType: domain.MatchType(matchType), SNI: sni, ProxyProtocolIn: proxyProtocolIn, ForwardRule: ruleID})
+		}
 	}
 	return bindings
 }
 
 func validateRuleBindingShape(input RuleMutationInput, ruleID string) error {
-	bindings := bindingsForNodes([]repo.NodeRecord{{ID: "shape-check"}}, input.NodeGroupID, input.ListenIP, input.Protocol, input.Port, input.Match.Type, input.Match.SNIHostname, defaultProxyProtocol(input.ProxyProtocol.In), ruleID)
-	if len(bindings) != 1 {
+	bindings := bindingsForNodes([]repo.NodeRecord{{ID: "shape-check"}}, input.NodeGroupID, input.ListenIP, input.Protocol, toInboundBindingPortSegments("", "", input.PortSegments, ""), input.Match.Type, input.Match.SNIHostname, defaultProxyProtocol(input.ProxyProtocol.In), ruleID)
+	if len(bindings) == 0 {
 		return ErrInvalidInput
 	}
-	if err := domain.ValidateInboundBindingConflict(nil, bindings[0]); err != nil {
-		return err
+	for _, binding := range bindings {
+		if err := domain.ValidateInboundBindingConflict(nil, binding); err != nil {
+			return err
+		}
 	}
 	return nil
 }

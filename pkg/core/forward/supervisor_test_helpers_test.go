@@ -550,6 +550,31 @@ func startUDPSourceRecorder(t *testing.T) (string, <-chan string, func()) {
 	}
 }
 
+func startTCPSourceRecorder(t *testing.T) (string, <-chan string, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp source recorder: %v", err)
+	}
+	sources := make(chan string, 8)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			sources <- conn.RemoteAddr().String()
+			_ = conn.Close()
+		}
+	}()
+	return listener.Addr().String(), sources, func() {
+		_ = listener.Close()
+		<-done
+	}
+}
+
 func readUDPSourceAddress(t *testing.T, sources <-chan string) string {
 	t.Helper()
 	select {
@@ -559,6 +584,39 @@ func readUDPSourceAddress(t *testing.T, sources <-chan string) string {
 		t.Fatalf("timed out waiting for UDP source address")
 		return ""
 	}
+}
+
+func readTCPSourceAddress(t *testing.T, sources <-chan string) string {
+	t.Helper()
+	select {
+	case source := <-sources:
+		return source
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for TCP source address")
+		return ""
+	}
+}
+
+func probeTCPSourceIP(sendIP string, address string) error {
+	conn, err := dialTCPUpstream(sendIP, address)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func probeUDPSourceIP(sendIP string, address string) error {
+	upstreamAddress, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return err
+	}
+	conn, err := dialUDPUpstream(sendIP, upstreamAddress)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	_, err = conn.Write([]byte("probe"))
+	return err
 }
 
 func waitForSupervisorMetrics(t *testing.T, supervisor *Supervisor, predicate func(Metrics) bool) Metrics {

@@ -25,6 +25,8 @@ curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install.
 
 安装脚本会写入本地 `.env`，生成基于镜像的 `docker-compose.yml`，拉取指定 Release 镜像，运行 `migrate` 镜像，并启动 PostgreSQL 16、Redis、控制面和 Web 控制台。安装完成后打开脚本输出的 setup URL 创建第一个 owner 账号。
 
+首次安装时，如果当前环境有终端且没有传入配置类参数，安装脚本会交互询问 Web 控制台端口、公网 Web 控制台 URL 和控制面 API 端口。需要无人值守安装时继续显式传入对应选项。
+
 安装脚本还会尝试下载 DB-IP IP to Country Lite MMDB 到 `./geoip/dbip-country-lite.mmdb`，并以只读方式挂载到控制面，用于节点国家/地区国旗展示。GeoIP 下载失败不会阻断安装；缺少数据库时节点国家/地区显示为未知。DB-IP Lite 由 DB-IP.com 提供，使用 CC BY 4.0 归因。
 
 如果安装在远程主机上，自动识别的地址不是浏览器可访问地址时，显式传入外部访问地址：
@@ -69,6 +71,8 @@ mkdir -p geoip
 curl -fsSL "https://download.db-ip.com/free/dbip-country-lite-$(date -u +%Y-%m).mmdb.gz" | gunzip -c > geoip/dbip-country-lite.mmdb
 docker compose restart control-plane
 ```
+
+如果节点 Agent 通过可信反向代理或负载均衡连接控制面，并且你使用自动加入配置的 CIDR 限制，请在 `.env` 中设置 `TRUSTED_AGENT_PROXY_CIDRS` 为代理来源 CIDR，然后重启控制面。只有来自这些可信代理 CIDR 的请求才会使用 `X-Forwarded-For`、`X-Real-IP` 或 `Forwarded` 作为自动加入来源 IP；默认会忽略所有 forwarded headers。
 
 使用外部 PostgreSQL 16，而不是内置 PostgreSQL 容器：
 
@@ -118,6 +122,14 @@ cd "$HOME/prism-oss"
 ```
 
 helper 会下载 `node-agent-linux-<arch>.tar.gz`，校验 `SHA256SUMS`，调用 `node-agent install`，注册并启动 `prism-node-agent.service`。命令退出后，Agent 会由 systemd 在后台运行。
+
+节点转发后端由 Prism 托管。`NATIVE` 是默认 Go 原生转发后端。`HAPROXY` 使用 node-agent release 内置的 HAProxy binary，路径位于 `/opt/<service>/current/dataplane/haproxy/haproxy`，不会读取或修改系统 HAProxy 或 `/etc/haproxy`。`NFTABLES` 在 UI 中显示为内核 L4（nftables/iptables），只使用 Prism 自己的 nftables table/chain。安装时可以指定本机默认后端：
+
+```sh
+sudo sh install-node-agent.sh --version latest --control-url http://YOUR_CONTROL_PLANE:8080 --registration-token YOUR_NODE_REGISTRATION_TOKEN --dataplane-mode HAPROXY
+```
+
+同一台主机运行多个 node-agent 时请使用不同 `--service-name`；未显式传入 `--dataplane-instance-id` 时 Prism 会基于 service name 生成稳定实例标识。监听端口冲突默认 fail-fast，并会显示在规则部署诊断中。
 
 手动升级节点 Agent：
 

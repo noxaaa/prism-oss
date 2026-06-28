@@ -196,6 +196,10 @@ func (store *PostgresStore) AgentRegistrationTokens() AgentRegistrationTokenRepo
 	return store
 }
 
+func (store *PostgresStore) NodeEnrollmentProfiles() NodeEnrollmentProfileRepository {
+	return store
+}
+
 func (store *PostgresStore) AgentCredentials() AgentCredentialRepository {
 	return store
 }

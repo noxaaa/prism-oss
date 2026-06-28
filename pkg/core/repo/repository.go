@@ -29,6 +29,7 @@ type Repositories interface {
 	Rules() RuleRepository
 	Quotas() QuotaRepository
 	AgentRegistrationTokens() AgentRegistrationTokenRepository
+	NodeEnrollmentProfiles() NodeEnrollmentProfileRepository
 	AgentCredentials() AgentCredentialRepository
 	AuditLogs() AuditLogRepository
 }
@@ -216,9 +217,24 @@ type AgentRegistrationTokenRepository interface {
 	RevokeRegistrationToken(ctx context.Context, organizationID string, agentType string, agentID string, tokenID string, revokedAt string) error
 }
 
+type NodeEnrollmentProfileRepository interface {
+	ListNodeEnrollmentProfiles(ctx context.Context, organizationID string) ([]NodeEnrollmentProfileRecord, error)
+	FindNodeEnrollmentProfileByID(ctx context.Context, organizationID string, profileID string) (NodeEnrollmentProfileRecord, error)
+	FindNodeEnrollmentProfileByIDForUpdate(ctx context.Context, organizationID string, profileID string) (NodeEnrollmentProfileRecord, error)
+	FindNodeEnrollmentProfileByTokenHashForUpdate(ctx context.Context, tokenHash string) (NodeEnrollmentProfileRecord, error)
+	CreateNodeEnrollmentProfile(ctx context.Context, profile NodeEnrollmentProfileRecord) error
+	UpdateNodeEnrollmentProfile(ctx context.Context, profile NodeEnrollmentProfileRecord, replaceToken bool) error
+	IncrementNodeEnrollmentProfileUsedCount(ctx context.Context, organizationID string, profileID string, now string) error
+	DecrementNodeEnrollmentProfileUsedCount(ctx context.Context, organizationID string, profileID string, now string) error
+	DeleteNodeEnrollmentProfile(ctx context.Context, organizationID string, profileID string, deletedAt string) error
+	ListNodeEnrollmentEvents(ctx context.Context, organizationID string, profileID string, limit int) ([]NodeEnrollmentEventRecord, error)
+	CreateNodeEnrollmentEvent(ctx context.Context, event NodeEnrollmentEventRecord) error
+}
+
 type AgentCredentialRepository interface {
 	FindCredentialByHash(ctx context.Context, credentialHash string) (AgentCredentialRecord, error)
 	FindPendingCredentialByRegistrationToken(ctx context.Context, organizationID string, registrationTokenID string) (AgentCredentialRecord, error)
+	ListPendingCredentialsByEnrollmentProfile(ctx context.Context, organizationID string, enrollmentProfileID string) ([]AgentCredentialRecord, error)
 	CreateCredential(ctx context.Context, credential AgentCredentialRecord) error
 	ActivateCredential(ctx context.Context, organizationID string, credentialID string, activatedAt string) error
 	RevokeActiveCredentialsExcept(ctx context.Context, organizationID string, agentType string, agentID string, keepCredentialID string, revokedAt string) error
@@ -318,21 +334,35 @@ type NodeRecord struct {
 	AgentUpdateError          string
 	AgentUpdateStartedAt      string
 	AgentUpdateFinishedAt     string
+	DataplaneMode             string
+	DataplaneConflictPolicy   string
+	DataplaneInstanceID       string
+	DataplaneStatus           string
+	DataplaneError            string
+	DataplaneLastHash         string
+	DataplaneLastAppliedAt    string
+	EnrollmentProfileID       string
+	EnrollmentProfileName     string
 	CreatedAt                 string
 	UpdatedAt                 string
 	DeletedAt                 string
 	GroupIDs                  []string
 	ListenIPs                 []NodeListenIPRecord
+	SendIPs                   []NodeSendIPRecord
 	PortRanges                []NodePortRangeRecord
 	DNSPublishAddresses       []NodeDNSPublishAddressRecord
+	MaxRulePorts              int
 }
 
 type NodeConfigAckRecord struct {
-	ConfigVersion int
-	Status        string
-	ErrorMessage  string
-	RetryCount    int
-	NextRetryAt   string
+	ConfigVersion     int
+	Status            string
+	ErrorMessage      string
+	RetryCount        int
+	NextRetryAt       string
+	DataplaneStatus   string
+	DataplaneError    string
+	DataplaneLastHash string
 }
 
 type NodeAgentVersionRecord struct {
@@ -346,6 +376,17 @@ type NodeListenIPRecord struct {
 	OrganizationID string
 	NodeID         string
 	ListenIP       string
+	DisplayName    string
+	Enabled        bool
+	CreatedAt      string
+	UpdatedAt      string
+}
+
+type NodeSendIPRecord struct {
+	ID             string
+	OrganizationID string
+	NodeID         string
+	SendIP         string
 	DisplayName    string
 	Enabled        bool
 	CreatedAt      string
@@ -620,34 +661,46 @@ type InboundBindingRecord struct {
 	ListenIP       string
 	Protocol       string
 	Port           int
+	PortSegments   []InboundBindingPortSegmentRecord
 	MatchType      string
 	CreatedAt      string
 }
 
-type RuleRecord struct {
+type InboundBindingPortSegmentRecord struct {
 	ID               string
 	OrganizationID   string
-	OwnerUserID      string
-	Name             string
-	Enabled          bool
-	Status           string
-	ForwardingType   string
-	Protocol         string
-	MatchType        string
 	InboundBindingID string
-	SNIHostname      string
-	TargetType       string
-	TargetID         string
-	TargetGroupID    string
-	ProxyProtocolIn  string
-	ProxyProtocolOut string
-	FailurePolicy    string
-	ConfigVersion    int
+	StartPort        int
+	EndPort          int
 	CreatedAt        string
-	UpdatedAt        string
-	DeletedAt        string
-	Binding          InboundBindingRecord
-	Tags             []string
+}
+
+type RuleRecord struct {
+	ID                  string
+	OrganizationID      string
+	OwnerUserID         string
+	Name                string
+	Enabled             bool
+	Status              string
+	ForwardingType      string
+	Protocol            string
+	MatchType           string
+	InboundBindingID    string
+	SNIHostname         string
+	TargetType          string
+	TargetID            string
+	TargetGroupID       string
+	ProxyProtocolIn     string
+	ProxyProtocolOut    string
+	FailurePolicy       string
+	DataplanePreference string
+	SendIP              string
+	ConfigVersion       int
+	CreatedAt           string
+	UpdatedAt           string
+	DeletedAt           string
+	Binding             InboundBindingRecord
+	Tags                []string
 }
 
 type RuleTrafficRecord struct {
@@ -686,6 +739,11 @@ type RuleDeploymentRecord struct {
 	Protocol          string
 	ListenIP          string
 	Port              int
+	ExpectedDataplane string
+	ActualDataplane   string
+	Owner             string
+	DriftStatus       string
+	ExternalResource  string
 	UpdatedAt         string
 }
 
@@ -697,6 +755,8 @@ type RuleDeploymentPendingRecord struct {
 type RuleDeploymentAppliedRecord struct {
 	RuleID            string
 	RuleConfigVersion int
+	ExpectedDataplane string
+	ActualDataplane   string
 }
 
 type RuleDeploymentFailureRecord struct {
@@ -707,6 +767,11 @@ type RuleDeploymentFailureRecord struct {
 	Protocol          string
 	ListenIP          string
 	Port              int
+	ExpectedDataplane string
+	ActualDataplane   string
+	Owner             string
+	DriftStatus       string
+	ExternalResource  string
 }
 
 type QuotaRecord struct {
@@ -736,6 +801,49 @@ type AgentRegistrationTokenRecord struct {
 	CreatedByUserID string
 }
 
+type NodeEnrollmentProfileRecord struct {
+	ID                      string
+	OrganizationID          string
+	Name                    string
+	Description             string
+	TokenHash               string
+	Enabled                 bool
+	ExpiresAt               string
+	MaxUses                 int
+	UsedCount               int
+	NodeNameTemplate        string
+	GroupIDsJSON            string
+	ListenIPsJSON           string
+	SendIPsJSON             string
+	PortRangesJSON          string
+	MaxRulePorts            int
+	DNSPublishAddressesJSON string
+	DataplaneMode           string
+	DataplaneConflictPolicy string
+	AutoUpdateEnabled       bool
+	AllowedCIDRsJSON        string
+	MetadataJSON            string
+	CreatedByUserID         string
+	CreatedAt               string
+	UpdatedAt               string
+	RevokedAt               string
+	DeletedAt               string
+}
+
+type NodeEnrollmentEventRecord struct {
+	ID                  string
+	OrganizationID      string
+	EnrollmentProfileID string
+	NodeID              string
+	Status              string
+	ReasonCode          string
+	Message             string
+	RemoteIP            string
+	Hostname            string
+	MetadataJSON        string
+	CreatedAt           string
+}
+
 type AgentCredentialRecord struct {
 	ID                  string
 	OrganizationID      string
@@ -743,6 +851,8 @@ type AgentCredentialRecord struct {
 	AgentID             string
 	CredentialHash      string
 	RegistrationTokenID string
+	EnrollmentProfileID string
+	EnrollmentTokenHash string
 	ActivatedAt         string
 	RevokedAt           string
 	CreatedAt           string

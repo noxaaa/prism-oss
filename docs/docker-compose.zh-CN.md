@@ -8,6 +8,8 @@
 
 安装脚本第一次运行时会写入本地 `.env` 文件。这个文件包含认证、数据库和 Agent 相关密钥，应当视为私密文件保存。后续升级会保留已有密钥和自定义配置，只更新 Compose 使用的镜像 tag。
 
+首次安装时，如果当前环境有终端且没有传入配置类参数，安装脚本会交互询问 `WEB_PORT`、`PUBLIC_WEB_URL` 和 `CONTROL_PLANE_PORT`。需要无人值守安装时可以显式传入 `--web-port`、`--public-web-url` 和 `--control-port` 等选项。
+
 常用配置项：
 
 - `APP_NAME`：控制台显示名称。
@@ -23,7 +25,27 @@
 - `PRISM_IMAGE_TAG`：`prism-oss-web`、`prism-oss-control-plane` 和 `prism-oss-migrate` 使用的镜像 tag。
 - `BETTER_AUTH_URL`：可选的 auth base URL。默认使用 `PUBLIC_WEB_URL`。
 - `BETTER_AUTH_TRUSTED_ORIGINS`：auth 服务接受的浏览器来源，多个来源用逗号分隔。
+- `BETTER_AUTH_TRUST_PROXY_HEADERS`：仅当 Prism 位于可信反向代理之后，且代理会清理客户端传入的 `X-Forwarded-*` 并自行重写时设为 `true`。
 - `OSS_SETUP_TOKEN`：首次创建 owner 账号的一次性 setup token。
+
+## 反向代理
+
+如果 Web 控制台放在 HTTPS 反向代理后面，认证服务必须看到或信任浏览器实际访问的来源。请把 `PUBLIC_WEB_URL` 和 `BETTER_AUTH_URL` 设置为公网控制台 URL；如果还保留 localhost 或 IP 访问来源，也要把公网 origin 一并写入 `BETTER_AUTH_TRUSTED_ORIGINS`。
+
+只有在可信代理边界后面才设置 `BETTER_AUTH_TRUST_PROXY_HEADERS=true`。如果浏览器可以直接访问 Web 容器，或代理会透传客户端伪造的 `X-Forwarded-*` 头，不要开启。
+
+反向代理应转发原始 host 和 scheme：
+
+```nginx
+proxy_set_header Host $http_host;
+proxy_set_header X-Forwarded-Host $http_host;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Port $server_port;
+```
+
+如果公网控制台使用非默认端口，host 需要保留端口，或通过 `X-Forwarded-Port` 单独转发端口。
+
+如果这些值仍指向容器内网 URL，而不是浏览器访问的公网 URL，BetterAuth 可能会用 `INVALID_ORIGIN` 或 `MISSING_OR_NULL_ORIGIN` 拒绝 `/api/auth/sign-in/email` 或 `/api/auth/sign-out`。
 
 默认安装会启动内置 `postgres:16` 容器，数据存储在 `postgres-data` Docker volume。使用外部 PostgreSQL 16 时执行：
 

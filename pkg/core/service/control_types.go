@@ -95,22 +95,35 @@ type GroupMutationInput struct {
 }
 
 type NodeMutationInput struct {
-	Name                        string
-	NameProvided                bool
-	GroupIDs                    []string
-	GroupIDsProvided            bool
-	ListenIPs                   []NodeListenIPInput
-	ListenIPsProvided           bool
-	PortRanges                  []NodePortRangeInput
-	PortRangesProvided          bool
-	DNSPublishAddresses         []NodeDNSPublishAddressInput
-	DNSPublishAddressesProvided bool
-	PublicDescription           string
-	PublicDescriptionProvided   bool
+	Name                            string
+	NameProvided                    bool
+	GroupIDs                        []string
+	GroupIDsProvided                bool
+	ListenIPs                       []NodeListenIPInput
+	ListenIPsProvided               bool
+	SendIPs                         []NodeSendIPInput
+	SendIPsProvided                 bool
+	PortRanges                      []NodePortRangeInput
+	PortRangesProvided              bool
+	MaxRulePorts                    int
+	MaxRulePortsProvided            bool
+	DNSPublishAddresses             []NodeDNSPublishAddressInput
+	DNSPublishAddressesProvided     bool
+	PublicDescription               string
+	PublicDescriptionProvided       bool
+	DataplaneMode                   string
+	DataplaneModeProvided           bool
+	DataplaneConflictPolicy         string
+	DataplaneConflictPolicyProvided bool
 }
 
 type NodeListenIPInput struct {
 	ListenIP    string
+	DisplayName string
+}
+
+type NodeSendIPInput struct {
+	SendIP      string
 	DisplayName string
 }
 
@@ -221,15 +234,54 @@ type RegistrationTokenInput struct {
 	TTLHours int
 }
 
+type NodeEnrollmentProfileMutationInput struct {
+	Name                            string
+	NameProvided                    bool
+	Description                     string
+	DescriptionProvided             bool
+	Enabled                         bool
+	EnabledProvided                 bool
+	ExpiresAt                       string
+	ExpiresAtProvided               bool
+	MaxUses                         int
+	MaxUsesProvided                 bool
+	NodeNameTemplate                string
+	NodeNameTemplateProvided        bool
+	GroupIDs                        []string
+	GroupIDsProvided                bool
+	ListenIPs                       []NodeListenIPInput
+	ListenIPsProvided               bool
+	SendIPs                         []NodeSendIPInput
+	SendIPsProvided                 bool
+	PortRanges                      []NodePortRangeInput
+	PortRangesProvided              bool
+	MaxRulePorts                    int
+	MaxRulePortsProvided            bool
+	DNSPublishAddresses             []NodeDNSPublishAddressInput
+	DNSPublishAddressesProvided     bool
+	DataplaneMode                   string
+	DataplaneModeProvided           bool
+	DataplaneConflictPolicy         string
+	DataplaneConflictPolicyProvided bool
+	AutoUpdateEnabled               bool
+	AutoUpdateEnabledProvided       bool
+	AllowedCIDRs                    []string
+	AllowedCIDRsProvided            bool
+}
+
 type AgentAuthResult struct {
 	OrganizationID          string
 	AgentType               string
 	AgentID                 string
 	RegisteredWithToken     bool
 	RegistrationTokenID     string
+	EnrollmentProfileID     string
+	EnrollmentTokenHash     string
+	EnrollmentMetadata      AgentEnrollmentMetadata
 	AgentCredentialID       string
 	AgentCredential         string
 	AgentCredentialFileHint string
+	AffectedDNSRecordIDs    []string
 }
 
 type TargetMutationInput struct {
@@ -255,19 +307,27 @@ type TargetGroupMemberInput struct {
 }
 
 type RuleMutationInput struct {
-	Name           string
-	Tags           []string
-	NodeGroupID    string
-	ListenIP       string
-	FailurePolicy  string
-	ForwardingType string
-	Protocol       string
-	Port           int
-	Match          RuleMatchInput
-	ProxyProtocol  RuleProxyProtocolInput
-	Upstream       RuleUpstreamInput
-	Enabled        bool
-	EnabledSet     bool
+	Name                string
+	Tags                []string
+	NodeGroupID         string
+	ListenIP            string
+	SendIP              string
+	FailurePolicy       string
+	DataplanePreference string
+	ForwardingType      string
+	Protocol            string
+	Port                int
+	PortSegments        []RulePortSegmentInput
+	Match               RuleMatchInput
+	ProxyProtocol       RuleProxyProtocolInput
+	Upstream            RuleUpstreamInput
+	Enabled             bool
+	EnabledSet          bool
+}
+
+type RulePortSegmentInput struct {
+	StartPort int
+	EndPort   int
 }
 
 type RuleMatchInput struct {
@@ -349,31 +409,47 @@ type NodeGroupPayload struct {
 }
 
 type NodePayload struct {
-	ID                     string                         `json:"id"`
-	Name                   string                         `json:"name"`
-	Status                 string                         `json:"status"`
-	PublicDescription      string                         `json:"public_description"`
-	DesiredConfigVersion   int                            `json:"desired_config_version"`
-	AppliedConfigVersion   int                            `json:"applied_config_version"`
-	ConfigStatus           string                         `json:"config_status"`
-	ConfigErrorMessage     string                         `json:"config_error_message,omitempty"`
-	ConfigStatusUpdatedAt  string                         `json:"config_status_updated_at,omitempty"`
-	LastSeenAt             string                         `json:"last_seen_at,omitempty"`
-	RegisteredAt           string                         `json:"registered_at,omitempty"`
-	AgentVersion           string                         `json:"agent_version"`
-	AgentCommit            string                         `json:"agent_commit"`
-	AgentBuildTime         string                         `json:"agent_build_time"`
-	AgentAutoUpdateEnabled bool                           `json:"agent_auto_update_enabled"`
-	DesiredAgentVersion    string                         `json:"desired_agent_version"`
-	AgentUpdateStatus      string                         `json:"agent_update_status"`
-	AgentUpdateError       string                         `json:"agent_update_error,omitempty"`
-	AgentUpdateStartedAt   string                         `json:"agent_update_started_at,omitempty"`
-	AgentUpdateFinishedAt  string                         `json:"agent_update_finished_at,omitempty"`
-	GeoIP                  NodeGeoIPPayload               `json:"geoip"`
-	GroupIDs               []string                       `json:"group_ids"`
-	ListenIPs              []NodeListenIPPayload          `json:"listen_ips"`
-	PortRanges             []NodePortRangePayload         `json:"port_ranges"`
-	DNSPublishAddresses    []NodeDNSPublishAddressPayload `json:"dns_publish_addresses"`
+	ID                      string                         `json:"id"`
+	Name                    string                         `json:"name"`
+	Status                  string                         `json:"status"`
+	PublicDescription       string                         `json:"public_description"`
+	DesiredConfigVersion    int                            `json:"desired_config_version"`
+	AppliedConfigVersion    int                            `json:"applied_config_version"`
+	ConfigStatus            string                         `json:"config_status"`
+	ConfigErrorMessage      string                         `json:"config_error_message,omitempty"`
+	ConfigStatusUpdatedAt   string                         `json:"config_status_updated_at,omitempty"`
+	LastSeenAt              string                         `json:"last_seen_at,omitempty"`
+	RegisteredAt            string                         `json:"registered_at,omitempty"`
+	AgentVersion            string                         `json:"agent_version"`
+	AgentCommit             string                         `json:"agent_commit"`
+	AgentBuildTime          string                         `json:"agent_build_time"`
+	AgentAutoUpdateEnabled  bool                           `json:"agent_auto_update_enabled"`
+	DesiredAgentVersion     string                         `json:"desired_agent_version"`
+	AgentUpdateStatus       string                         `json:"agent_update_status"`
+	AgentUpdateError        string                         `json:"agent_update_error,omitempty"`
+	AgentUpdateStartedAt    string                         `json:"agent_update_started_at,omitempty"`
+	AgentUpdateFinishedAt   string                         `json:"agent_update_finished_at,omitempty"`
+	DataplaneMode           string                         `json:"dataplane_mode"`
+	DataplaneConflictPolicy string                         `json:"dataplane_conflict_policy"`
+	DataplaneInstanceID     string                         `json:"dataplane_instance_id,omitempty"`
+	DataplaneStatus         string                         `json:"dataplane_status"`
+	DataplaneError          string                         `json:"dataplane_error,omitempty"`
+	DataplaneLastHash       string                         `json:"dataplane_last_hash,omitempty"`
+	DataplaneLastAppliedAt  string                         `json:"dataplane_last_applied_at,omitempty"`
+	RegistrationSource      string                         `json:"registration_source"`
+	EnrollmentProfile       *NodeEnrollmentProfileRef      `json:"enrollment_profile,omitempty"`
+	GeoIP                   NodeGeoIPPayload               `json:"geoip"`
+	GroupIDs                []string                       `json:"group_ids"`
+	ListenIPs               []NodeListenIPPayload          `json:"listen_ips"`
+	SendIPs                 []NodeSendIPPayload            `json:"send_ips"`
+	PortRanges              []NodePortRangePayload         `json:"port_ranges"`
+	MaxRulePorts            int                            `json:"max_rule_ports"`
+	DNSPublishAddresses     []NodeDNSPublishAddressPayload `json:"dns_publish_addresses"`
+}
+
+type NodeEnrollmentProfileRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type NodeGeoIPPayload struct {
@@ -388,6 +464,13 @@ type NodeGeoIPPayload struct {
 type NodeListenIPPayload struct {
 	ID          string `json:"id,omitempty"`
 	ListenIP    string `json:"listen_ip"`
+	DisplayName string `json:"display_name"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type NodeSendIPPayload struct {
+	ID          string `json:"id,omitempty"`
+	SendIP      string `json:"send_ip"`
 	DisplayName string `json:"display_name"`
 	Enabled     bool   `json:"enabled"`
 }
@@ -577,6 +660,49 @@ type RegistrationTokenPayload struct {
 	InstallCommand  string `json:"install_command,omitempty"`
 }
 
+type NodeEnrollmentProfilePayload struct {
+	ID                      string                         `json:"id"`
+	Name                    string                         `json:"name"`
+	Description             string                         `json:"description"`
+	Enabled                 bool                           `json:"enabled"`
+	ExpiresAt               string                         `json:"expires_at,omitempty"`
+	MaxUses                 int                            `json:"max_uses"`
+	UsedCount               int                            `json:"used_count"`
+	NodeNameTemplate        string                         `json:"node_name_template"`
+	GroupIDs                []string                       `json:"group_ids"`
+	ListenIPs               []NodeListenIPPayload          `json:"listen_ips"`
+	SendIPs                 []NodeSendIPPayload            `json:"send_ips"`
+	PortRanges              []NodePortRangePayload         `json:"port_ranges"`
+	MaxRulePorts            int                            `json:"max_rule_ports"`
+	DNSPublishAddresses     []NodeDNSPublishAddressPayload `json:"dns_publish_addresses"`
+	DataplaneMode           string                         `json:"dataplane_mode"`
+	DataplaneConflictPolicy string                         `json:"dataplane_conflict_policy"`
+	AutoUpdateEnabled       bool                           `json:"auto_update_enabled"`
+	AllowedCIDRs            []string                       `json:"allowed_cidrs"`
+	CreatedAt               string                         `json:"created_at"`
+	UpdatedAt               string                         `json:"updated_at"`
+	RevokedAt               string                         `json:"revoked_at,omitempty"`
+	CreatedByUserID         string                         `json:"created_by_user_id,omitempty"`
+	Token                   string                         `json:"token,omitempty"`
+	InstallCommand          string                         `json:"install_command,omitempty"`
+	ShellScript             string                         `json:"shell_script,omitempty"`
+	AWSCloudInit            string                         `json:"aws_cloud_init,omitempty"`
+	TerraformUserData       string                         `json:"terraform_user_data,omitempty"`
+	SystemdReadyScript      string                         `json:"systemd_ready_script,omitempty"`
+}
+
+type NodeEnrollmentEventPayload struct {
+	ID                  string `json:"id"`
+	EnrollmentProfileID string `json:"enrollment_profile_id"`
+	NodeID              string `json:"node_id,omitempty"`
+	Status              string `json:"status"`
+	ReasonCode          string `json:"reason_code,omitempty"`
+	Message             string `json:"message,omitempty"`
+	RemoteIP            string `json:"remote_ip,omitempty"`
+	Hostname            string `json:"hostname,omitempty"`
+	CreatedAt           string `json:"created_at"`
+}
+
 type AgentUpdatePolicyInput struct {
 	Enabled bool `json:"enabled"`
 }
@@ -608,24 +734,32 @@ type TargetGroupMemberPayload struct {
 }
 
 type RulePayload struct {
-	ID             string                 `json:"id"`
-	Name           string                 `json:"name"`
-	Status         string                 `json:"status"`
-	Enabled        bool                   `json:"enabled"`
-	Tags           []string               `json:"tags"`
-	NodeGroupID    string                 `json:"node_group_id"`
-	ListenIP       string                 `json:"listen_ip"`
-	FailurePolicy  string                 `json:"failure_policy"`
-	ForwardingType string                 `json:"forwarding_type"`
-	Protocol       string                 `json:"protocol"`
-	Port           int                    `json:"port"`
-	Match          RuleMatchPayload       `json:"match"`
-	ProxyProtocol  RuleProxyProtocolInput `json:"proxy_protocol"`
-	Upstream       RuleUpstreamInput      `json:"upstream"`
-	OwnerUserID    string                 `json:"owner_user_id"`
-	ConfigVersion  int                    `json:"config_version"`
-	ConnectInfo    RuleConnectInfoPayload `json:"connect_info"`
-	Deployment     RuleDeploymentPayload  `json:"deployment"`
+	ID                  string                   `json:"id"`
+	Name                string                   `json:"name"`
+	Status              string                   `json:"status"`
+	Enabled             bool                     `json:"enabled"`
+	Tags                []string                 `json:"tags"`
+	NodeGroupID         string                   `json:"node_group_id"`
+	ListenIP            string                   `json:"listen_ip"`
+	SendIP              string                   `json:"send_ip"`
+	FailurePolicy       string                   `json:"failure_policy"`
+	DataplanePreference string                   `json:"dataplane_preference"`
+	ForwardingType      string                   `json:"forwarding_type"`
+	Protocol            string                   `json:"protocol"`
+	Port                int                      `json:"port"`
+	PortSegments        []RulePortSegmentPayload `json:"port_segments"`
+	Match               RuleMatchPayload         `json:"match"`
+	ProxyProtocol       RuleProxyProtocolInput   `json:"proxy_protocol"`
+	Upstream            RuleUpstreamInput        `json:"upstream"`
+	OwnerUserID         string                   `json:"owner_user_id"`
+	ConfigVersion       int                      `json:"config_version"`
+	ConnectInfo         RuleConnectInfoPayload   `json:"connect_info"`
+	Deployment          RuleDeploymentPayload    `json:"deployment"`
+}
+
+type RulePortSegmentPayload struct {
+	StartPort int `json:"start_port"`
+	EndPort   int `json:"end_port"`
 }
 
 type RuleDeploymentPayload struct {
@@ -638,15 +772,20 @@ type RuleDeploymentPayload struct {
 }
 
 type RuleDeploymentNodePayload struct {
-	NodeID       string `json:"node_id"`
-	NodeName     string `json:"node_name"`
-	Status       string `json:"status"`
-	ErrorCode    string `json:"error_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
-	Protocol     string `json:"protocol,omitempty"`
-	ListenIP     string `json:"listen_ip,omitempty"`
-	Port         int    `json:"port,omitempty"`
-	UpdatedAt    string `json:"updated_at,omitempty"`
+	NodeID            string `json:"node_id"`
+	NodeName          string `json:"node_name"`
+	Status            string `json:"status"`
+	ErrorCode         string `json:"error_code,omitempty"`
+	ErrorMessage      string `json:"error_message,omitempty"`
+	Protocol          string `json:"protocol,omitempty"`
+	ListenIP          string `json:"listen_ip,omitempty"`
+	Port              int    `json:"port,omitempty"`
+	ExpectedDataplane string `json:"expected_dataplane,omitempty"`
+	ActualDataplane   string `json:"actual_dataplane,omitempty"`
+	Owner             string `json:"owner,omitempty"`
+	DriftStatus       string `json:"drift_status,omitempty"`
+	ExternalResource  string `json:"external_resource,omitempty"`
+	UpdatedAt         string `json:"updated_at,omitempty"`
 }
 
 type RuleMatchPayload struct {
@@ -683,12 +822,16 @@ type AgentTrafficReportInput struct {
 }
 
 type ConfigApplyErrorInput struct {
-	Code     string
-	RuleIDs  []string
-	Protocol domain.Protocol
-	ListenIP string
-	Port     int
-	Message  string
+	Code             string
+	RuleIDs          []string
+	Protocol         domain.Protocol
+	ListenIP         string
+	Port             int
+	Dataplane        string
+	Owner            string
+	DriftStatus      string
+	ExternalResource string
+	Message          string
 }
 
 type RuleDiagnosticsPayload struct {
@@ -723,15 +866,18 @@ type RulesExportPayload struct {
 }
 
 type PortableRulePayload struct {
-	Name           string                      `json:"name"`
-	Tags           []string                    `json:"tags"`
-	FailurePolicy  string                      `json:"failure_policy,omitempty"`
-	ForwardingType string                      `json:"forwarding_type"`
-	Protocol       string                      `json:"protocol"`
-	Port           int                         `json:"port"`
-	Match          RuleMatchPayload            `json:"match"`
-	ProxyProtocol  RuleProxyProtocolInput      `json:"proxy_protocol"`
-	Upstream       PortableRuleUpstreamPayload `json:"upstream"`
+	Name                string                      `json:"name"`
+	Tags                []string                    `json:"tags"`
+	FailurePolicy       string                      `json:"failure_policy,omitempty"`
+	DataplanePreference string                      `json:"dataplane_preference,omitempty"`
+	ForwardingType      string                      `json:"forwarding_type"`
+	Protocol            string                      `json:"protocol"`
+	Port                int                         `json:"port"`
+	PortSegments        []RulePortSegmentPayload    `json:"port_segments,omitempty"`
+	SendIP              string                      `json:"send_ip,omitempty"`
+	Match               RuleMatchPayload            `json:"match"`
+	ProxyProtocol       RuleProxyProtocolInput      `json:"proxy_protocol"`
+	Upstream            PortableRuleUpstreamPayload `json:"upstream"`
 }
 
 type PortableRuleUpstreamPayload struct {

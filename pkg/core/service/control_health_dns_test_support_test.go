@@ -66,18 +66,14 @@ type healthDNSTestStore struct {
 	targetsByID                                     map[string]repo.TargetRecord
 	forwardingRules                                 []repo.RuleRecord
 	syncedHealthTargets, respectContextCancellation bool
-	deletedHealthCheckID                            string
-	deletedDNSManagedRecordID                       string
+	deletedHealthCheckID, deletedDNSManagedRecordID string
 	deletedCredentialID                             string
-	deletedMonitorID                                string
-	deletedMonitorGroupID                           string
+	deletedMonitorID, deletedMonitorGroupID         string
 	onLockDNSManagedRecord                          func(recordID string)
-	lockedDNSManagedRecords                         []string
-	lockedDNSInstances                              []string
+	lockedDNSManagedRecords, lockedDNSInstances     []string
 	notificationChannels                            []repo.NotificationChannelRecord
 	notificationDeliveries                          []repo.NotificationDeliveryRecord
-	notificationLookupErr                           error
-	notificationDeliveryErr                         error
+	notificationLookupErr, notificationDeliveryErr  error
 	txDepth                                         int
 }
 
@@ -134,6 +130,9 @@ func (repositories healthDNSTestRepositories) Rules() repo.RuleRepository {
 }
 func (repositories healthDNSTestRepositories) Quotas() repo.QuotaRepository { return nil }
 func (repositories healthDNSTestRepositories) AgentRegistrationTokens() repo.AgentRegistrationTokenRepository {
+	return nil
+}
+func (repositories healthDNSTestRepositories) NodeEnrollmentProfiles() repo.NodeEnrollmentProfileRepository {
 	return nil
 }
 func (repositories healthDNSTestRepositories) AgentCredentials() repo.AgentCredentialRepository {

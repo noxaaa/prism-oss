@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"strings"
 )
 
 type ControlPlaneConfig struct {
@@ -21,6 +22,7 @@ type ControlPlaneConfig struct {
 	AgentReleaseVersion     string
 	DNSSecretEncryptionKey  string
 	GeoIPDBPath             string
+	TrustedAgentProxyCIDRs  []string
 	LogLevel                string
 }
 
@@ -41,6 +43,7 @@ func LoadControlPlane() (ControlPlaneConfig, error) {
 		AgentReleaseVersion:     envOrDefault("AGENT_RELEASE_VERSION", "latest"),
 		DNSSecretEncryptionKey:  os.Getenv("DNS_SECRET_ENCRYPTION_KEY"),
 		GeoIPDBPath:             envOrDefault("GEOIP_DB_PATH", "/data/geoip/dbip-country-lite.mmdb"),
+		TrustedAgentProxyCIDRs:  splitCSV(os.Getenv("TRUSTED_AGENT_PROXY_CIDRS")),
 		LogLevel:                envOrDefault("LOG_LEVEL", "info"),
 	}
 	if cfg.AppName == "" {
@@ -56,6 +59,18 @@ func LoadControlPlane() (ControlPlaneConfig, error) {
 		return ControlPlaneConfig{}, errors.New("AGENT_TOKEN_SIGNING_SECRET is required")
 	}
 	return cfg, nil
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }
 
 func envOrDefault(key string, fallback string) string {

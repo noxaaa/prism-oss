@@ -115,9 +115,33 @@ func TestCoreMigrationsEnforceInboundBindingMatchConstraints(t *testing.T) {
 		INSERT INTO inbound_bindings (id, organization_id, node_group_id, listen_ip, protocol, port, match_type, created_at)
 		VALUES ('inbound_any', 'org_a', 'node_group_a', '0.0.0.0', 'TCP', 443, 'ANY_INBOUND', '2026-01-01T00:00:00Z')
 	`)
-	expectExecError(t, db, `
+	mustExec(t, db, `
 		INSERT INTO inbound_bindings (id, organization_id, node_group_id, listen_ip, protocol, port, match_type, created_at)
 		VALUES ('inbound_any_duplicate', 'org_a', 'node_group_a', '0.0.0.0', 'TCP', 443, 'ANY_INBOUND', '2026-01-01T00:00:00Z')
+	`)
+	mustExec(t, db, `
+		INSERT INTO forwarding_rules (
+			id, organization_id, owner_user_id, name, enabled, status, protocol, match_type,
+			inbound_binding_id, target_type, target_id, target_group_id,
+			config_version, created_at, updated_at
+		)
+		VALUES (
+			'rule_any_primary_443', 'org_a', 'user_a', 'Rule Any Primary 443', 1, 'ENABLED', 'TCP', 'ANY_INBOUND',
+			'inbound_any', 'TARGET', 'target_a', NULL,
+			0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+		)
+	`)
+	expectExecError(t, db, `
+		INSERT INTO forwarding_rules (
+			id, organization_id, owner_user_id, name, enabled, status, protocol, match_type,
+			inbound_binding_id, target_type, target_id, target_group_id,
+			config_version, created_at, updated_at
+		)
+		VALUES (
+			'rule_any_duplicate_443', 'org_a', 'user_a', 'Rule Any Duplicate 443', 1, 'ENABLED', 'TCP', 'ANY_INBOUND',
+			'inbound_any_duplicate', 'TARGET', 'target_a', NULL,
+			0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+		)
 	`)
 	mustExec(t, db, `
 		INSERT INTO inbound_bindings (id, organization_id, node_group_id, listen_ip, protocol, port, match_type, created_at)

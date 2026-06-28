@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,6 +10,12 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestCleanRunErrorTreatsContextCancellationAsSuccess(t *testing.T) {
+	if err := cleanRunError(context.Canceled); err != nil {
+		t.Fatalf("expected context cancellation to be a clean shutdown, got %v", err)
+	}
+}
 
 func TestExtractRunConfigFilePassesRuntimeFlagsThrough(t *testing.T) {
 	configFile, runtimeArgs, err := extractRunConfigFile([]string{
@@ -112,5 +119,30 @@ func TestCopyFileReplacesTargetWithoutTruncatingOpenFile(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temporary files left behind: %v", matches)
+	}
+}
+
+func TestCopyBundledDataplaneAssetsSkipsSameDirectory(t *testing.T) {
+	dir := t.TempDir()
+	sourceRoot := filepath.Join(dir, "releases", "dev")
+	haproxyDir := filepath.Join(sourceRoot, "dataplane", "haproxy")
+	if err := os.MkdirAll(haproxyDir, 0o755); err != nil {
+		t.Fatalf("make haproxy dir: %v", err)
+	}
+	asset := filepath.Join(haproxyDir, "haproxy")
+	if err := os.WriteFile(asset, []byte("managed haproxy"), 0o755); err != nil {
+		t.Fatalf("write haproxy asset: %v", err)
+	}
+
+	if err := copyBundledDataplaneAssets(sourceRoot, sourceRoot); err != nil {
+		t.Fatalf("copy same dataplane assets: %v", err)
+	}
+
+	data, err := os.ReadFile(asset)
+	if err != nil {
+		t.Fatalf("read haproxy asset after same-dir copy: %v", err)
+	}
+	if string(data) != "managed haproxy" {
+		t.Fatalf("haproxy asset was modified, got %q", data)
 	}
 }

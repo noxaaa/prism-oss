@@ -59,6 +59,60 @@ function uniqueOrigins(origins: Array<string | undefined>): string[] | undefined
   return unique.length > 0 ? unique : undefined;
 }
 
+function firstForwardedValue(value: string | null | undefined): string | undefined {
+  return value?.split(",")[0]?.trim() || undefined;
+}
+
+function isValidForwardedPort(port: string | undefined): port is string {
+  if (!port || !/^\d{1,5}$/.test(port)) {
+    return false;
+  }
+  const parsed = Number(port);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65_535;
+}
+
+function isValidForwardedHost(host: string): boolean {
+  if (!host || /[\s<>'"\\/]|\.\.|^\./.test(host)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(`http://${host}`);
+    return parsed.host.toLowerCase() === host.toLowerCase() && parsed.pathname === "/" && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
+function forwardedHostWithPort(host: string, port: string | undefined): string {
+  if (!isValidForwardedPort(port)) {
+    return host;
+  }
+  const parsed = new URL(`http://${host}`);
+  if (parsed.port) {
+    return host;
+  }
+  return `${host}:${port}`;
+}
+
+function configuredTrustedOrigins(): string[] {
+  return uniqueOrigins([
+    ...(parseTrustedOrigins() ?? []),
+    originFromURL(process.env.BETTER_AUTH_URL),
+    originFromURL(process.env.PUBLIC_WEB_URL),
+  ]) ?? [];
+}
+
+function forwardedOriginFromRequest(request: Request | undefined, allowedOrigins: string[]): string | undefined {
+  const proto = firstForwardedValue(request?.headers.get("x-forwarded-proto"))?.toLowerCase();
+  const host = firstForwardedValue(request?.headers.get("x-forwarded-host"));
+  if ((proto !== "http" && proto !== "https") || !host || !isValidForwardedHost(host)) {
+    return undefined;
+  }
+  const forwardedPort = firstForwardedValue(request?.headers.get("x-forwarded-port"));
+  const forwardedOrigin = originFromURL(`${proto}://${forwardedHostWithPort(host, forwardedPort)}`);
+  return forwardedOrigin && allowedOrigins.includes(forwardedOrigin) ? forwardedOrigin : undefined;
+}
+
 export function resolveAuthBaseURL(): string | undefined {
   const isNextProductionBuild = process.env.NEXT_PHASE === "phase-production-build";
   return (
@@ -69,10 +123,10 @@ export function resolveAuthBaseURL(): string | undefined {
 }
 
 export function resolveTrustedOrigins(request?: Request): string[] | undefined {
+  const configuredOrigins = configuredTrustedOrigins();
   return uniqueOrigins([
-    ...(parseTrustedOrigins() ?? []),
-    originFromURL(process.env.BETTER_AUTH_URL),
-    originFromURL(process.env.PUBLIC_WEB_URL),
+    ...configuredOrigins,
+    forwardedOriginFromRequest(request, configuredOrigins),
     originFromURL(request?.url),
   ]);
 }
@@ -88,6 +142,9 @@ export function buildAuthOptions(database: PostgresDatabase = getPostgresPool())
           ? "build-better-auth-secret-32-bytes"
           : undefined),
     baseURL: resolveAuthBaseURL(),
+    advanced: {
+      trustedProxyHeaders: process.env.BETTER_AUTH_TRUST_PROXY_HEADERS === "true",
+    },
     trustedOrigins: (request?: Request) => resolveTrustedOrigins(request) ?? [],
     emailAndPassword: {
       enabled: true,

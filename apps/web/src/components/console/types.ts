@@ -79,6 +79,13 @@ export type NodeListenIP = {
   enabled: boolean;
 };
 
+export type NodeSendIP = {
+  id?: string;
+  send_ip: string;
+  display_name: string;
+  enabled: boolean;
+};
+
 export type NodePortRange = {
   id?: string;
   protocol: "TCP" | "UDP" | string;
@@ -127,10 +134,21 @@ export type NodeResource = {
   agent_update_error?: string;
   agent_update_started_at?: string;
   agent_update_finished_at?: string;
+  dataplane_mode: "AUTO" | "NATIVE" | "HAPROXY" | "NFTABLES" | string;
+  dataplane_conflict_policy: "FAIL_FAST" | string;
+  dataplane_instance_id?: string;
+  dataplane_status: string;
+  dataplane_error?: string;
+  dataplane_last_hash?: string;
+  dataplane_last_applied_at?: string;
+  registration_source?: string;
+  enrollment_profile?: { id: string; name: string };
   geoip?: NodeGeoIP;
   group_ids: string[];
   listen_ips: NodeListenIP[];
+  send_ips?: NodeSendIP[];
   port_ranges: NodePortRange[];
+  max_rule_ports?: number;
   dns_publish_addresses?: NodeDNSPublishAddress[];
 };
 
@@ -162,6 +180,48 @@ export type RegistrationToken = {
   created_at: string;
   created_by_user_id?: string;
   install_command?: string;
+};
+
+export type NodeEnrollmentProfile = {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  expires_at?: string;
+  max_uses: number;
+  used_count: number;
+  node_name_template: string;
+  group_ids: string[];
+  listen_ips: NodeListenIP[];
+  send_ips?: NodeSendIP[];
+  port_ranges: NodePortRange[];
+  max_rule_ports?: number;
+  dns_publish_addresses: NodeDNSPublishAddress[];
+  dataplane_mode: string;
+  dataplane_conflict_policy: string;
+  auto_update_enabled: boolean;
+  allowed_cidrs: string[];
+  created_at: string;
+  updated_at: string;
+  revoked_at?: string;
+  token?: string;
+  install_command?: string;
+  shell_script?: string;
+  aws_cloud_init?: string;
+  terraform_user_data?: string;
+  systemd_ready_script?: string;
+};
+
+export type NodeEnrollmentEvent = {
+  id: string;
+  enrollment_profile_id: string;
+  node_id?: string;
+  status: string;
+  reason_code?: string;
+  message?: string;
+  remote_ip?: string;
+  hostname?: string;
+  created_at: string;
 };
 
 export type HealthCheck = {
@@ -312,9 +372,12 @@ export type Rule = {
   node_group_id: string;
   listen_ip: string;
   failure_policy: "KEEP_ENABLED" | "DISABLE_WHEN_ALL_NODES_FAILED" | string;
+  dataplane_preference: "AUTO" | "NATIVE" | "HAPROXY" | "NFTABLES" | string;
   forwarding_type: "DIRECT" | "TUNNEL" | string;
   protocol: "TCP" | "UDP" | "TCP_UDP" | string;
   port: number;
+  port_segments?: RulePortSegment[];
+  send_ip?: string;
   match: {
     type: "ANY_INBOUND" | "TLS_SNI" | "FEATURE" | string;
     sni_hostname?: string;
@@ -339,6 +402,11 @@ export type Rule = {
   deployment?: RuleDeployment;
 };
 
+export type RulePortSegment = {
+  start_port: number;
+  end_port: number;
+};
+
 export type RuleDeployment = {
   status: "NO_NODES" | "PENDING" | "APPLIED" | "DEPLOY_FAILED" | string;
   total: number;
@@ -357,6 +425,11 @@ export type RuleDeploymentNode = {
   protocol?: string;
   listen_ip?: string;
   port?: number;
+  expected_dataplane?: string;
+  actual_dataplane?: string;
+  owner?: string;
+  drift_status?: string;
+  external_resource?: string;
   updated_at?: string;
 };
 
@@ -493,6 +566,8 @@ export type AgentMetrics = {
   cpu_physical_cores?: number;
   ram_used_bytes?: number;
   ram_total_bytes?: number;
+  disk_used_bytes?: number;
+  disk_total_bytes?: number;
   upload_bytes?: number;
   download_bytes?: number;
   uptime_seconds?: number;

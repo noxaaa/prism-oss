@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/noxaaa/prism-oss/pkg/core/agent"
 	"github.com/noxaaa/prism-oss/pkg/core/buildinfo"
 	"github.com/noxaaa/prism-oss/pkg/core/domain"
 	"github.com/noxaaa/prism-oss/pkg/core/repo"
@@ -486,6 +487,10 @@ func (service *ControlService) MarkMonitorAgentDisconnected(ctx context.Context,
 }
 
 func (service *ControlService) CompileNodeAgentConfig(ctx context.Context, organizationID string, nodeID string) (AgentConfig, error) {
+	return service.CompileNodeAgentConfigForAgentProtocol(ctx, organizationID, nodeID, agent.CurrentProtocolVersion(), true)
+}
+
+func (service *ControlService) CompileNodeAgentConfigForAgentProtocol(ctx context.Context, organizationID string, nodeID string, protocolVersion agent.ProtocolVersion, protocolKnown bool) (AgentConfig, error) {
 	var result AgentConfig
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		node, err := repositories.Nodes().FindNodeByID(ctx, organizationID, nodeID)
@@ -511,9 +516,14 @@ func (service *ControlService) CompileNodeAgentConfig(ctx context.Context, organ
 			return err
 		}
 		compiled, err := BasicAgentConfigCompiler{}.Compile(ctx, AgentConfigInput{
-			NodeID:     node.ID,
-			NodeGroups: node.GroupIDs,
-			Rules:      ruleConfigs,
+			NodeID:                  node.ID,
+			NodeGroups:              node.GroupIDs,
+			AgentProtocolVersion:    protocolVersion,
+			AgentProtocolKnown:      protocolKnown,
+			DataplaneMode:           node.DataplaneMode,
+			DataplaneInstanceID:     node.DataplaneInstanceID,
+			DataplaneConflictPolicy: node.DataplaneConflictPolicy,
+			Rules:                   ruleConfigs,
 		})
 		if err != nil {
 			return err
@@ -592,7 +602,11 @@ func (service *ControlService) NodeAgentConfigBehind(ctx context.Context, organi
 	return result, mapServiceError(err)
 }
 
-func (service *ControlService) AcknowledgeNodeAgentConfig(ctx context.Context, organizationID string, nodeID string, configVersion int, status string, errorMessage string, applyErrors []ConfigApplyErrorInput) error {
+func (service *ControlService) AcknowledgeNodeAgentConfig(ctx context.Context, organizationID string, nodeID string, configVersion int, configHash string, status string, errorMessage string, applyErrors []ConfigApplyErrorInput, resolvedDataplanes map[string]string) error {
+	return service.AcknowledgeNodeAgentConfigForAgentProtocol(ctx, organizationID, nodeID, configVersion, configHash, agent.CurrentProtocolVersion(), true, status, errorMessage, applyErrors, resolvedDataplanes)
+}
+
+func (service *ControlService) AcknowledgeNodeAgentConfigForAgentProtocol(ctx context.Context, organizationID string, nodeID string, configVersion int, configHash string, protocolVersion agent.ProtocolVersion, protocolKnown bool, status string, errorMessage string, applyErrors []ConfigApplyErrorInput, resolvedDataplanes map[string]string) error {
 	status = strings.ToUpper(strings.TrimSpace(status))
 	if status != "APPLIED" && status != "FAILED" {
 		return ErrInvalidInput
@@ -609,12 +623,36 @@ func (service *ControlService) AcknowledgeNodeAgentConfig(ctx context.Context, o
 		nowTime := service.now()
 		now := nowTime.UTC().Format(time.RFC3339Nano)
 		ack := repo.NodeConfigAckRecord{
-			ConfigVersion: configVersion,
-			Status:        status,
-			ErrorMessage:  errorMessage,
+			ConfigVersion:     configVersion,
+			Status:            status,
+			ErrorMessage:      errorMessage,
+			DataplaneStatus:   NodeDataplaneStatusHealthy,
+			DataplaneLastHash: strings.TrimSpace(configHash),
 		}
 		if status == "FAILED" {
 			ack = nodeConfigFailedAck(node, configVersion, errorMessage, nowTime)
+			ack.DataplaneStatus = NodeDataplaneStatusFailed
+			ack.DataplaneError = errorMessage
+		}
+		var applied []repo.RuleDeploymentAppliedRecord
+		partialProtocolApply := false
+		if status == "APPLIED" {
+			rules, err := repositories.Rules().ListRulesByOrganization(ctx, organizationID)
+			if err != nil {
+				return err
+			}
+			var complete bool
+			applied, complete, err = ruleDeploymentAppliedRecordsForNode(ctx, repositories, organizationID, node, rules, protocolVersion, protocolKnown, resolvedDataplanes)
+			if err != nil {
+				return err
+			}
+			if !complete {
+				partialProtocolApply = true
+				errorMessage = "agent protocol does not support all desired dataplane rules"
+				ack = nodeConfigFailedAck(node, configVersion, errorMessage, nowTime)
+				ack.DataplaneStatus = NodeDataplaneStatusFailed
+				ack.DataplaneError = errorMessage
+			}
 		}
 		if err := repositories.Nodes().RecordNodeConfigAck(ctx, organizationID, nodeID, ack, now); err != nil {
 			return err
@@ -623,13 +661,8 @@ func (service *ControlService) AcknowledgeNodeAgentConfig(ctx context.Context, o
 			return nil
 		}
 		if status == "APPLIED" {
-			rules, err := repositories.Rules().ListRulesByOrganization(ctx, organizationID)
-			if err != nil {
-				return err
-			}
-			applied, err := ruleDeploymentAppliedRecordsForNode(ctx, repositories, organizationID, node, rules)
-			if err != nil {
-				return err
+			if len(applied) == 0 && partialProtocolApply {
+				return nil
 			}
 			return repositories.Rules().RecordRuleDeploymentApplied(ctx, organizationID, nodeID, configVersion, applied, now, service.newID)
 		}
@@ -679,10 +712,13 @@ func toRuleConfigs(rules []repo.RuleRecord, targets []repo.TargetRecord, targetG
 			NodeGroupIDs:     []string{rule.Binding.NodeGroupID},
 			ListenIP:         rule.Binding.ListenIP,
 			Port:             rule.Binding.Port,
+			PortSegments:     toAgentPortSegments(rulePortSegments(rule.Binding)),
+			SendIP:           rule.SendIP,
 			MatchType:        rule.MatchType,
 			SNIHostname:      rule.SNIHostname,
 			ProxyProtocolIn:  rule.ProxyProtocolIn,
 			ProxyProtocolOut: rule.ProxyProtocolOut,
+			Dataplane:        defaultDataplanePreference(rule.DataplanePreference),
 		}
 		switch rule.TargetType {
 		case "TARGET":
@@ -701,6 +737,17 @@ func toRuleConfigs(rules []repo.RuleRecord, targets []repo.TargetRecord, targetG
 		configs = append(configs, config)
 	}
 	return configs, nil
+}
+
+func toAgentPortSegments(segments []repo.InboundBindingPortSegmentRecord) []agent.PortSegmentConfig {
+	if len(segments) == 0 {
+		return nil
+	}
+	configs := make([]agent.PortSegmentConfig, 0, len(segments))
+	for _, segment := range segments {
+		configs = append(configs, agent.PortSegmentConfig{StartPort: segment.StartPort, EndPort: segment.EndPort})
+	}
+	return configs
 }
 
 func openCoreRuleRecordSupported(rule repo.RuleRecord) bool {

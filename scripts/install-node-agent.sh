@@ -4,29 +4,40 @@ set -eu
 version="latest"
 control_url=""
 registration_token=""
+enrollment_token=""
 credential_file="/var/lib/prism-node-agent/agent-credential.json"
 service_name="prism-node-agent"
 install_dir="/opt/prism-node-agent"
 config_file="/etc/prism-node-agent/agent.env"
 app_name="${APP_NAME:-OSS Control Console}"
 repo="https://github.com/noxaaa/prism-oss"
+dataplane_mode="${AGENT_DATAPLANE_MODE:-NATIVE}"
+dataplane_instance_id="${AGENT_DATAPLANE_INSTANCE_ID:-}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --version) version="${2:-}"; shift 2 ;;
     --control-url) control_url="${2:-}"; shift 2 ;;
     --registration-token) registration_token="${2:-}"; shift 2 ;;
+    --enrollment-token) enrollment_token="${2:-}"; shift 2 ;;
     --credential-file) credential_file="${2:-}"; shift 2 ;;
     --service-name) service_name="${2:-}"; shift 2 ;;
     --install-dir) install_dir="${2:-}"; shift 2 ;;
     --config-file) config_file="${2:-}"; shift 2 ;;
     --app-name) app_name="${2:-}"; shift 2 ;;
+    --dataplane-mode) dataplane_mode="${2:-}"; shift 2 ;;
+    --dataplane-instance-id) dataplane_instance_id="${2:-}"; shift 2 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
-if [ -z "$control_url" ] || [ -z "$registration_token" ]; then
-  echo "--control-url and --registration-token are required" >&2
+if [ -z "$control_url" ] || { [ -z "$registration_token" ] && [ -z "$enrollment_token" ]; }; then
+  echo "--control-url and --registration-token or --enrollment-token are required" >&2
+  exit 2
+fi
+
+if [ -n "$registration_token" ] && [ -n "$enrollment_token" ]; then
+  echo "--registration-token and --enrollment-token are mutually exclusive" >&2
   exit 2
 fi
 
@@ -73,7 +84,10 @@ tar -xzf "$tmp_dir/${asset}" -C "$tmp_dir"
   --app-name "$app_name" \
   --control-url "$control_url" \
   --registration-token "$registration_token" \
+  --enrollment-token "$enrollment_token" \
   --credential-file "$credential_file" \
   --service-name "$service_name" \
   --install-dir "$install_dir" \
-  --config-file "$config_file"
+  --config-file "$config_file" \
+  --dataplane-mode "$dataplane_mode" \
+  --dataplane-instance-id "$dataplane_instance_id"

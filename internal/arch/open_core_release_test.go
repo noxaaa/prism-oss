@@ -35,6 +35,7 @@ func TestOSSReleaseWorkflowPublishesPrebuiltArtifacts(t *testing.T) {
 		"prism-oss-migrate",
 		"node-agent-linux-amd64.tar.gz",
 		"node-agent-linux-arm64.tar.gz",
+		"dataplane/haproxy/haproxy",
 		"monitor-agent-linux-amd64.tar.gz",
 		"monitor-agent-linux-arm64.tar.gz",
 		"control-plane-oss-linux-amd64",
@@ -695,6 +696,19 @@ func TestOSSReleaseComposeUsesPackagedMigrationDirectory(t *testing.T) {
 			if !strings.Contains(source, required) {
 				t.Fatalf("%s must configure the release migrate image with packaged migrations; missing %q", relative, required)
 			}
+		}
+	}
+}
+
+func TestOSSComposeForwardsBetterAuthProxyTrustEnv(t *testing.T) {
+	root := repoRoot(t)
+	for relative, source := range map[string]string{
+		"docker-compose.yml": readText(t, filepath.Join(root, "docker-compose.yml")),
+		"scripts/install.sh": readText(t, filepath.Join(root, "scripts", "install.sh")),
+	} {
+		required := "BETTER_AUTH_TRUST_PROXY_HEADERS: ${BETTER_AUTH_TRUST_PROXY_HEADERS:-false}"
+		if !strings.Contains(source, required) {
+			t.Fatalf("%s must pass BetterAuth proxy trust env into the web container; missing %q", relative, required)
 		}
 	}
 }

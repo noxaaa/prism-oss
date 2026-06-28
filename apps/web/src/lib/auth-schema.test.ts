@@ -53,6 +53,82 @@ describe("BetterAuth schema", () => {
     }
   });
 
+	it("trusts the forwarded browser origin behind a reverse proxy", async () => {
+		process.env.BETTER_AUTH_URL = "http://127.0.0.1:3000";
+		process.env.PUBLIC_WEB_URL = "http://127.0.0.1:3000";
+		process.env.BETTER_AUTH_TRUSTED_ORIGINS = "https://console.example.test,https://console.example.test:8443";
+
+		const pool = new Pool({ connectionString: "postgres://prism:prism@127.0.0.1:5432/prism" });
+    try {
+      const options = buildAuthOptions(pool);
+      expect(typeof options.trustedOrigins).toBe("function");
+      if (typeof options.trustedOrigins !== "function") {
+        throw new Error("trustedOrigins must be dynamic");
+      }
+
+      const request = new Request("http://127.0.0.1:3000/api/auth/sign-in/email", {
+        headers: {
+          "x-forwarded-host": "CONSOLE.EXAMPLE.TEST:443",
+          "x-forwarded-proto": "https",
+        },
+      });
+      expect(options.trustedOrigins(request)).toContain("https://console.example.test");
+
+      const forwardedPortRequest = new Request("http://127.0.0.1:3000/api/auth/sign-in/email", {
+        headers: {
+          "x-forwarded-host": "console.example.test",
+          "x-forwarded-port": "8443",
+          "x-forwarded-proto": "https",
+        },
+      });
+      expect(options.trustedOrigins(forwardedPortRequest)).toContain("https://console.example.test:8443");
+
+      const canonicalRequest = new Request("http://127.0.0.1:3000/api/auth/sign-in/email", {
+        headers: {
+          "x-forwarded-host": "CONSOLE.EXAMPLE.TEST:443",
+          "x-forwarded-proto": "https",
+        },
+      });
+      expect(options.trustedOrigins(canonicalRequest)).toContain("https://console.example.test");
+
+      const untrustedRequest = new Request("http://127.0.0.1:3000/api/auth/sign-in/email", {
+        headers: {
+          "x-forwarded-host": "attacker.example.test",
+          "x-forwarded-proto": "https",
+        },
+      });
+      expect(options.trustedOrigins(untrustedRequest)).not.toContain("https://attacker.example.test");
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("does not trust forwarded browser origins unless trusted proxy headers are enabled", async () => {
+    process.env.BETTER_AUTH_URL = "http://127.0.0.1:3000";
+    process.env.PUBLIC_WEB_URL = "http://127.0.0.1:3000";
+    process.env.BETTER_AUTH_TRUSTED_ORIGINS = "";
+    process.env.BETTER_AUTH_TRUST_PROXY_HEADERS = "";
+
+    const pool = new Pool({ connectionString: "postgres://prism:prism@127.0.0.1:5432/prism" });
+    try {
+      const options = buildAuthOptions(pool);
+      expect(typeof options.trustedOrigins).toBe("function");
+      if (typeof options.trustedOrigins !== "function") {
+        throw new Error("trustedOrigins must be dynamic");
+      }
+
+      const request = new Request("http://127.0.0.1:3000/api/auth/sign-in/email", {
+        headers: {
+          "x-forwarded-host": "evil.example.test",
+          "x-forwarded-proto": "https",
+        },
+      });
+      expect(options.trustedOrigins(request)).not.toContain("https://evil.example.test");
+    } finally {
+      await pool.end();
+    }
+  });
+
   it("tracks the official BetterAuth PostgreSQL migration output", () => {
     const databaseURL = testDatabaseURL();
     if (!databaseURL) {

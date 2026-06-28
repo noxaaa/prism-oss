@@ -412,7 +412,7 @@ func (supervisor *Supervisor) proxyTCP(ctx context.Context, downstream net.Conn,
 		return
 	}
 	dialStarted := time.Now()
-	upstream, err := net.DialTimeout("tcp", targetAddress(target), time.Second)
+	upstream, err := dialTCPUpstream(rule.SendIP, targetAddress(target))
 	if err != nil {
 		return
 	}
@@ -513,7 +513,7 @@ func newUDPSessionTable(listener net.PacketConn, metrics *metricsCounter) *udpSe
 }
 
 func (table *udpSessionTable) write(ctx context.Context, rule agent.RuleConfig, target agent.TargetEndpoint, clientAddress net.Addr, payload []byte) error {
-	key := udpSessionKey(clientAddress, rule.ID)
+	key := udpSessionKey(clientAddress, rule.ID, rule.SendIP)
 	upstreamTargetAddress := targetAddress(target)
 	table.mu.Lock()
 	session := table.sessions[key]
@@ -526,7 +526,7 @@ func (table *udpSessionTable) write(ctx context.Context, rule agent.RuleConfig, 
 			table.mu.Unlock()
 			return err
 		}
-		upstream, err := net.DialUDP("udp", nil, upstreamAddress)
+		upstream, err := dialUDPUpstream(rule.SendIP, upstreamAddress)
 		if err != nil {
 			table.mu.Unlock()
 			return err
@@ -595,8 +595,8 @@ func (table *udpSessionTable) closeSessionLocked(key string, session *udpSession
 	table.metrics.addTargetUDPSession(session.ruleID, session.targetID, -1)
 }
 
-func udpSessionKey(clientAddress net.Addr, ruleID string) string {
-	return clientAddress.String() + "\x00" + ruleID
+func udpSessionKey(clientAddress net.Addr, ruleID string, sendIP string) string {
+	return clientAddress.String() + "\x00" + ruleID + "\x00" + strings.TrimSpace(sendIP)
 }
 
 func groupRulesByListener(rules []agent.RuleConfig) (map[listenerKey][]agent.RuleConfig, error) {

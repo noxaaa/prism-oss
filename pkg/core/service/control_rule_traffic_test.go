@@ -100,6 +100,9 @@ func (repositories trafficReportTestRepositories) Quotas() repo.QuotaRepository 
 func (repositories trafficReportTestRepositories) AgentRegistrationTokens() repo.AgentRegistrationTokenRepository {
 	return nil
 }
+func (repositories trafficReportTestRepositories) NodeEnrollmentProfiles() repo.NodeEnrollmentProfileRepository {
+	return nil
+}
 func (repositories trafficReportTestRepositories) AgentCredentials() repo.AgentCredentialRepository {
 	return nil
 }

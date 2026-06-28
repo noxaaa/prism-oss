@@ -2,7 +2,11 @@ package repo
 
 import (
 	"context"
+	"crypto/sha256"
+	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 func (store *PostgresStore) ListTargetsByOrganization(ctx context.Context, organizationID string) ([]TargetRecord, error) {
@@ -162,7 +166,7 @@ func (store *PostgresStore) ListRulesByOrganization(ctx context.Context, organiz
 		SELECT forwarding_rules.id, forwarding_rules.organization_id, owner_user_id, name, enabled, status,
 		       forwarding_type, forwarding_rules.protocol, forwarding_rules.match_type, inbound_binding_id, coalesce(sni_hostname, ''),
 		       target_type, coalesce(target_id::text, ''), coalesce(target_group_id::text, ''), proxy_protocol_in, proxy_protocol_out,
-		       failure_policy, config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
+		       failure_policy, dataplane_preference, send_ip, config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
 		       inbound_bindings.id, inbound_bindings.organization_id, inbound_bindings.node_group_id, inbound_bindings.listen_ip,
 		       inbound_bindings.protocol, inbound_bindings.port, inbound_bindings.match_type, inbound_bindings.created_at
 		FROM forwarding_rules
@@ -195,6 +199,9 @@ func (store *PostgresStore) ListRulesByOrganization(ctx context.Context, organiz
 		if err := store.loadRuleTags(ctx, &rules[index]); err != nil {
 			return nil, err
 		}
+		if err := store.loadInboundBindingPortSegments(ctx, &rules[index].Binding); err != nil {
+			return nil, err
+		}
 	}
 	return rules, nil
 }
@@ -204,7 +211,7 @@ func (store *PostgresStore) FindRuleByID(ctx context.Context, organizationID str
 		SELECT forwarding_rules.id, forwarding_rules.organization_id, owner_user_id, name, enabled, status,
 		       forwarding_type, forwarding_rules.protocol, forwarding_rules.match_type, inbound_binding_id, coalesce(sni_hostname, ''),
 		       target_type, coalesce(target_id::text, ''), coalesce(target_group_id::text, ''), proxy_protocol_in, proxy_protocol_out,
-		       failure_policy, config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
+		       failure_policy, dataplane_preference, send_ip, config_version, forwarding_rules.created_at, forwarding_rules.updated_at, coalesce(forwarding_rules.deleted_at::text, ''),
 		       inbound_bindings.id, inbound_bindings.organization_id, inbound_bindings.node_group_id, inbound_bindings.listen_ip,
 		       inbound_bindings.protocol, inbound_bindings.port, inbound_bindings.match_type, inbound_bindings.created_at
 		FROM forwarding_rules
@@ -220,22 +227,25 @@ func (store *PostgresStore) FindRuleByID(ctx context.Context, organizationID str
 	if err := store.loadRuleTags(ctx, &rule); err != nil {
 		return RuleRecord{}, err
 	}
+	if err := store.loadInboundBindingPortSegments(ctx, &rule.Binding); err != nil {
+		return RuleRecord{}, err
+	}
 	return rule, nil
 }
 
 func (store *PostgresStore) CreateRule(ctx context.Context, rule RuleRecord, binding InboundBindingRecord, tags []string, now string, nextID func() string) error {
-	if err := store.upsertInboundBinding(ctx, binding); err != nil {
+	if err := store.upsertInboundBinding(ctx, &binding); err != nil {
 		return err
 	}
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO forwarding_rules (
 			id, organization_id, owner_user_id, name, enabled, status, forwarding_type, protocol, match_type,
 			inbound_binding_id, sni_hostname, target_type, target_id, target_group_id,
-			proxy_protocol_in, proxy_protocol_out, failure_policy, config_version, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nullif(?, '')::uuid, nullif(?, '')::uuid, ?, ?, ?, ?, ?, ?)
+			proxy_protocol_in, proxy_protocol_out, failure_policy, dataplane_preference, send_ip, config_version, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, nullif(?, '')::uuid, nullif(?, '')::uuid, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, rule.ID, rule.OrganizationID, rule.OwnerUserID, rule.Name, boolToDB(rule.Enabled), rule.Status, rule.ForwardingType, rule.Protocol, rule.MatchType,
 		binding.ID, nullIfEmpty(rule.SNIHostname), rule.TargetType, rule.TargetID, rule.TargetGroupID,
-		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.FailurePolicy, rule.ConfigVersion, rule.CreatedAt, rule.UpdatedAt)
+		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.FailurePolicy, normalizeRuleDataplanePreference(rule.DataplanePreference), rule.SendIP, rule.ConfigVersion, rule.CreatedAt, rule.UpdatedAt)
 	if err != nil {
 		return mapWriteError(err)
 	}
@@ -243,18 +253,18 @@ func (store *PostgresStore) CreateRule(ctx context.Context, rule RuleRecord, bin
 }
 
 func (store *PostgresStore) UpdateRule(ctx context.Context, rule RuleRecord, binding InboundBindingRecord, tags []string, now string, nextID func() string) error {
-	if err := store.upsertInboundBinding(ctx, binding); err != nil {
+	if err := store.upsertInboundBinding(ctx, &binding); err != nil {
 		return err
 	}
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE forwarding_rules
 		SET name = ?, enabled = ?, status = ?, forwarding_type = ?, protocol = ?, match_type = ?, inbound_binding_id = ?,
 		    sni_hostname = ?, target_type = ?, target_id = nullif(?, '')::uuid, target_group_id = nullif(?, '')::uuid,
-		    proxy_protocol_in = ?, proxy_protocol_out = ?, failure_policy = ?, config_version = ?, updated_at = ?
+		    proxy_protocol_in = ?, proxy_protocol_out = ?, failure_policy = ?, dataplane_preference = ?, send_ip = ?, config_version = ?, updated_at = ?
 		WHERE organization_id = ? AND id = ? AND deleted_at IS NULL
 	`, rule.Name, boolToDB(rule.Enabled), rule.Status, rule.ForwardingType, rule.Protocol, rule.MatchType, binding.ID,
 		nullIfEmpty(rule.SNIHostname), rule.TargetType, rule.TargetID, rule.TargetGroupID,
-		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.FailurePolicy, rule.ConfigVersion, rule.UpdatedAt, rule.OrganizationID, rule.ID)
+		rule.ProxyProtocolIn, rule.ProxyProtocolOut, rule.FailurePolicy, normalizeRuleDataplanePreference(rule.DataplanePreference), rule.SendIP, rule.ConfigVersion, rule.UpdatedAt, rule.OrganizationID, rule.ID)
 	if err != nil {
 		return mapWriteError(err)
 	}
@@ -412,7 +422,9 @@ func (store *PostgresStore) RecordRuleTrafficReport(ctx context.Context, organiz
 func (store *PostgresStore) ListRuleDeploymentsByOrganization(ctx context.Context, organizationID string) ([]RuleDeploymentRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
-		       error_code, error_message, protocol, listen_ip, port, updated_at
+		       error_code, error_message, protocol, listen_ip, port,
+		       expected_dataplane, actual_dataplane, owner, drift_status, external_resource,
+		       updated_at
 		FROM rule_deployment_statuses
 		WHERE organization_id = ?
 		ORDER BY rule_id, node_id
@@ -438,6 +450,11 @@ func (store *PostgresStore) ListRuleDeploymentsByOrganization(ctx context.Contex
 			&deployment.Protocol,
 			&deployment.ListenIP,
 			&deployment.Port,
+			&deployment.ExpectedDataplane,
+			&deployment.ActualDataplane,
+			&deployment.Owner,
+			&deployment.DriftStatus,
+			&deployment.ExternalResource,
 			&deployment.UpdatedAt,
 		); err != nil {
 			return nil, mapReadError(err)
@@ -464,9 +481,10 @@ func (store *PostgresStore) ReplaceRuleDeploymentPending(ctx context.Context, or
 		if _, err := store.db.ExecContext(ctx, `
 			INSERT INTO rule_deployment_statuses (
 				id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
-				error_code, error_message, protocol, listen_ip, port, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', '', '', '', '', 0, ?)
-		`, nextID(), organizationID, rule.ID, nodeID, deployment.ConfigVersion, rule.ConfigVersion, now); err != nil {
+				error_code, error_message, protocol, listen_ip, port,
+				expected_dataplane, actual_dataplane, owner, drift_status, external_resource, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', '', '', '', '', 0, ?, '', '', '', '', ?)
+		`, nextID(), organizationID, rule.ID, nodeID, deployment.ConfigVersion, rule.ConfigVersion, normalizeRuleDataplanePreference(rule.DataplanePreference), now); err != nil {
 			return mapWriteError(err)
 		}
 	}
@@ -481,8 +499,9 @@ func (store *PostgresStore) UpsertRuleDeploymentPending(ctx context.Context, org
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO rule_deployment_statuses (
 			id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
-			error_code, error_message, protocol, listen_ip, port, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', '', '', '', '', 0, ?)
+			error_code, error_message, protocol, listen_ip, port,
+			expected_dataplane, actual_dataplane, owner, drift_status, external_resource, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', '', '', '', '', 0, ?, '', '', '', '', ?)
 		ON CONFLICT (organization_id, rule_id, node_id)
 		DO UPDATE SET
 			config_version = EXCLUDED.config_version,
@@ -493,8 +512,13 @@ func (store *PostgresStore) UpsertRuleDeploymentPending(ctx context.Context, org
 			protocol = '',
 			listen_ip = '',
 			port = 0,
+			expected_dataplane = EXCLUDED.expected_dataplane,
+			actual_dataplane = '',
+			owner = '',
+			drift_status = '',
+			external_resource = '',
 			updated_at = EXCLUDED.updated_at
-	`, nextID(), organizationID, rule.ID, nodeID, deployment.ConfigVersion, rule.ConfigVersion, now)
+	`, nextID(), organizationID, rule.ID, nodeID, deployment.ConfigVersion, rule.ConfigVersion, normalizeRuleDataplanePreference(rule.DataplanePreference), now)
 	return mapWriteError(err)
 }
 
@@ -510,10 +534,11 @@ func (store *PostgresStore) RecordRuleDeploymentApplied(ctx context.Context, org
 		}
 		seen[ruleID] = struct{}{}
 		if _, err := store.db.ExecContext(ctx, `
-			INSERT INTO rule_deployment_statuses (
-				id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
-				error_code, error_message, protocol, listen_ip, port, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, 'APPLIED', '', '', '', '', 0, ?)
+		INSERT INTO rule_deployment_statuses (
+			id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
+			error_code, error_message, protocol, listen_ip, port,
+			expected_dataplane, actual_dataplane, owner, drift_status, external_resource, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, 'APPLIED', '', '', '', '', 0, ?, ?, '', '', '', ?)
 			ON CONFLICT (organization_id, rule_id, node_id)
 			DO UPDATE SET
 				config_version = EXCLUDED.config_version,
@@ -524,9 +549,14 @@ func (store *PostgresStore) RecordRuleDeploymentApplied(ctx context.Context, org
 				protocol = '',
 				listen_ip = '',
 				port = 0,
+				expected_dataplane = EXCLUDED.expected_dataplane,
+				actual_dataplane = EXCLUDED.actual_dataplane,
+				owner = '',
+				drift_status = '',
+				external_resource = '',
 				updated_at = EXCLUDED.updated_at
 			WHERE rule_deployment_statuses.config_version <= EXCLUDED.config_version
-		`, nextID(), organizationID, ruleID, nodeID, configVersion, deployment.RuleConfigVersion, now); err != nil {
+		`, nextID(), organizationID, ruleID, nodeID, configVersion, deployment.RuleConfigVersion, normalizeRuleDataplanePreference(deployment.ExpectedDataplane), normalizeRuleDataplanePreference(deployment.ActualDataplane), now); err != nil {
 			return mapWriteError(err)
 		}
 	}
@@ -540,10 +570,11 @@ func (store *PostgresStore) RecordRuleDeploymentFailures(ctx context.Context, or
 			continue
 		}
 		if _, err := store.db.ExecContext(ctx, `
-			INSERT INTO rule_deployment_statuses (
-				id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
-				error_code, error_message, protocol, listen_ip, port, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, 'FAILED', ?, ?, ?, ?, ?, ?)
+		INSERT INTO rule_deployment_statuses (
+			id, organization_id, rule_id, node_id, config_version, rule_config_version, status,
+			error_code, error_message, protocol, listen_ip, port,
+			expected_dataplane, actual_dataplane, owner, drift_status, external_resource, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, 'FAILED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (organization_id, rule_id, node_id)
 			DO UPDATE SET
 				config_version = EXCLUDED.config_version,
@@ -554,11 +585,18 @@ func (store *PostgresStore) RecordRuleDeploymentFailures(ctx context.Context, or
 				protocol = EXCLUDED.protocol,
 				listen_ip = EXCLUDED.listen_ip,
 				port = EXCLUDED.port,
+				expected_dataplane = EXCLUDED.expected_dataplane,
+				actual_dataplane = EXCLUDED.actual_dataplane,
+				owner = EXCLUDED.owner,
+				drift_status = EXCLUDED.drift_status,
+				external_resource = EXCLUDED.external_resource,
 				updated_at = EXCLUDED.updated_at
 			WHERE rule_deployment_statuses.config_version = EXCLUDED.config_version
 			  AND rule_deployment_statuses.rule_config_version = EXCLUDED.rule_config_version
 		`, nextID(), organizationID, ruleID, nodeID, configVersion, failure.RuleConfigVersion,
-			failure.ErrorCode, failure.ErrorMessage, failure.Protocol, failure.ListenIP, failure.Port, now); err != nil {
+			failure.ErrorCode, failure.ErrorMessage, failure.Protocol, failure.ListenIP, failure.Port,
+			normalizeRuleDataplanePreference(failure.ExpectedDataplane), normalizeRuleDataplanePreference(failure.ActualDataplane),
+			failure.Owner, failure.DriftStatus, failure.ExternalResource, now); err != nil {
 			return mapWriteError(err)
 		}
 	}
@@ -660,14 +698,75 @@ func (store *PostgresStore) replaceTargetGroupMembers(ctx context.Context, organ
 	return nil
 }
 
-func (store *PostgresStore) upsertInboundBinding(ctx context.Context, binding InboundBindingRecord) error {
-	_, err := store.db.ExecContext(ctx, `
+func (store *PostgresStore) upsertInboundBinding(ctx context.Context, binding *InboundBindingRecord) error {
+	row := store.db.QueryRowContext(ctx, `
 		INSERT INTO inbound_bindings (id, organization_id, node_group_id, listen_ip, protocol, port, match_type, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(organization_id, node_group_id, listen_ip, protocol, port, match_type) DO UPDATE SET
+		ON CONFLICT(organization_id, id) DO UPDATE SET
 			match_type = excluded.match_type
+		RETURNING id
 	`, binding.ID, binding.OrganizationID, binding.NodeGroupID, binding.ListenIP, binding.Protocol, binding.Port, binding.MatchType, binding.CreatedAt)
-	return mapWriteError(err)
+	if err := row.Scan(&binding.ID); err != nil {
+		return mapWriteError(err)
+	}
+	return store.replaceInboundBindingPortSegments(ctx, *binding)
+}
+
+func (store *PostgresStore) replaceInboundBindingPortSegments(ctx context.Context, binding InboundBindingRecord) error {
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM inbound_binding_port_segments WHERE organization_id = ? AND inbound_binding_id = ?`, binding.OrganizationID, binding.ID); err != nil {
+		return mapWriteError(err)
+	}
+	segments := binding.PortSegments
+	if len(segments) == 0 {
+		segments = []InboundBindingPortSegmentRecord{{StartPort: binding.Port, EndPort: binding.Port}}
+	}
+	for _, segment := range segments {
+		id := segment.ID
+		if id == "" {
+			source := binding.OrganizationID + "|" + binding.ID + "|" + strconv.Itoa(segment.StartPort) + "|" + strconv.Itoa(segment.EndPort)
+			id = uuid.NewHash(sha256.New(), uuid.Nil, []byte(source), 5).String()
+		}
+		createdAt := segment.CreatedAt
+		if createdAt == "" {
+			createdAt = binding.CreatedAt
+		}
+		if _, err := store.db.ExecContext(ctx, `
+			INSERT INTO inbound_binding_port_segments (id, organization_id, inbound_binding_id, start_port, end_port, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, id, binding.OrganizationID, binding.ID, segment.StartPort, segment.EndPort, createdAt); err != nil {
+			return mapWriteError(err)
+		}
+	}
+	return nil
+}
+
+func (store *PostgresStore) loadInboundBindingPortSegments(ctx context.Context, binding *InboundBindingRecord) error {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, organization_id, inbound_binding_id, start_port, end_port, created_at
+		FROM inbound_binding_port_segments
+		WHERE organization_id = ? AND inbound_binding_id = ?
+		ORDER BY start_port, end_port, id
+	`, binding.OrganizationID, binding.ID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	segments := make([]InboundBindingPortSegmentRecord, 0)
+	for rows.Next() {
+		var segment InboundBindingPortSegmentRecord
+		if err := rows.Scan(&segment.ID, &segment.OrganizationID, &segment.InboundBindingID, &segment.StartPort, &segment.EndPort, &segment.CreatedAt); err != nil {
+			return mapReadError(err)
+		}
+		segments = append(segments, segment)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(segments) == 0 && binding.Port > 0 {
+		segments = []InboundBindingPortSegmentRecord{{OrganizationID: binding.OrganizationID, InboundBindingID: binding.ID, StartPort: binding.Port, EndPort: binding.Port, CreatedAt: binding.CreatedAt}}
+	}
+	binding.PortSegments = segments
+	return nil
 }
 
 func (store *PostgresStore) loadRuleTags(ctx context.Context, rule *RuleRecord) error {

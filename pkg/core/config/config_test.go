@@ -20,6 +20,7 @@ func TestLoadControlPlaneReadsRuntimeDisplayNameAndURLs(t *testing.T) {
 	t.Setenv("AGENT_TOKEN_SIGNING_SECRET", "agent-token-secret-32-bytes")
 	t.Setenv("AGENT_RELEASE_VERSION", "v1.2.3")
 	t.Setenv("GEOIP_DB_PATH", "/data/geoip/dbip-country-lite.mmdb")
+	t.Setenv("TRUSTED_AGENT_PROXY_CIDRS", "10.0.0.0/8, 192.0.2.10/32")
 
 	cfg, err := LoadControlPlane()
 	if err != nil {
@@ -36,6 +37,9 @@ func TestLoadControlPlaneReadsRuntimeDisplayNameAndURLs(t *testing.T) {
 	}
 	if cfg.GeoIPDBPath != "/data/geoip/dbip-country-lite.mmdb" {
 		t.Fatalf("expected GeoIP DB path from env, got %q", cfg.GeoIPDBPath)
+	}
+	if len(cfg.TrustedAgentProxyCIDRs) != 2 || cfg.TrustedAgentProxyCIDRs[0] != "10.0.0.0/8" || cfg.TrustedAgentProxyCIDRs[1] != "192.0.2.10/32" {
+		t.Fatalf("expected trusted agent proxy CIDRs from env, got %#v", cfg.TrustedAgentProxyCIDRs)
 	}
 }
 

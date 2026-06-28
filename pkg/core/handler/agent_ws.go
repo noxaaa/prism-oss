@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -38,7 +39,11 @@ func (server *ControlServer) handleAgentConnect(response http.ResponseWriter, re
 		return
 	}
 	agentType := request.Header.Get("X-Agent-Type")
-	if _, err := server.controlService.ValidateAgentToken(request.Context(), agentType, token); err != nil {
+	enrollmentMetadata := service.AgentEnrollmentMetadata{
+		Hostname: strings.TrimSpace(request.Header.Get("X-Agent-Hostname")),
+		RemoteIP: server.observedAgentRemoteIP(request),
+	}
+	if _, err := server.controlService.ValidateAgentTokenWithMetadata(request.Context(), agentType, token, enrollmentMetadata); err != nil {
 		writeError(response, http.StatusUnauthorized, "UNAUTHENTICATED")
 		return
 	}
@@ -51,7 +56,7 @@ func (server *ControlServer) handleAgentConnect(response http.ResponseWriter, re
 	}
 	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 
-	authResult, err := server.controlService.AuthenticateAgentToken(request.Context(), agentType, token)
+	authResult, err := server.controlService.AuthenticateAgentTokenWithMetadata(request.Context(), agentType, token, enrollmentMetadata)
 	if err != nil {
 		_ = conn.Close(websocket.StatusPolicyViolation, "UNAUTHENTICATED")
 		return
@@ -116,6 +121,98 @@ func observedDirectAgentRemoteAddr(request *http.Request) string {
 	return request.RemoteAddr
 }
 
+func (server *ControlServer) observedAgentRemoteIP(request *http.Request) string {
+	remoteIP := observedRemoteIP(request)
+	if len(server.trustedProxies) > 0 && remoteIP != nil && ipAllowedByCIDRs(remoteIP, server.trustedProxies) {
+		if forwardedIP := observedForwardedClientIP(request, server.trustedProxies); forwardedIP != nil {
+			return forwardedIP.String()
+		}
+	}
+	if remoteIP == nil {
+		return strings.TrimSpace(request.RemoteAddr)
+	}
+	return remoteIP.String()
+}
+
+func observedRemoteIP(request *http.Request) net.IP {
+	host := request.RemoteAddr
+	if strings.Contains(host, ":") {
+		parsedHost, _, err := net.SplitHostPort(host)
+		if err == nil {
+			host = parsedHost
+		}
+	}
+	return net.ParseIP(strings.TrimSpace(host))
+}
+
+func observedForwardedClientIP(request *http.Request, trustedProxies []*net.IPNet) net.IP {
+	if ip := forwardedClientFromChain(parseIPListHeader(request.Header.Get("X-Forwarded-For")), trustedProxies); ip != nil {
+		return ip
+	}
+	if ip := net.ParseIP(strings.TrimSpace(request.Header.Get("X-Real-IP"))); ip != nil && !ipAllowedByCIDRs(ip, trustedProxies) {
+		return ip
+	}
+	forwardedIPs := make([]net.IP, 0)
+	for _, forwardedEntry := range strings.Split(request.Header.Get("Forwarded"), ",") {
+		for _, part := range strings.Split(forwardedEntry, ";") {
+			key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+			if !ok || !strings.EqualFold(strings.TrimSpace(key), "for") {
+				continue
+			}
+			value = strings.Trim(strings.TrimSpace(value), `"`)
+			if host, _, err := net.SplitHostPort(value); err == nil {
+				value = host
+			}
+			value = strings.TrimPrefix(value, "[")
+			value = strings.TrimSuffix(value, "]")
+			if ip := net.ParseIP(value); ip != nil {
+				forwardedIPs = append(forwardedIPs, ip)
+			}
+		}
+	}
+	return forwardedClientFromChain(forwardedIPs, trustedProxies)
+}
+
+func parseIPListHeader(value string) []net.IP {
+	ips := make([]net.IP, 0)
+	for _, part := range strings.Split(value, ",") {
+		if ip := net.ParseIP(strings.TrimSpace(part)); ip != nil {
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
+func forwardedClientFromChain(ips []net.IP, trustedProxies []*net.IPNet) net.IP {
+	for i := len(ips) - 1; i >= 0; i-- {
+		if ipAllowedByCIDRs(ips[i], trustedProxies) {
+			continue
+		}
+		return ips[i]
+	}
+	return nil
+}
+
+func parseTrustedProxyCIDRs(values []string) []*net.IPNet {
+	cidrs := make([]*net.IPNet, 0, len(values))
+	for _, value := range values {
+		_, cidr, err := net.ParseCIDR(strings.TrimSpace(value))
+		if err == nil {
+			cidrs = append(cidrs, cidr)
+		}
+	}
+	return cidrs
+}
+
+func ipAllowedByCIDRs(ip net.IP, cidrs []*net.IPNet) bool {
+	for _, cidr := range cidrs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func writeAgentEnvelope(ctx context.Context, conn *websocket.Conn, messageType string, payload any) error {
 	envelope := agentEnvelope{
 		Type:      messageType,
@@ -178,9 +275,10 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 			}
 		case "hello":
 			var helloPayload struct {
-				AgentVersion   string `json:"agent_version"`
-				AgentCommit    string `json:"agent_commit"`
-				AgentBuildTime string `json:"agent_build_time"`
+				AgentVersion         string                `json:"agent_version"`
+				AgentCommit          string                `json:"agent_commit"`
+				AgentBuildTime       string                `json:"agent_build_time"`
+				AgentProtocolVersion agent.ProtocolVersion `json:"agent_protocol_version"`
 			}
 			if err := json.Unmarshal(envelope.Payload, &helloPayload); err != nil {
 				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_HELLO"})
@@ -210,7 +308,7 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 				if shouldUpdate {
 					_ = writeAgentEnvelope(ctx, conn, "agent_update_request", agentUpdateRequestPayload(server.controlService.AgentReleaseVersion()))
 				}
-				config, err := server.controlService.CompileNodeAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID)
+				config, err := server.controlService.CompileNodeAgentConfigForAgentProtocol(ctx, authResult.OrganizationID, authResult.AgentID, helloPayload.AgentProtocolVersion, helloPayload.AgentProtocolVersion != (agent.ProtocolVersion{}))
 				if err != nil {
 					if errors.Is(err, service.ErrNotFound) {
 						server.closeStaleAgentSession(ctx, conn, authResult)
@@ -235,7 +333,8 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 		case "heartbeat":
 			if authResult.AgentType == "NODE" {
 				var payload struct {
-					AppliedConfigVersion int `json:"applied_config_version"`
+					AppliedConfigVersion int                   `json:"applied_config_version"`
+					AgentProtocolVersion agent.ProtocolVersion `json:"agent_protocol_version"`
 				}
 				if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_HEARTBEAT"})
@@ -271,7 +370,7 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 				if !behind {
 					continue
 				}
-				config, err := server.controlService.CompileNodeAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID)
+				config, err := server.controlService.CompileNodeAgentConfigForAgentProtocol(ctx, authResult.OrganizationID, authResult.AgentID, payload.AgentProtocolVersion, payload.AgentProtocolVersion != (agent.ProtocolVersion{}))
 				if err != nil {
 					if errors.Is(err, service.ErrNotFound) {
 						server.closeStaleAgentSession(ctx, conn, authResult)
@@ -303,10 +402,13 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 			}
 		case "config_ack":
 			var payload struct {
-				ConfigVersion int                            `json:"config_version"`
-				Status        string                         `json:"status"`
-				ErrorMessage  string                         `json:"error_message"`
-				Errors        []agent.ConfigApplyErrorDetail `json:"errors"`
+				ConfigVersion        int                            `json:"config_version"`
+				ConfigHash           string                         `json:"config_hash"`
+				AgentProtocolVersion agent.ProtocolVersion          `json:"agent_protocol_version"`
+				Status               string                         `json:"status"`
+				ErrorMessage         string                         `json:"error_message"`
+				Errors               []agent.ConfigApplyErrorDetail `json:"errors"`
+				ResolvedDataplanes   map[string]string              `json:"resolved_dataplanes"`
 			}
 			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 				_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "INVALID_CONFIG_ACK"})
@@ -316,15 +418,19 @@ func (server *ControlServer) handleAgentMessages(ctx context.Context, conn *webs
 				applyErrors := make([]service.ConfigApplyErrorInput, 0, len(payload.Errors))
 				for _, applyErr := range payload.Errors {
 					applyErrors = append(applyErrors, service.ConfigApplyErrorInput{
-						Code:     applyErr.Code,
-						RuleIDs:  applyErr.RuleIDs,
-						Protocol: applyErr.Protocol,
-						ListenIP: applyErr.ListenIP,
-						Port:     applyErr.Port,
-						Message:  applyErr.Message,
+						Code:             applyErr.Code,
+						RuleIDs:          applyErr.RuleIDs,
+						Protocol:         applyErr.Protocol,
+						ListenIP:         applyErr.ListenIP,
+						Port:             applyErr.Port,
+						Message:          applyErr.Message,
+						Dataplane:        applyErr.Dataplane,
+						Owner:            applyErr.Owner,
+						DriftStatus:      applyErr.DriftStatus,
+						ExternalResource: applyErr.ExternalResource,
 					})
 				}
-				if err := server.controlService.AcknowledgeNodeAgentConfig(ctx, authResult.OrganizationID, authResult.AgentID, payload.ConfigVersion, payload.Status, payload.ErrorMessage, applyErrors); err != nil {
+				if err := server.controlService.AcknowledgeNodeAgentConfigForAgentProtocol(ctx, authResult.OrganizationID, authResult.AgentID, payload.ConfigVersion, payload.ConfigHash, payload.AgentProtocolVersion, payload.AgentProtocolVersion != (agent.ProtocolVersion{}), payload.Status, payload.ErrorMessage, applyErrors, payload.ResolvedDataplanes); err != nil {
 					_ = writeAgentEnvelope(ctx, conn, "error", map[string]any{"code": "CONFIG_ACK_FAILED"})
 				}
 			}

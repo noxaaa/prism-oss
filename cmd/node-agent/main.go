@@ -11,13 +11,15 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/noxaaa/prism-oss/pkg/core/agent"
 	"github.com/noxaaa/prism-oss/pkg/core/buildinfo"
-	"github.com/noxaaa/prism-oss/pkg/core/forward"
+	"github.com/noxaaa/prism-oss/pkg/core/dataplane"
 )
 
 const defaultServiceName = "prism-node-agent"
@@ -66,14 +68,30 @@ func runAgent(args []string) error {
 	if err != nil {
 		return err
 	}
+	cfg.ConfigFile = configFile
 	if cfg.ControlPlaneURL == "" {
 		return errors.New("CONTROL_PLANE_URL is required")
 	}
-	supervisor := forward.NewSupervisor()
-	defer supervisor.Close()
-	runtime := agent.NewNodeRuntime(cfg, supervisor)
+	manager := dataplane.NewManager(dataplane.Options{
+		Mode:             cfg.DataplaneMode,
+		InstanceID:       cfg.DataplaneInstanceID,
+		ServiceName:      cfg.ServiceName,
+		InstallDir:       cfg.InstallDir,
+		ExternalBackends: true,
+	})
+	defer func() { _ = manager.Close() }()
+	runtime := agent.NewNodeRuntime(cfg, manager)
 	log.Printf("%s node-agent connecting to %s", cfg.AppName, cfg.ControlPlaneURL)
-	return runtime.Run(context.Background())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return cleanRunError(runtime.Run(ctx))
+}
+
+func cleanRunError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func extractRunConfigFile(args []string) (string, []string, error) {
@@ -103,17 +121,20 @@ func extractRunConfigFile(args []string) (string, []string, error) {
 }
 
 type serviceOptions struct {
-	AppName           string
-	ServiceName       string
-	InstallDir        string
-	ConfigFile        string
-	CredentialFile    string
-	ControlURL        string
-	RegistrationToken string
-	Version           string
-	ReleaseBaseURL    string
-	SHA256SumsURL     string
-	Purge             bool
+	AppName             string
+	ServiceName         string
+	InstallDir          string
+	ConfigFile          string
+	CredentialFile      string
+	ControlURL          string
+	RegistrationToken   string
+	EnrollmentToken     string
+	DataplaneMode       string
+	DataplaneInstanceID string
+	Version             string
+	ReleaseBaseURL      string
+	SHA256SumsURL       string
+	Purge               bool
 }
 
 func installService(args []string) error {
@@ -130,8 +151,11 @@ func installService(args []string) error {
 	if err := requireSystemd(); err != nil {
 		return err
 	}
-	if options.ControlURL == "" || options.RegistrationToken == "" {
-		return errors.New("--control-url and --registration-token are required")
+	if options.ControlURL == "" || (options.RegistrationToken == "" && options.EnrollmentToken == "") {
+		return errors.New("--control-url and --registration-token or --enrollment-token are required")
+	}
+	if options.RegistrationToken != "" && options.EnrollmentToken != "" {
+		return errors.New("--registration-token and --enrollment-token are mutually exclusive")
 	}
 	if err := installCurrentExecutable(options); err != nil {
 		return err
@@ -161,10 +185,14 @@ func parseInstallOptions(args []string) (serviceOptions, error) {
 	flags.StringVar(&options.CredentialFile, "credential-file", "agent-credential.json", "credential file")
 	flags.StringVar(&options.ControlURL, "control-url", "", "control plane URL")
 	flags.StringVar(&options.RegistrationToken, "registration-token", "", "registration token")
+	flags.StringVar(&options.EnrollmentToken, "enrollment-token", "", "node enrollment token")
+	flags.StringVar(&options.DataplaneMode, "dataplane-mode", envOrDefault("AGENT_DATAPLANE_MODE", "NATIVE"), "dataplane mode: AUTO, NATIVE, HAPROXY, or NFTABLES")
+	flags.StringVar(&options.DataplaneInstanceID, "dataplane-instance-id", envOrDefault("AGENT_DATAPLANE_INSTANCE_ID", ""), "stable dataplane ownership instance id")
 	if err := flags.Parse(args); err != nil {
 		return serviceOptions{}, err
 	}
 	defaultPaths(&options)
+	defaultDataplaneOptions(&options)
 	return options, nil
 }
 
@@ -238,6 +266,15 @@ func defaultPaths(options *serviceOptions) {
 	}
 }
 
+func defaultDataplaneOptions(options *serviceOptions) {
+	if strings.TrimSpace(options.DataplaneMode) == "" {
+		options.DataplaneMode = "NATIVE"
+	}
+	if strings.TrimSpace(options.DataplaneInstanceID) == "" {
+		options.DataplaneInstanceID = sanitizeDataplaneInstanceID(options.ServiceName)
+	}
+}
+
 func installCurrentExecutable(options serviceOptions) error {
 	current, err := os.Executable()
 	if err != nil {
@@ -249,6 +286,9 @@ func installCurrentExecutable(options serviceOptions) error {
 	}
 	target := filepath.Join(releaseDir, "node-agent")
 	if err := copyFile(current, target, 0o755); err != nil {
+		return err
+	}
+	if err := copyBundledDataplaneAssets(filepath.Dir(current), releaseDir); err != nil {
 		return err
 	}
 	currentLink := filepath.Join(options.InstallDir, "current")
@@ -267,15 +307,43 @@ func writeAgentEnv(options serviceOptions) error {
 	if err := os.MkdirAll(filepath.Dir(options.CredentialFile), 0o700); err != nil {
 		return err
 	}
-	data := fmt.Sprintf("APP_NAME=%s\nCONTROL_PLANE_URL=%s\nAGENT_REGISTRATION_TOKEN=%s\nAGENT_CREDENTIAL_FILE=%s\nAGENT_SERVICE_NAME=%s\nAGENT_INSTALL_DIR=%s\n",
+	data := fmt.Sprintf("APP_NAME=%s\nCONTROL_PLANE_URL=%s\nAGENT_REGISTRATION_TOKEN=%s\nAGENT_ENROLLMENT_TOKEN=%s\nAGENT_CREDENTIAL_FILE=%s\nAGENT_SERVICE_NAME=%s\nAGENT_INSTALL_DIR=%s\nAGENT_DATAPLANE_MODE=%s\nAGENT_DATAPLANE_INSTANCE_ID=%s\n",
 		quoteEnvValue(options.AppName),
 		quoteEnvValue(options.ControlURL),
 		quoteEnvValue(options.RegistrationToken),
+		quoteEnvValue(options.EnrollmentToken),
 		quoteEnvValue(options.CredentialFile),
 		quoteEnvValue(options.ServiceName),
 		quoteEnvValue(options.InstallDir),
+		quoteEnvValue(options.DataplaneMode),
+		quoteEnvValue(options.DataplaneInstanceID),
 	)
 	return os.WriteFile(options.ConfigFile, []byte(data), 0o600)
+}
+
+func sanitizeDataplaneInstanceID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultServiceName
+	}
+	var builder strings.Builder
+	for _, char := range value {
+		switch {
+		case char >= 'a' && char <= 'z':
+			builder.WriteRune(char)
+		case char >= 'A' && char <= 'Z':
+			builder.WriteRune(char)
+		case char >= '0' && char <= '9':
+			builder.WriteRune(char)
+		default:
+			builder.WriteByte('-')
+		}
+	}
+	result := strings.Trim(builder.String(), "-")
+	if result == "" {
+		return defaultServiceName
+	}
+	return result
 }
 
 func quoteEnvValue(value string) string {
@@ -336,6 +404,9 @@ func downloadAndInstallAgent(options serviceOptions, restart bool) error {
 	if err := copyFile(filepath.Join(tmpDir, "node-agent"), filepath.Join(releaseDir, "node-agent"), 0o755); err != nil {
 		return err
 	}
+	if err := copyBundledDataplaneAssets(tmpDir, releaseDir); err != nil {
+		return err
+	}
 	currentLink := filepath.Join(options.InstallDir, "current")
 	_ = os.Remove(currentLink)
 	relTarget, err := filepath.Rel(options.InstallDir, releaseDir)
@@ -368,6 +439,68 @@ func verifyChecksum(tmpDir string, asset string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func copyBundledDataplaneAssets(sourceRoot string, releaseDir string) error {
+	source := filepath.Join(sourceRoot, "dataplane", "haproxy")
+	if _, err := os.Stat(source); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	target := filepath.Join(releaseDir, "dataplane", "haproxy")
+	same, err := sameDirectory(source, target)
+	if err != nil {
+		return err
+	}
+	if same {
+		return nil
+	}
+	if err := os.RemoveAll(target); err != nil {
+		return err
+	}
+	return copyDir(source, target)
+}
+
+func sameDirectory(left string, right string) (bool, error) {
+	leftInfo, err := os.Stat(left)
+	if err != nil {
+		return false, err
+	}
+	rightInfo, err := os.Stat(right)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return os.SameFile(leftInfo, rightInfo), nil
+}
+
+func copyDir(source string, target string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(target, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(destination, 0o755)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		mode := info.Mode().Perm()
+		if mode == 0 {
+			mode = 0o644
+		}
+		return copyFile(path, destination, mode)
+	})
 }
 
 func checksumLine(path string, asset string) (string, error) {

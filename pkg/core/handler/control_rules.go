@@ -151,14 +151,17 @@ func decodeRuleInput(response http.ResponseWriter, request *http.Request) (servi
 		return service.RuleMutationInput{}, false
 	}
 	return service.RuleMutationInput{
-		Name:           normalized.Name,
-		Tags:           normalized.Tags,
-		NodeGroupID:    normalized.NodeGroupID,
-		ListenIP:       normalized.ListenIP,
-		FailurePolicy:  normalized.FailurePolicy,
-		ForwardingType: normalized.ForwardingType,
-		Protocol:       normalized.Protocol,
-		Port:           normalized.Port,
+		Name:                normalized.Name,
+		Tags:                normalized.Tags,
+		NodeGroupID:         normalized.NodeGroupID,
+		ListenIP:            normalized.ListenIP,
+		SendIP:              normalized.SendIP,
+		FailurePolicy:       normalized.FailurePolicy,
+		DataplanePreference: normalized.DataplanePreference,
+		ForwardingType:      normalized.ForwardingType,
+		Protocol:            normalized.Protocol,
+		Port:                normalized.Port,
+		PortSegments:        toServiceRulePortSegments(normalized.PortSegments),
 		Match: service.RuleMatchInput{
 			Type:        normalized.Match.Type,
 			SNIHostname: normalized.Match.SNIHostname,
@@ -175,6 +178,14 @@ func decodeRuleInput(response http.ResponseWriter, request *http.Request) (servi
 		Enabled:    normalized.Enabled,
 		EnabledSet: true,
 	}, true
+}
+
+func toServiceRulePortSegments(values []validator.RulePortSegmentRequest) []service.RulePortSegmentInput {
+	result := make([]service.RulePortSegmentInput, 0, len(values))
+	for _, value := range values {
+		result = append(result, service.RulePortSegmentInput{StartPort: value.StartPort, EndPort: value.EndPort})
+	}
+	return result
 }
 
 func decodeRuleCopyInput(response http.ResponseWriter, request *http.Request) (service.RuleCopyInput, bool) {

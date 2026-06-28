@@ -52,6 +52,7 @@ services:
       QUEUE_REDIS_URL: ${QUEUE_REDIS_URL:-redis://redis:6379/0}
       CACHE_REDIS_URL: ${CACHE_REDIS_URL:-redis://redis:6379/0}
       GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/data/geoip/dbip-country-lite.mmdb}
+      TRUSTED_AGENT_PROXY_CIDRS: ${TRUSTED_AGENT_PROXY_CIDRS:-}
       CONTROL_PLANE_HTTP_ADDR: 0.0.0.0:8080
     volumes:
       - ./geoip:/data/geoip:ro
@@ -68,6 +69,7 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000}}
       BETTER_AUTH_TRUSTED_ORIGINS: ${BETTER_AUTH_TRUSTED_ORIGINS:-${PUBLIC_WEB_URL:-http://127.0.0.1:3000},http://127.0.0.1:${WEB_PORT:-3000},http://localhost:${WEB_PORT:-3000}}
+      BETTER_AUTH_TRUST_PROXY_HEADERS: ${BETTER_AUTH_TRUST_PROXY_HEADERS:-false}
       OSS_SETUP_TOKEN: ${OSS_SETUP_TOKEN:?set OSS_SETUP_TOKEN in .env}
       DATABASE_URL: "${DATABASE_URL:-postgres://${POSTGRES_USER:-prism}:${POSTGRES_PASSWORD:-prism}@postgres:5432/${POSTGRES_DB:-prism}?sslmode=disable}"
       CONTROL_PLANE_INTERNAL_URL: ${CONTROL_PLANE_INTERNAL_URL:-http://control-plane:8080}

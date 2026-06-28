@@ -40,6 +40,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import {
   Sheet,
   SheetContent,
@@ -47,7 +48,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { bytes, controlDelete, controlGet, controlPatch, controlPost, formatBitrateBps, shortDate } from "@/components/console/control-api";
@@ -56,10 +56,10 @@ import { hasAnyPermission, hasPermission } from "@/components/console/permission
 import { ResourceSelect } from "@/components/console/resource-select";
 import { RuleDeploymentCell, RuleDeploymentSummary } from "@/components/console/rule-deployment-ui";
 import { RuleMatchCell } from "@/components/console/rule-match-cell";
+import { RuleMutationForm, formatPortSegments } from "@/components/console/features/rule-mutation-form";
 import { RuleUpstreamCell } from "@/components/console/rule-upstream-cell";
 import { useConsoleSession } from "@/components/console/shell";
 import {
-  ControlledTextField,
   DataState,
   EnumSelect,
   PageStack,
@@ -68,34 +68,11 @@ import {
   SummaryGrid,
   TableSkeleton,
   TextAreaField,
-  TextField,
   copyText,
   ensureFirstValue,
   useControlList,
 } from "@/components/console/shared";
-import { cn } from "@/lib/utils";
 import type { ResourceOption, Rule, RuleBatchResult, RuleDiagnostics, RuleExportPayload, RuleImportRequest, RuleImportResult, RuleTraffic, Target, TargetGroup } from "@/components/console/types";
-
-const ruleProtocolOptions = [
-  { value: "TCP", label: "TCP" },
-  { value: "UDP", label: "UDP" },
-  { value: "TCP_UDP", label: "TCP + UDP" },
-];
-
-const forwardingTypeOptions = [
-  { value: "DIRECT", label: "Direct forwarding" },
-];
-
-const ruleFailurePolicyOptions = [
-  { value: "KEEP_ENABLED", labelKey: "rules.failurePolicyKeepEnabled" },
-  { value: "DISABLE_WHEN_ALL_NODES_FAILED", labelKey: "rules.failurePolicyDisableAllFailed" },
-];
-
-const proxyProtocolOptions = [
-  { value: "NONE", label: "None" },
-  { value: "V1", label: "Proxy Protocol v1" },
-  { value: "V2", label: "Proxy Protocol v2" },
-];
 
 const ruleImportFormatOptions = [
   { value: "PORTABLE_EXPORT", label: "Portable export" },
@@ -380,7 +357,22 @@ export function RulesPage({ mode }: { mode: "admin" | "user" }) {
                   </TableCell>
                   <TableCell><StatusBadge value={rule.status} /></TableCell>
                   <TableCell><RuleDeploymentCell rule={rule} /></TableCell>
-                  <TableCell>{localizeEnum(rule.protocol, locale)} {rule.listen_ip}:{rule.port}</TableCell>
+                  <TableCell>
+                    <HoverCard>
+                      <HoverCardTrigger asChild>
+                        <span className="inline-flex max-w-48 cursor-default truncate">
+                          {localizeEnum(rule.protocol, locale)} {rule.listen_ip}:{formatPortSegments(rule.port_segments) || rule.port}
+                        </span>
+                      </HoverCardTrigger>
+                      <HoverCardContent className="w-80 text-sm">
+                        <div className="space-y-1">
+                          <div>{localizeEnum(rule.protocol, locale)} {rule.listen_ip}</div>
+                          <div className="break-words text-muted-foreground">{formatPortSegments(rule.port_segments) || rule.port}</div>
+                          <div className="text-muted-foreground">{rule.send_ip ? t("rules.sendIPValue", { ip: rule.send_ip }) : t("rules.defaultSendIP")}</div>
+                        </div>
+                      </HoverCardContent>
+                    </HoverCard>
+                  </TableCell>
                   <TableCell><RuleMatchCell rule={rule} /></TableCell>
                   <TableCell><RuleUpstreamCell rule={rule} targetGroupOptionLabelsByID={targetGroupOptionLabelsByID} targetGroupsByID={targetGroupsByID} targetOptionLabelsByID={targetOptionLabelsByID} targetsByID={targetsByID} /></TableCell>
                   <TableCell>{trafficByRule[rule.id] ? t("rules.trafficValue", { upload: bytes(trafficByRule[rule.id].upload_bytes), download: bytes(trafficByRule[rule.id].download_bytes) }) : t("common.notLoaded")}</TableCell>
@@ -695,140 +687,6 @@ function RuleBatchDeleteDialog({ busy, count, onConfirm, onOpenChange, open }: {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function RuleMutationForm({ onSaved, rule, submitLabel }: { onSaved: () => Promise<void>; rule?: Rule; submitLabel: string }) {
-  const { locale, t } = useI18n();
-  const [protocol, setProtocol] = useState(rule?.protocol ?? "TCP");
-  const [port, setPort] = useState(String(rule?.port ?? 443));
-  const [nodeGroupID, setNodeGroupID] = useState(rule?.node_group_id ?? "");
-  const [listenIP, setListenIP] = useState(rule?.listen_ip ?? "");
-  const [upstreamType, setUpstreamType] = useState(rule?.upstream.type ?? "TARGET_GROUP");
-  const [targetID, setTargetID] = useState(rule?.upstream.target_id ?? "");
-  const [targetGroupID, setTargetGroupID] = useState(rule?.upstream.target_group_id ?? "");
-  const [matchType, setMatchType] = useState(rule?.match.type ?? "ANY_INBOUND");
-  const [proxyIn, setProxyIn] = useState(rule?.proxy_protocol.in ?? "NONE");
-  const [proxyOut, setProxyOut] = useState(rule?.proxy_protocol.out ?? "NONE");
-  const [failurePolicy, setFailurePolicy] = useState(rule?.failure_policy ?? "KEEP_ENABLED");
-  const [ruleEnabled, setRuleEnabled] = useState(rule?.enabled ?? false);
-  const nodeGroups = useControlList<ResourceOption>("/api/control/resource-options/node-groups?access=USE");
-  const targets = useControlList<ResourceOption>("/api/control/resource-options/targets");
-  const targetGroups = useControlList<ResourceOption>("/api/control/resource-options/target-groups");
-  const listenIPs = useControlList<ResourceOption>(
-    nodeGroupID && Number(port) > 0 ? `/api/control/resource-options/node-group-listen-ips?node_group_id=${encodeURIComponent(nodeGroupID)}&protocol=${protocol}&port=${port}` : "",
-  );
-  const localizedProtocolOptions = ruleProtocolOptions.map((option) => ({ ...option, label: localizeEnum(option.value, locale) }));
-  const localizedForwardingTypeOptions = forwardingTypeOptions.map((option) => ({ ...option, label: localizeEnum(option.value, locale) }));
-  const localizedProxyProtocolOptions = proxyProtocolOptions.map((option) => ({ ...option, label: localizeEnum(option.value, locale) }));
-  const localizedFailurePolicyOptions = ruleFailurePolicyOptions.map((option) => ({ value: option.value, label: t(option.labelKey) }));
-  const localizedMatchOptions = protocol !== "TCP"
-    ? [{ value: "ANY_INBOUND", label: localizeEnum("ANY_INBOUND", locale) }]
-    : [{ value: "ANY_INBOUND", label: localizeEnum("ANY_INBOUND", locale) }, { value: "TLS_SNI", label: localizeEnum("TLS_SNI", locale) }];
-  const localizedUpstreamOptions = [{ value: "TARGET_GROUP", label: localizeEnum("TARGET_GROUP", locale) }, { value: "TARGET", label: localizeEnum("TARGET", locale) }];
-
-  useEffect(() => {
-    if (rule) {
-      return;
-    }
-    ensureFirstValue(nodeGroups.data, nodeGroupID, setNodeGroupID);
-    ensureFirstValue(targets.data, targetID, setTargetID);
-    ensureFirstValue(targetGroups.data, targetGroupID, setTargetGroupID);
-    ensureFirstValue(listenIPs.data, listenIP, setListenIP);
-  }, [listenIPs.data, listenIP, nodeGroupID, nodeGroups.data, rule, targetGroupID, targetGroups.data, targetID, targets.data]);
-
-  useEffect(() => {
-    if (protocol !== "TCP" && matchType !== "ANY_INBOUND") {
-      setMatchType("ANY_INBOUND");
-    }
-  }, [matchType, protocol]);
-
-  useEffect(() => {
-    if (protocol === "UDP") {
-      setProxyIn("NONE");
-      setProxyOut("NONE");
-    }
-  }, [protocol]);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const formElement = event.currentTarget;
-    const form = new FormData(formElement);
-    const body = {
-      name: form.get("name"),
-      tags: String(form.get("tags") ?? "").split(",").map((tag) => tag.trim()).filter(Boolean),
-      node_group_id: nodeGroupID,
-      listen_ip: listenIP,
-      failure_policy: failurePolicy,
-      forwarding_type: "DIRECT",
-      protocol,
-      port: Number(port),
-      match: {
-        type: matchType,
-        sni_hostname: matchType === "TLS_SNI" ? form.get("sni_hostname") : "",
-      },
-      proxy_protocol: { in: proxyIn, out: proxyOut },
-      upstream: upstreamType === "TARGET" ? { type: "TARGET", target_id: targetID } : { type: "TARGET_GROUP", target_group_id: targetGroupID },
-      enabled: ruleEnabled,
-    };
-    try {
-      if (rule) {
-        await controlPatch<Rule>(`/api/control/rules/${rule.id}`, body);
-        toast.success(t("rules.updated"));
-      } else {
-        await controlPost<Rule>("/api/control/rules", body);
-        formElement.reset();
-        setRuleEnabled(false);
-        toast.success(t("rules.created"));
-      }
-      await onSaved();
-    } catch (error) {
-      toast.error(localizeControlError(error, locale));
-    }
-  }
-
-  const canSubmit = nodeGroupID && listenIP && (upstreamType === "TARGET" ? targetID : targetGroupID);
-
-  return (
-    <form className="flex flex-col gap-5" onSubmit={submit}>
-      <FieldGroup>
-        <TextField defaultValue={rule?.name} label={t("field.name")} name="name" placeholder="customer-a-https" />
-        <TextField defaultValue={safeArray(rule?.tags).join(",")} label={t("field.tags")} name="tags" placeholder="customer-a,https" required={false} />
-        <ResourceSelect label={t("rules.nodeGroup")} onValueChange={setNodeGroupID} options={nodeGroups.data} value={nodeGroupID} />
-        <EnumSelect label={t("rules.forwardingType")} onValueChange={() => undefined} options={localizedForwardingTypeOptions} value="DIRECT" />
-        <div className="grid gap-3 md:grid-cols-2">
-          <EnumSelect label={t("rules.protocol")} onValueChange={(value) => { setProtocol(value); setListenIP(""); }} options={localizedProtocolOptions} value={protocol} />
-          <ControlledTextField label={t("rules.port")} onValueChange={(value) => { setPort(value); setListenIP(""); }} placeholder="443" type="number" value={port} />
-        </div>
-        <ResourceSelect label={t("rules.listenIP")} onValueChange={setListenIP} options={listenIPs.data} value={listenIP} />
-        <EnumSelect label={t("rules.failurePolicy")} onValueChange={setFailurePolicy} options={localizedFailurePolicyOptions} value={failurePolicy} />
-        <FieldDescription>{t("rules.failurePolicyDescription")}</FieldDescription>
-        <div className={cn("grid gap-3", matchType === "TLS_SNI" ? "md:grid-cols-2" : "")}>
-          <EnumSelect label={t("rules.matchType")} onValueChange={setMatchType} options={localizedMatchOptions} value={matchType} />
-          {matchType === "TLS_SNI" ? <TextField defaultValue={rule?.match.sni_hostname ?? ""} label={t("rules.sniHostname")} name="sni_hostname" placeholder="app.customer.example" /> : null}
-        </div>
-        {protocol !== "UDP" ? (
-          <div className="grid gap-3 md:grid-cols-2">
-            <EnumSelect label={t("rules.proxyProtocolIn")} onValueChange={setProxyIn} options={localizedProxyProtocolOptions} value={proxyIn} />
-            <EnumSelect label={t("rules.proxyProtocolOut")} onValueChange={setProxyOut} options={localizedProxyProtocolOptions} value={proxyOut} />
-          </div>
-        ) : null}
-        <EnumSelect label={t("rules.upstreamType")} onValueChange={setUpstreamType} options={localizedUpstreamOptions} value={upstreamType} />
-        {upstreamType === "TARGET" ? (
-          <ResourceSelect label={t("rules.target")} onValueChange={setTargetID} options={targets.data} value={targetID} />
-        ) : (
-          <ResourceSelect label={t("rules.targetGroup")} onValueChange={setTargetGroupID} options={targetGroups.data} value={targetGroupID} />
-        )}
-        <Field orientation="horizontal">
-          <Switch checked={ruleEnabled} id="rule_enabled" onCheckedChange={setRuleEnabled} />
-          <FieldLabel htmlFor="rule_enabled">{t("common.enabled")}</FieldLabel>
-        </Field>
-      </FieldGroup>
-      <Button disabled={!canSubmit} type="submit">
-        {rule ? <EditIcon data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
-        {submitLabel}
-      </Button>
-    </form>
   );
 }
 

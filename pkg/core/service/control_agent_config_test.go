@@ -433,6 +433,9 @@ func (repositories agentHelloTestRepositories) Quotas() repo.QuotaRepository { r
 func (repositories agentHelloTestRepositories) AgentRegistrationTokens() repo.AgentRegistrationTokenRepository {
 	return nil
 }
+func (repositories agentHelloTestRepositories) NodeEnrollmentProfiles() repo.NodeEnrollmentProfileRepository {
+	return nil
+}
 func (repositories agentHelloTestRepositories) AgentCredentials() repo.AgentCredentialRepository {
 	return nil
 }

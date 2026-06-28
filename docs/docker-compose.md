@@ -6,6 +6,8 @@ This guide covers the Docker Compose installation created by `scripts/install.sh
 
 The installer writes a local `.env` file on first run. Keep this file private because it contains authentication, database, and agent secrets. On later runs, the upgrade helper preserves secrets and custom values while updating the image tag used by Compose.
 
+On first install, when a terminal is available and no configuration options are provided, the installer prompts for `WEB_PORT`, `PUBLIC_WEB_URL`, and `CONTROL_PLANE_PORT`. Pass explicit options such as `--web-port`, `--public-web-url`, and `--control-port` for unattended installs.
+
 Common settings:
 
 - `APP_NAME`: display name shown in the console.
@@ -21,7 +23,27 @@ Common settings:
 - `PRISM_IMAGE_TAG`: image tag used for `prism-oss-web`, `prism-oss-control-plane`, and `prism-oss-migrate`.
 - `BETTER_AUTH_URL`: optional auth base URL override. Defaults to `PUBLIC_WEB_URL`.
 - `BETTER_AUTH_TRUSTED_ORIGINS`: comma-separated browser origins accepted by the auth service.
+- `BETTER_AUTH_TRUST_PROXY_HEADERS`: set to `true` only when Prism is behind a trusted reverse proxy that strips incoming client-supplied `X-Forwarded-*` headers and rewrites them itself.
 - `OSS_SETUP_TOKEN`: one-time first-owner setup token.
+
+## Reverse Proxy
+
+When the web console is placed behind an HTTPS reverse proxy, the auth service must see or trust the browser-facing origin. Set `PUBLIC_WEB_URL` and `BETTER_AUTH_URL` to the public console URL, and include that same origin in `BETTER_AUTH_TRUSTED_ORIGINS` when you keep additional localhost or IP origins.
+
+Set `BETTER_AUTH_TRUST_PROXY_HEADERS=true` only for a trusted proxy boundary. Do not enable it when browsers can reach the web container directly or when the proxy passes through client-supplied `X-Forwarded-*` headers.
+
+The proxy should forward the original host and scheme:
+
+```nginx
+proxy_set_header Host $http_host;
+proxy_set_header X-Forwarded-Host $http_host;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Port $server_port;
+```
+
+Use a host value that preserves a non-default public port, or forward the port separately with `X-Forwarded-Port`.
+
+If these values point at the internal container URL instead of the public URL, BetterAuth can reject `/api/auth/sign-in/email` or `/api/auth/sign-out` with `INVALID_ORIGIN` or `MISSING_OR_NULL_ORIGIN`.
 
 The default install starts a bundled `postgres:16` container and stores data in the `postgres-data` Docker volume. To use external PostgreSQL 16 instead, pass:
 

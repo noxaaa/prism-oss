@@ -95,14 +95,22 @@ func (service *ControlService) RevokeRegistrationToken(ctx context.Context, iden
 }
 
 func (service *ControlService) AuthenticateAgentToken(ctx context.Context, agentType string, token string) (AgentAuthResult, error) {
-	return service.authenticateAgentToken(ctx, agentType, token, true)
+	return service.AuthenticateAgentTokenWithMetadata(ctx, agentType, token, AgentEnrollmentMetadata{})
+}
+
+func (service *ControlService) AuthenticateAgentTokenWithMetadata(ctx context.Context, agentType string, token string, metadata AgentEnrollmentMetadata) (AgentAuthResult, error) {
+	return service.authenticateAgentToken(ctx, agentType, token, true, metadata)
 }
 
 func (service *ControlService) ValidateAgentToken(ctx context.Context, agentType string, token string) (AgentAuthResult, error) {
-	return service.authenticateAgentToken(ctx, agentType, token, false)
+	return service.authenticateAgentToken(ctx, agentType, token, false, AgentEnrollmentMetadata{})
 }
 
-func (service *ControlService) authenticateAgentToken(ctx context.Context, agentType string, token string, exchangeRegistration bool) (AgentAuthResult, error) {
+func (service *ControlService) ValidateAgentTokenWithMetadata(ctx context.Context, agentType string, token string, metadata AgentEnrollmentMetadata) (AgentAuthResult, error) {
+	return service.authenticateAgentToken(ctx, agentType, token, false, metadata)
+}
+
+func (service *ControlService) authenticateAgentToken(ctx context.Context, agentType string, token string, exchangeRegistration bool, metadata AgentEnrollmentMetadata) (AgentAuthResult, error) {
 	agentType = strings.ToUpper(strings.TrimSpace(agentType))
 	token = strings.TrimSpace(token)
 	if agentType != "NODE" && agentType != "MONITOR" {
@@ -117,28 +125,46 @@ func (service *ControlService) authenticateAgentToken(ctx context.Context, agent
 	tokenHash := hmacTokenHash(service.agentTokenSigningSecret, token)
 
 	var result AgentAuthResult
+	var committedAuthError error
+	var committedAuthErrorOrganizationID string
+	var committedAuthErrorAffectedDNSRecordIDs []string
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		if credential, err := repositories.AgentCredentials().FindCredentialByHash(ctx, tokenHash); err == nil {
 			if credential.AgentType != agentType || credential.RevokedAt != "" {
 				return ErrForbidden
 			}
 			if credential.ActivatedAt == "" {
-				if credential.RegistrationTokenID == "" {
+				if credential.RegistrationTokenID == "" && credential.EnrollmentProfileID == "" {
 					return ErrForbidden
+				}
+				var enrollmentProfile repo.NodeEnrollmentProfileRecord
+				if credential.EnrollmentProfileID != "" {
+					profile, err := service.validatePendingEnrollmentCredentialForActivation(ctx, repositories, credential, metadata)
+					if err != nil {
+						return err
+					}
+					enrollmentProfile = profile
 				}
 				if exchangeRegistration {
 					now := service.timestamp()
-					if err := repositories.AgentRegistrationTokens().ClaimRegistrationToken(ctx, credential.OrganizationID, credential.RegistrationTokenID, now); err != nil {
-						if errors.Is(err, repo.ErrNotFound) {
-							return ErrForbidden
+					if credential.RegistrationTokenID != "" {
+						if err := repositories.AgentRegistrationTokens().ClaimRegistrationToken(ctx, credential.OrganizationID, credential.RegistrationTokenID, now); err != nil {
+							if errors.Is(err, repo.ErrNotFound) {
+								return ErrForbidden
+							}
+							return err
 						}
-						return err
 					}
 					if err := repositories.AgentCredentials().ActivateCredential(ctx, credential.OrganizationID, credential.ID, now); err != nil {
 						return err
 					}
 					if err := repositories.AgentCredentials().RevokeActiveCredentialsExcept(ctx, credential.OrganizationID, credential.AgentType, credential.AgentID, credential.ID, now); err != nil {
 						return err
+					}
+					if enrollmentProfile.ID != "" {
+						if err := service.recordNodeEnrollmentEvent(ctx, repositories, enrollmentProfile, credential.AgentID, "SUCCEEDED", "", "Node enrolled.", metadata); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -154,6 +180,22 @@ func (service *ControlService) authenticateAgentToken(ctx context.Context, agent
 
 		registration, err := repositories.AgentRegistrationTokens().FindRegistrationTokenByHash(ctx, tokenHash)
 		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) && agentType == "NODE" {
+				enrollmentResult, found, enrollmentErr := service.authenticateNodeEnrollmentTokenInTx(ctx, repositories, tokenHash, exchangeRegistration, metadata)
+				if enrollmentErr != nil {
+					if authErr, ok := enrollmentAuthError(enrollmentErr); ok && authErr.commitFailure {
+						committedAuthError = authErr.cause
+						committedAuthErrorOrganizationID = authErr.profile.OrganizationID
+						committedAuthErrorAffectedDNSRecordIDs = authErr.affectedDNSRecordIDs
+						return nil
+					}
+					return enrollmentErr
+				}
+				if found {
+					result = enrollmentResult
+					return nil
+				}
+			}
 			return err
 		}
 		if registration.AgentType != agentType || registration.UsedAt != "" || registration.RevokedAt != "" {
@@ -216,50 +258,164 @@ func (service *ControlService) authenticateAgentToken(ctx context.Context, agent
 		}
 		return nil
 	})
+	if committedAuthError != nil {
+		if len(committedAuthErrorAffectedDNSRecordIDs) > 0 {
+			service.evaluateDNSManagedRecordsBestEffort(ctx, committedAuthErrorOrganizationID, committedAuthErrorAffectedDNSRecordIDs)
+		}
+		return AgentAuthResult{}, mapServiceError(committedAuthError)
+	}
+	if authErr, ok := enrollmentAuthError(err); ok {
+		service.recordNodeEnrollmentFailureBestEffort(ctx, authErr.profile, authErr.cause, authErr.metadata)
+		return AgentAuthResult{}, mapServiceError(authErr.cause)
+	}
+	if err == nil && len(result.AffectedDNSRecordIDs) > 0 {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, result.OrganizationID, result.AffectedDNSRecordIDs)
+	}
 	return result, mapServiceError(err)
 }
 
 func (service *ControlService) FinalizeAgentRegistrationDelivery(ctx context.Context, authResult AgentAuthResult) error {
-	if !authResult.RegisteredWithToken || authResult.RegistrationTokenID == "" || authResult.AgentCredentialID == "" {
+	if !authResult.RegisteredWithToken || authResult.AgentCredentialID == "" {
 		return nil
 	}
 	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
 		now := service.timestamp()
-		if err := repositories.AgentRegistrationTokens().ClaimRegistrationToken(ctx, authResult.OrganizationID, authResult.RegistrationTokenID, now); err != nil {
-			if errors.Is(err, repo.ErrNotFound) {
-				return ErrForbidden
+		if authResult.RegistrationTokenID != "" {
+			if err := repositories.AgentRegistrationTokens().ClaimRegistrationToken(ctx, authResult.OrganizationID, authResult.RegistrationTokenID, now); err != nil {
+				if errors.Is(err, repo.ErrNotFound) {
+					return ErrForbidden
+				}
+				return err
 			}
-			return err
+		}
+		var enrollmentProfile repo.NodeEnrollmentProfileRecord
+		if authResult.EnrollmentProfileID != "" && authResult.RegistrationTokenID == "" {
+			profile, err := service.validatePendingEnrollmentCredentialForActivation(ctx, repositories, repo.AgentCredentialRecord{
+				ID:                  authResult.AgentCredentialID,
+				OrganizationID:      authResult.OrganizationID,
+				AgentType:           authResult.AgentType,
+				AgentID:             authResult.AgentID,
+				EnrollmentProfileID: authResult.EnrollmentProfileID,
+				EnrollmentTokenHash: authResult.EnrollmentTokenHash,
+			}, authResult.EnrollmentMetadata)
+			if err != nil {
+				return err
+			}
+			enrollmentProfile = profile
 		}
 		if err := repositories.AgentCredentials().ActivateCredential(ctx, authResult.OrganizationID, authResult.AgentCredentialID, now); err != nil {
 			return err
 		}
-		return repositories.AgentCredentials().RevokeActiveCredentialsExcept(
+		if err := repositories.AgentCredentials().RevokeActiveCredentialsExcept(
 			ctx,
 			authResult.OrganizationID,
 			authResult.AgentType,
 			authResult.AgentID,
 			authResult.AgentCredentialID,
 			now,
-		)
-	})
-	return mapServiceError(err)
-}
-
-func (service *ControlService) ReleaseAgentRegistrationCredential(ctx context.Context, authResult AgentAuthResult) error {
-	if !authResult.RegisteredWithToken || authResult.RegistrationTokenID == "" || authResult.AgentCredentialID == "" {
-		return nil
-	}
-	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
-		now := service.timestamp()
-		if err := repositories.AgentCredentials().RevokeCredential(ctx, authResult.OrganizationID, authResult.AgentCredentialID, now); err != nil {
-			if !errors.Is(err, repo.ErrNotFound) {
+		); err != nil {
+			return err
+		}
+		if enrollmentProfile.ID != "" {
+			if err := service.recordNodeEnrollmentEvent(ctx, repositories, enrollmentProfile, authResult.AgentID, "SUCCEEDED", "", "Node enrolled.", authResult.EnrollmentMetadata); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	return mapServiceError(err)
+}
+
+func (service *ControlService) validatePendingEnrollmentCredentialForActivation(ctx context.Context, repositories repo.Repositories, credential repo.AgentCredentialRecord, metadata AgentEnrollmentMetadata) (repo.NodeEnrollmentProfileRecord, error) {
+	profile, err := repositories.NodeEnrollmentProfiles().FindNodeEnrollmentProfileByTokenHashForUpdate(ctx, credential.EnrollmentTokenHash)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return repo.NodeEnrollmentProfileRecord{}, ErrForbidden
+		}
+		return repo.NodeEnrollmentProfileRecord{}, err
+	}
+	if profile.OrganizationID != credential.OrganizationID || profile.ID != credential.EnrollmentProfileID {
+		return repo.NodeEnrollmentProfileRecord{}, ErrForbidden
+	}
+	if !profile.Enabled || strings.TrimSpace(profile.RevokedAt) != "" {
+		return repo.NodeEnrollmentProfileRecord{}, ErrForbidden
+	}
+	if strings.TrimSpace(profile.ExpiresAt) != "" {
+		expiresAt, err := time.Parse(time.RFC3339Nano, profile.ExpiresAt)
+		if err != nil || !expiresAt.After(service.now()) {
+			return repo.NodeEnrollmentProfileRecord{}, ErrForbidden
+		}
+	}
+	if !remoteIPAllowed(metadata.RemoteIP, decodeJSONStringList(profile.AllowedCIDRsJSON)) {
+		return repo.NodeEnrollmentProfileRecord{}, ErrForbidden
+	}
+	return profile, nil
+}
+
+func (service *ControlService) ReleaseAgentRegistrationCredential(ctx context.Context, authResult AgentAuthResult) error {
+	if !authResult.RegisteredWithToken || authResult.AgentCredentialID == "" {
+		return nil
+	}
+	var affectedDNSRecordIDs []string
+	err := service.store.WithinTx(ctx, func(ctx context.Context, repositories repo.Repositories) error {
+		now := service.timestamp()
+		releasedDNSRecordIDs, _, releaseErr := service.releaseAgentRegistrationCredentialInTx(ctx, repositories, authResult, now)
+		affectedDNSRecordIDs = releasedDNSRecordIDs
+		return releaseErr
+	})
+	if err == nil && len(affectedDNSRecordIDs) > 0 {
+		service.evaluateDNSManagedRecordsBestEffort(ctx, authResult.OrganizationID, affectedDNSRecordIDs)
+	}
+	return mapServiceError(err)
+}
+
+func (service *ControlService) releaseAgentRegistrationCredentialInTx(ctx context.Context, repositories repo.Repositories, authResult AgentAuthResult, now string) ([]string, bool, error) {
+	credentialRevoked := true
+	if err := repositories.AgentCredentials().RevokeCredential(ctx, authResult.OrganizationID, authResult.AgentCredentialID, now); err != nil {
+		if !errors.Is(err, repo.ErrNotFound) {
+			return nil, false, err
+		}
+		credentialRevoked = false
+	}
+	if authResult.EnrollmentProfileID == "" {
+		return nil, credentialRevoked, nil
+	}
+	var affectedDNSRecordIDs []string
+	if credentialRevoked && authResult.AgentID != "" {
+		node, err := repositories.Nodes().FindNodeByID(ctx, authResult.OrganizationID, authResult.AgentID)
+		if err != nil && !errors.Is(err, repo.ErrNotFound) {
+			return nil, false, err
+		}
+		if err == nil {
+			nodes, err := repositories.Nodes().ListNodesByOrganization(ctx, authResult.OrganizationID)
+			if err != nil {
+				return nil, false, err
+			}
+			if err := validateEnabledRulesForNodeSet(ctx, repositories, authResult.OrganizationID, removeNodeFromSet(nodes, authResult.AgentID)); err != nil {
+				return nil, false, err
+			}
+			if err := repositories.Nodes().DeleteNode(ctx, authResult.OrganizationID, authResult.AgentID, now); err != nil && !errors.Is(err, repo.ErrNotFound) {
+				return nil, false, err
+			}
+			affectedDNSRecordIDs, err = service.markDNSRecordsDependingOnNodeGroupsPending(ctx, repositories, authResult.OrganizationID, node.GroupIDs, now)
+			if err != nil {
+				return nil, false, err
+			}
+		}
+	}
+	profile, err := repositories.NodeEnrollmentProfiles().FindNodeEnrollmentProfileByID(ctx, authResult.OrganizationID, authResult.EnrollmentProfileID)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return affectedDNSRecordIDs, credentialRevoked, nil
+		}
+		return nil, false, err
+	}
+	if credentialRevoked && profile.TokenHash == authResult.EnrollmentTokenHash {
+		if err := repositories.NodeEnrollmentProfiles().DecrementNodeEnrollmentProfileUsedCount(ctx, authResult.OrganizationID, authResult.EnrollmentProfileID, now); err != nil && !errors.Is(err, repo.ErrNotFound) {
+			return nil, false, err
+		}
+	}
+	return affectedDNSRecordIDs, credentialRevoked, nil
 }
 
 func (service *ControlService) pendingCredentialIsStale(credential repo.AgentCredentialRecord) bool {

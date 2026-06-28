@@ -13,6 +13,7 @@ import (
 var ErrInvalidRequest = errors.New("invalid request")
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
+var hostnamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.?$`)
 
 type ValidationError struct {
 	Message string
@@ -86,25 +87,38 @@ type GroupRequest struct {
 }
 
 type NodeRequest struct {
-	Name                string                  `json:"name"`
-	GroupIDs            []string                `json:"group_ids"`
-	ListenIPs           []NodeListenIP          `json:"listen_ips"`
-	PortRanges          []NodePortRange         `json:"port_ranges"`
-	DNSPublishAddresses []NodeDNSPublishAddress `json:"dns_publish_addresses"`
-	PublicDescription   string                  `json:"public_description"`
+	Name                    string                  `json:"name"`
+	GroupIDs                []string                `json:"group_ids"`
+	ListenIPs               []NodeListenIP          `json:"listen_ips"`
+	SendIPs                 []NodeSendIP            `json:"send_ips"`
+	PortRanges              []NodePortRange         `json:"port_ranges"`
+	MaxRulePorts            int                     `json:"max_rule_ports"`
+	DNSPublishAddresses     []NodeDNSPublishAddress `json:"dns_publish_addresses"`
+	PublicDescription       string                  `json:"public_description"`
+	DataplaneMode           string                  `json:"dataplane_mode"`
+	DataplaneConflictPolicy string                  `json:"dataplane_conflict_policy"`
 }
 
 type NodePatchRequest struct {
-	Name                *string                  `json:"name"`
-	GroupIDs            *[]string                `json:"group_ids"`
-	ListenIPs           *[]NodeListenIP          `json:"listen_ips"`
-	PortRanges          *[]NodePortRange         `json:"port_ranges"`
-	DNSPublishAddresses *[]NodeDNSPublishAddress `json:"dns_publish_addresses"`
-	PublicDescription   *string                  `json:"public_description"`
+	Name                    *string                  `json:"name"`
+	GroupIDs                *[]string                `json:"group_ids"`
+	ListenIPs               *[]NodeListenIP          `json:"listen_ips"`
+	SendIPs                 *[]NodeSendIP            `json:"send_ips"`
+	PortRanges              *[]NodePortRange         `json:"port_ranges"`
+	MaxRulePorts            *int                     `json:"max_rule_ports"`
+	DNSPublishAddresses     *[]NodeDNSPublishAddress `json:"dns_publish_addresses"`
+	PublicDescription       *string                  `json:"public_description"`
+	DataplaneMode           *string                  `json:"dataplane_mode"`
+	DataplaneConflictPolicy *string                  `json:"dataplane_conflict_policy"`
 }
 
 type NodeListenIP struct {
 	ListenIP    string `json:"listen_ip"`
+	DisplayName string `json:"display_name"`
+}
+
+type NodeSendIP struct {
+	SendIP      string `json:"send_ip"`
 	DisplayName string `json:"display_name"`
 }
 
@@ -233,18 +247,26 @@ type TargetGroupMemberRequest struct {
 }
 
 type RuleRequest struct {
-	Name           string               `json:"name"`
-	Tags           []string             `json:"tags"`
-	NodeGroupID    string               `json:"node_group_id"`
-	ListenIP       string               `json:"listen_ip"`
-	FailurePolicy  string               `json:"failure_policy"`
-	ForwardingType string               `json:"forwarding_type"`
-	Protocol       string               `json:"protocol"`
-	Port           int                  `json:"port"`
-	Match          RuleMatchRequest     `json:"match"`
-	ProxyProtocol  ProxyProtocolRequest `json:"proxy_protocol"`
-	Upstream       RuleUpstreamRequest  `json:"upstream"`
-	Enabled        bool                 `json:"enabled"`
+	Name                string                   `json:"name"`
+	Tags                []string                 `json:"tags"`
+	NodeGroupID         string                   `json:"node_group_id"`
+	ListenIP            string                   `json:"listen_ip"`
+	SendIP              string                   `json:"send_ip"`
+	FailurePolicy       string                   `json:"failure_policy"`
+	DataplanePreference string                   `json:"dataplane_preference"`
+	ForwardingType      string                   `json:"forwarding_type"`
+	Protocol            string                   `json:"protocol"`
+	Port                int                      `json:"port"`
+	PortSegments        []RulePortSegmentRequest `json:"port_segments"`
+	Match               RuleMatchRequest         `json:"match"`
+	ProxyProtocol       ProxyProtocolRequest     `json:"proxy_protocol"`
+	Upstream            RuleUpstreamRequest      `json:"upstream"`
+	Enabled             bool                     `json:"enabled"`
+}
+
+type RulePortSegmentRequest struct {
+	StartPort int `json:"start_port"`
+	EndPort   int `json:"end_port"`
 }
 
 type RuleMatchRequest struct {
@@ -363,15 +385,26 @@ func ValidateGroupRequest(request GroupRequest) (GroupRequest, error) {
 func ValidateNodeRequest(request NodeRequest) (NodeRequest, error) {
 	request.Name = strings.TrimSpace(request.Name)
 	request.PublicDescription = strings.TrimSpace(request.PublicDescription)
+	request.DataplaneMode = normalizeDataplaneMode(request.DataplaneMode)
+	request.DataplaneConflictPolicy = normalizeDataplaneConflictPolicy(request.DataplaneConflictPolicy)
 	request.GroupIDs = normalizeIDs(request.GroupIDs)
-	if request.Name == "" || len(request.Name) > 120 || len(request.PublicDescription) > 2000 {
+	if request.Name == "" || len(request.Name) > 120 || len(request.PublicDescription) > 2000 ||
+		!validDataplaneMode(request.DataplaneMode) || !validDataplaneConflictPolicy(request.DataplaneConflictPolicy) {
 		return NodeRequest{}, ErrInvalidRequest
 	}
 	listenIPs, err := validateListenIPs(request.ListenIPs)
 	if err != nil {
 		return NodeRequest{}, err
 	}
+	sendIPs, err := validateSendIPs(request.SendIPs)
+	if err != nil {
+		return NodeRequest{}, err
+	}
 	portRanges, err := validatePortRanges(request.PortRanges)
+	if err != nil {
+		return NodeRequest{}, err
+	}
+	maxRulePorts, err := validateMaxRulePorts(request.MaxRulePorts)
 	if err != nil {
 		return NodeRequest{}, err
 	}
@@ -380,7 +413,9 @@ func ValidateNodeRequest(request NodeRequest) (NodeRequest, error) {
 		return NodeRequest{}, err
 	}
 	request.ListenIPs = listenIPs
+	request.SendIPs = sendIPs
 	request.PortRanges = portRanges
+	request.MaxRulePorts = maxRulePorts
 	request.DNSPublishAddresses = dnsPublishAddresses
 	return request, nil
 }
@@ -400,6 +435,20 @@ func ValidateNodePatchRequest(request NodePatchRequest) (NodePatchRequest, error
 		}
 		request.PublicDescription = &description
 	}
+	if request.DataplaneMode != nil {
+		mode := normalizeDataplaneMode(*request.DataplaneMode)
+		if !validDataplaneMode(mode) {
+			return NodePatchRequest{}, ErrInvalidRequest
+		}
+		request.DataplaneMode = &mode
+	}
+	if request.DataplaneConflictPolicy != nil {
+		policy := normalizeDataplaneConflictPolicy(*request.DataplaneConflictPolicy)
+		if !validDataplaneConflictPolicy(policy) {
+			return NodePatchRequest{}, ErrInvalidRequest
+		}
+		request.DataplaneConflictPolicy = &policy
+	}
 	if request.GroupIDs != nil {
 		groupIDs := normalizeIDs(*request.GroupIDs)
 		request.GroupIDs = &groupIDs
@@ -411,12 +460,26 @@ func ValidateNodePatchRequest(request NodePatchRequest) (NodePatchRequest, error
 		}
 		request.ListenIPs = &listenIPs
 	}
+	if request.SendIPs != nil {
+		sendIPs, err := validateSendIPs(*request.SendIPs)
+		if err != nil {
+			return NodePatchRequest{}, err
+		}
+		request.SendIPs = &sendIPs
+	}
 	if request.PortRanges != nil {
 		portRanges, err := validatePortRanges(*request.PortRanges)
 		if err != nil {
 			return NodePatchRequest{}, err
 		}
 		request.PortRanges = &portRanges
+	}
+	if request.MaxRulePorts != nil {
+		maxRulePorts, err := validateMaxRulePorts(*request.MaxRulePorts)
+		if err != nil {
+			return NodePatchRequest{}, err
+		}
+		request.MaxRulePorts = &maxRulePorts
 	}
 	if request.DNSPublishAddresses != nil {
 		dnsPublishAddresses, err := validateDNSPublishAddresses(*request.DNSPublishAddresses)
@@ -426,6 +489,35 @@ func ValidateNodePatchRequest(request NodePatchRequest) (NodePatchRequest, error
 		request.DNSPublishAddresses = &dnsPublishAddresses
 	}
 	return request, nil
+}
+
+func normalizeDataplaneMode(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" {
+		return "AUTO"
+	}
+	return value
+}
+
+func normalizeDataplaneConflictPolicy(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" {
+		return "FAIL_FAST"
+	}
+	return value
+}
+
+func validDataplaneMode(value string) bool {
+	switch value {
+	case "AUTO", "NATIVE", "HAPROXY", "NFTABLES":
+		return true
+	default:
+		return false
+	}
+}
+
+func validDataplaneConflictPolicy(value string) bool {
+	return value == "FAIL_FAST"
 }
 
 func ValidateMonitorRequest(request MonitorRequest) (MonitorRequest, error) {
@@ -661,7 +753,9 @@ func ValidateRuleRequest(request RuleRequest) (RuleRequest, error) {
 	request.Name = strings.TrimSpace(request.Name)
 	request.NodeGroupID = strings.TrimSpace(request.NodeGroupID)
 	request.ListenIP = strings.TrimSpace(request.ListenIP)
+	request.SendIP = strings.TrimSpace(request.SendIP)
 	request.FailurePolicy = strings.ToUpper(strings.TrimSpace(request.FailurePolicy))
+	request.DataplanePreference = strings.ToUpper(strings.TrimSpace(request.DataplanePreference))
 	request.ForwardingType = strings.ToUpper(strings.TrimSpace(request.ForwardingType))
 	request.Protocol = strings.ToUpper(strings.TrimSpace(request.Protocol))
 	request.Match.Type = strings.ToUpper(strings.TrimSpace(request.Match.Type))
@@ -684,8 +778,14 @@ func ValidateRuleRequest(request RuleRequest) (RuleRequest, error) {
 	if request.ListenIP == "" {
 		return RuleRequest{}, invalidFieldError("listen_ip", "Rule listen_ip is required.", nil)
 	}
-	if request.Port < 1 || request.Port > 65535 {
-		return RuleRequest{}, invalidFieldError("port", "Rule port must be between 1 and 65535.", map[string]any{"actual": request.Port, "min": 1, "max": 65535})
+	segments, err := validateRulePortSegments(request.Port, request.PortSegments)
+	if err != nil {
+		return RuleRequest{}, err
+	}
+	request.PortSegments = segments
+	request.Port = segments[0].StartPort
+	if request.SendIP != "" && net.ParseIP(request.SendIP) == nil {
+		return RuleRequest{}, invalidFieldError("send_ip", "Rule send_ip must be a valid IP address.", nil)
 	}
 	if request.Protocol != "TCP" && request.Protocol != "UDP" && request.Protocol != "TCP_UDP" {
 		return RuleRequest{}, invalidFieldError("protocol", "Rule protocol must be TCP, UDP, or TCP_UDP.", map[string]any{"actual": request.Protocol})
@@ -702,6 +802,12 @@ func ValidateRuleRequest(request RuleRequest) (RuleRequest, error) {
 	if request.FailurePolicy != "KEEP_ENABLED" && request.FailurePolicy != "DISABLE_WHEN_ALL_NODES_FAILED" {
 		return RuleRequest{}, invalidFieldError("failure_policy", "Unsupported rule failure policy.", map[string]any{"actual": request.FailurePolicy})
 	}
+	if request.DataplanePreference == "" {
+		request.DataplanePreference = "AUTO"
+	}
+	if request.DataplanePreference != "AUTO" && request.DataplanePreference != "NATIVE" && request.DataplanePreference != "HAPROXY" && request.DataplanePreference != "NFTABLES" {
+		return RuleRequest{}, invalidFieldError("dataplane_preference", "Unsupported rule dataplane preference.", map[string]any{"actual": request.DataplanePreference})
+	}
 	if request.Match.Type != "ANY_INBOUND" && request.Match.Type != "TLS_SNI" {
 		return RuleRequest{}, invalidFieldError("match.type", "Rule match type must be ANY_INBOUND or TLS_SNI.", map[string]any{"actual": request.Match.Type})
 	}
@@ -710,6 +816,9 @@ func ValidateRuleRequest(request RuleRequest) (RuleRequest, error) {
 	}
 	if request.Match.Type == "TLS_SNI" && request.Match.SNIHostname == "" {
 		return RuleRequest{}, invalidFieldError("match.sni_hostname", "TLS_SNI rules require an SNI hostname.", nil)
+	}
+	if request.Match.Type == "TLS_SNI" && !validSNIHostname(request.Match.SNIHostname) {
+		return RuleRequest{}, invalidFieldError("match.sni_hostname", "TLS_SNI hostname must be a valid hostname token.", nil)
 	}
 	if request.Match.Type == "ANY_INBOUND" {
 		request.Match.SNIHostname = ""
@@ -733,6 +842,14 @@ func ValidateRuleRequest(request RuleRequest) (RuleRequest, error) {
 		return RuleRequest{}, invalidFieldError("upstream.type", "Rule upstream type must be TARGET or TARGET_GROUP.", map[string]any{"actual": request.Upstream.Type})
 	}
 	return request, nil
+}
+
+func validSNIHostname(value string) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" || len(value) > 253 {
+		return false
+	}
+	return hostnamePattern.MatchString(value)
 }
 
 func ValidateRuleCopyRequest(request RuleCopyRequest) (RuleCopyRequest, error) {
@@ -876,49 +993,4 @@ func validatePortRanges(values []NodePortRange) ([]NodePortRange, error) {
 		return []NodePortRange{{Protocol: "TCP", StartPort: 10000, EndPort: 20000}}, nil
 	}
 	return normalized, nil
-}
-
-func validateDNSPublishAddresses(values []NodeDNSPublishAddress) ([]NodeDNSPublishAddress, error) {
-	normalized := make([]NodeDNSPublishAddress, 0, len(values))
-	seen := make(map[string]bool)
-	for _, value := range values {
-		value.AddressType = strings.ToUpper(strings.TrimSpace(value.AddressType))
-		value.Address = strings.TrimSpace(value.Address)
-		if value.Address == "" {
-			continue
-		}
-		ip := net.ParseIP(value.Address)
-		if ip == nil || !isPublicIP(ip) {
-			return nil, ErrInvalidRequest
-		}
-		if value.AddressType == "" {
-			if ip.To4() == nil {
-				value.AddressType = "AAAA"
-			} else {
-				value.AddressType = "A"
-			}
-		}
-		if (value.AddressType == "A" && ip.To4() == nil) || (value.AddressType == "AAAA" && ip.To4() != nil) {
-			return nil, ErrInvalidRequest
-		}
-		if value.AddressType != "A" && value.AddressType != "AAAA" {
-			return nil, ErrInvalidRequest
-		}
-		key := value.AddressType + "\x00" + value.Address
-		if seen[key] {
-			return nil, ErrInvalidRequest
-		}
-		seen[key] = true
-		normalized = append(normalized, value)
-	}
-	return normalized, nil
-}
-
-func isPublicIP(ip net.IP) bool {
-	return ip != nil && ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsMulticast() && !ip.IsUnspecified() && !isCarrierGradeNATAddress(ip)
-}
-
-func isCarrierGradeNATAddress(ip net.IP) bool {
-	v4 := ip.To4()
-	return v4 != nil && v4[0] == 100 && v4[1]&0xc0 == 0x40
 }

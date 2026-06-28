@@ -9,12 +9,11 @@ import (
 func TestOSSNodesConsoleKeepsAgentControlsInDropdownAndMetricsFocused(t *testing.T) {
 	root := repoRoot(t)
 	source := readText(t, filepath.Join(root, "apps", "web", "src", "components", "console", "features", "nodes.tsx"))
+	metricsSource := readText(t, filepath.Join(root, "apps", "web", "src", "components", "console", "features", "node-metrics-panel.tsx"))
 
-	metricsStart := strings.Index(source, "function NodeMetricsPanel")
-	if metricsStart < 0 {
+	if !strings.Contains(metricsSource, "function NodeMetricsPanel") {
 		t.Fatalf("nodes console must keep a NodeMetricsPanel component")
 	}
-	metricsSource := source[metricsStart:]
 	for _, forbidden := range []string{
 		`<TableHead>{t("nodes.agent")}</TableHead>`,
 		`<NodeAgentSummary node={node} />`,
@@ -28,15 +27,16 @@ func TestOSSNodesConsoleKeepsAgentControlsInDropdownAndMetricsFocused(t *testing
 		"HoverCard",
 		"Progress",
 		"formatBitrateBps",
-		"ramLabel(metrics)",
-		"ramDetail(metrics)",
+		"ramLabel(metrics,",
+		"ramDetail(metrics,",
+		"NodeCPUHover",
 		"DropdownMenuCheckboxItem",
 		`t("nodes.agentAutoUpdate")`,
 		`t("nodes.upgradeAgent")`,
 		`onCheckedChange={(checked) => updateAgentAutoUpdate(node, checked === true)}`,
 		`onSelect={() => void requestAgentUpgrade(node)}`,
 	} {
-		if !strings.Contains(source, required) {
+		if !strings.Contains(source, required) && !strings.Contains(metricsSource, required) {
 			t.Fatalf("nodes console must expose agent update controls through the row dropdown; missing %q", required)
 		}
 	}
@@ -45,7 +45,7 @@ func TestOSSNodesConsoleKeepsAgentControlsInDropdownAndMetricsFocused(t *testing
 		`@/components/ui/switch`,
 		`${bytes(metrics.ram_used_bytes)} / ${bytes(metrics.ram_total_bytes)}`,
 	} {
-		if strings.Contains(source, forbidden) {
+		if strings.Contains(source, forbidden) || strings.Contains(metricsSource, forbidden) {
 			t.Fatalf("nodes console must keep metrics and agent controls resilient; found %q", forbidden)
 		}
 	}

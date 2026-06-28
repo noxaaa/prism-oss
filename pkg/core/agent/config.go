@@ -12,6 +12,9 @@ type ConfigSnapshot struct {
 	NodeID               string          `json:"node_id"`
 	ConfigVersion        int             `json:"config_version"`
 	ConfigHash           string          `json:"config_hash"`
+	DataplaneMode        string          `json:"dataplane_mode,omitempty"`
+	DataplaneInstanceID  string          `json:"dataplane_instance_id,omitempty"`
+	ConflictPolicy       string          `json:"dataplane_conflict_policy,omitempty"`
 	Rules                []RuleConfig    `json:"rules"`
 }
 
@@ -51,19 +54,28 @@ type HealthResultPayload struct {
 
 type RuleConfig struct {
 	ID               string                `json:"id"`
+	RuntimeID        string                `json:"runtime_id,omitempty"`
 	ConfigVersion    int                   `json:"config_version"`
 	Enabled          bool                  `json:"enabled"`
+	Dataplane        string                `json:"dataplane,omitempty"`
 	ForwardingType   domain.ForwardingType `json:"forwarding_type"`
 	Protocol         domain.Protocol       `json:"protocol"`
 	NodeIDs          []string              `json:"node_ids,omitempty"`
 	NodeGroupIDs     []string              `json:"node_group_ids,omitempty"`
 	ListenIP         string                `json:"listen_ip"`
 	Port             int                   `json:"port"`
+	PortSegments     []PortSegmentConfig   `json:"port_segments,omitempty"`
+	SendIP           string                `json:"send_ip,omitempty"`
 	MatchType        string                `json:"match_type"`
 	SNIHostname      string                `json:"sni_hostname,omitempty"`
 	ProxyProtocolIn  string                `json:"proxy_protocol_in"`
 	ProxyProtocolOut string                `json:"proxy_protocol_out"`
 	Upstream         RuleUpstreamConfig    `json:"upstream"`
+}
+
+type PortSegmentConfig struct {
+	StartPort int `json:"start_port"`
+	EndPort   int `json:"end_port"`
 }
 
 type RuleUpstreamConfig struct {
@@ -94,6 +106,8 @@ type MetricsPayload struct {
 	CPUPhysicalCores     int                    `json:"cpu_physical_cores"`
 	RAMUsedBytes         uint64                 `json:"ram_used_bytes"`
 	RAMTotalBytes        uint64                 `json:"ram_total_bytes"`
+	DiskUsedBytes        uint64                 `json:"disk_used_bytes"`
+	DiskTotalBytes       uint64                 `json:"disk_total_bytes"`
 	UploadBytes          int64                  `json:"upload_bytes"`
 	DownloadBytes        int64                  `json:"download_bytes"`
 	UptimeSeconds        int64                  `json:"uptime_seconds"`
@@ -130,12 +144,16 @@ type RuleTrafficDelta struct {
 }
 
 type ConfigApplyErrorDetail struct {
-	Code     string          `json:"code"`
-	RuleIDs  []string        `json:"rule_ids"`
-	Protocol domain.Protocol `json:"protocol"`
-	ListenIP string          `json:"listen_ip"`
-	Port     int             `json:"port"`
-	Message  string          `json:"message"`
+	Code             string          `json:"code"`
+	RuleIDs          []string        `json:"rule_ids"`
+	Protocol         domain.Protocol `json:"protocol"`
+	ListenIP         string          `json:"listen_ip"`
+	Port             int             `json:"port"`
+	Dataplane        string          `json:"dataplane,omitempty"`
+	Owner            string          `json:"owner,omitempty"`
+	DriftStatus      string          `json:"drift_status,omitempty"`
+	ExternalResource string          `json:"external_resource,omitempty"`
+	Message          string          `json:"message"`
 }
 
 type ConfigApplyError struct {

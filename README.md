@@ -25,6 +25,8 @@ curl -fsSL https://github.com/noxaaa/prism-oss/releases/latest/download/install.
 
 The installer writes a local `.env`, writes an image-based `docker-compose.yml`, pulls the selected release images, runs the `migrate` image, and starts PostgreSQL 16, Redis, the control plane, and the web console. Open the setup URL printed by the installer. On a remote host, pass `--public-web-url http://YOUR_SERVER_IP:3000` and `--control-url http://YOUR_SERVER_IP:8080` when automatic address detection cannot infer reachable URLs.
 
+On first install, when a terminal is available and no configuration options are provided, the installer prompts for the web console port, public web console URL, and control-plane API port. Pass explicit options for unattended installs.
+
 The installer also tries to download the DB-IP IP to Country Lite MMDB database into `./geoip/dbip-country-lite.mmdb` and mounts it read-only into the control plane for node country flags. GeoIP download failures do not block installation; affected nodes show an unknown country until the database is installed. DB-IP Lite is provided by DB-IP.com under CC BY 4.0 attribution.
 
 Pinned release flow:
@@ -54,6 +56,8 @@ mkdir -p geoip
 curl -fsSL "https://download.db-ip.com/free/dbip-country-lite-$(date -u +%Y-%m).mmdb.gz" | gunzip -c > geoip/dbip-country-lite.mmdb
 docker compose restart control-plane
 ```
+
+When node agents connect through a trusted reverse proxy or load balancer and you use enrollment profile CIDR restrictions, set `TRUSTED_AGENT_PROXY_CIDRS` in `.env` to the proxy source CIDRs, then restart the control plane. Only requests from those proxy CIDRs may use `X-Forwarded-For`, `X-Real-IP`, or `Forwarded` for enrollment source IP checks; the default is to ignore forwarded headers.
 
 Use an external PostgreSQL 16 database instead of the bundled container:
 
@@ -88,6 +92,14 @@ Install a node Agent as a Linux systemd service. Use the copied registration tok
 ```
 
 The helper downloads `node-agent-linux-<arch>.tar.gz`, verifies `SHA256SUMS`, calls `node-agent install`, registers `prism-node-agent.service`, and exits. The Agent then runs in the background under systemd.
+
+Node dataplane backends are managed by Prism. `NATIVE` is the default Go forwarding backend. `HAPROXY` uses the HAProxy binary bundled in the node-agent release under `/opt/<service>/current/dataplane/haproxy/haproxy`; it does not read or modify system HAProxy or `/etc/haproxy`. `NFTABLES` is shown in the UI as kernel L4 (nftables/iptables) and only uses Prism-owned nftables tables/chains. To install a node with a non-default local mode:
+
+```sh
+sudo sh install-node-agent.sh --version latest --control-url http://YOUR_CONTROL_PLANE:8080 --registration-token YOUR_NODE_REGISTRATION_TOKEN --dataplane-mode HAPROXY
+```
+
+Multiple node agents on one host should use distinct `--service-name` values; Prism derives a stable dataplane instance id from the service name unless `--dataplane-instance-id` is provided. Listener conflicts default to fail-fast and are reported in rule deployment diagnostics.
 
 Manually upgrade a node Agent over SSH:
 

@@ -32,6 +32,15 @@ export function RuleDeploymentCell({ rule }: { rule: Rule }) {
                 <div className="rounded-md border border-destructive/20 bg-destructive/5 p-2 text-xs" key={node.node_id}>
                   <div className="font-medium">{node.node_name || node.node_id}</div>
                   <div className="text-muted-foreground">{ruleDeploymentEndpoint(node)}</div>
+                  <div className="mt-1 text-muted-foreground">
+                    {t("rules.deploymentDataplane", {
+                      expected: node.expected_dataplane || "-",
+                      actual: node.actual_dataplane || "-",
+                    })}
+                  </div>
+                  {node.owner ? <div className="mt-1 break-words text-muted-foreground">{t("rules.deploymentOwner", { owner: node.owner })}</div> : null}
+                  {node.drift_status ? <div className="mt-1 break-words text-muted-foreground">{t("rules.deploymentDrift", { status: node.drift_status })}</div> : null}
+                  {node.external_resource ? <div className="mt-1 break-words text-muted-foreground">{node.external_resource}</div> : null}
                   <div className="mt-1 break-words">{node.error_code || localizeEnum(node.status, locale)}</div>
                   {node.error_message ? <div className="mt-1 break-words text-muted-foreground">{node.error_message}</div> : null}
                 </div>
@@ -42,7 +51,7 @@ export function RuleDeploymentCell({ rule }: { rule: Rule }) {
               {nodes.map((node) => (
                 <div className="flex justify-between gap-3" key={node.node_id}>
                   <span>{node.node_name || node.node_id}</span>
-                  <span>{localizeEnum(node.status, locale)}</span>
+                  <span>{[node.actual_dataplane || node.expected_dataplane, localizeEnum(node.status, locale)].filter(Boolean).join(" · ")}</span>
                 </div>
               ))}
             </div>
@@ -72,6 +81,7 @@ export function RuleDeploymentSummary({ rule }: { rule: Rule | null }) {
               <span className="font-medium">{node.node_name || node.node_id}</span>
               {ruleDeploymentEndpoint(node) ? ` ${ruleDeploymentEndpoint(node)}` : ""}
               {node.error_code ? ` ${node.error_code}` : ""}
+              {node.actual_dataplane || node.expected_dataplane ? ` ${node.actual_dataplane || node.expected_dataplane}` : ""}
               {node.error_message ? ` ${node.error_message}` : ""}
             </div>
           ))}

@@ -18,6 +18,8 @@ func TestWriteMetricsSSEGatesHostDetails(t *testing.T) {
 			CPUModel:             "Test CPU",
 			CPULogicalCores:      8,
 			CPUPhysicalCores:     4,
+			DiskUsedBytes:        100,
+			DiskTotalBytes:       200,
 			OSName:               "linux",
 			OSVersion:            "6.0",
 			KernelVersion:        "6.1.0",
@@ -42,6 +44,11 @@ func TestWriteMetricsSSEGatesHostDetails(t *testing.T) {
 	}
 	if _, ok := withoutHostDetails["cpu_percent"]; !ok {
 		t.Fatalf("expected monitor metrics payload to retain realtime CPU percentage")
+	}
+	for _, key := range []string{"disk_used_bytes", "disk_total_bytes"} {
+		if _, ok := withoutHostDetails[key]; !ok {
+			t.Fatalf("expected monitor metrics payload to retain realtime disk metric %q: %#v", key, withoutHostDetails)
+		}
 	}
 }
 

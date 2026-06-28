@@ -96,6 +96,16 @@ func scanNode(row rowScanner) (NodeRecord, error) {
 		&node.AgentUpdateError,
 		&node.AgentUpdateStartedAt,
 		&node.AgentUpdateFinishedAt,
+		&node.DataplaneMode,
+		&node.DataplaneConflictPolicy,
+		&node.DataplaneInstanceID,
+		&node.DataplaneStatus,
+		&node.DataplaneError,
+		&node.DataplaneLastHash,
+		&node.DataplaneLastAppliedAt,
+		&node.EnrollmentProfileID,
+		&node.EnrollmentProfileName,
+		&node.MaxRulePorts,
 		&node.CreatedAt,
 		&node.UpdatedAt,
 		&node.DeletedAt,
@@ -119,6 +129,18 @@ func scanNodeListenIP(row rowScanner) (NodeListenIPRecord, error) {
 
 func scanNodeListenIPRows(rows *sql.Rows) (NodeListenIPRecord, error) {
 	return scanNodeListenIP(rows)
+}
+
+func scanNodeSendIP(row rowScanner) (NodeSendIPRecord, error) {
+	var sendIP NodeSendIPRecord
+	if err := row.Scan(&sendIP.ID, &sendIP.OrganizationID, &sendIP.NodeID, &sendIP.SendIP, &sendIP.DisplayName, &sendIP.Enabled, &sendIP.CreatedAt, &sendIP.UpdatedAt); err != nil {
+		return NodeSendIPRecord{}, mapReadError(err)
+	}
+	return sendIP, nil
+}
+
+func scanNodeSendIPRows(rows *sql.Rows) (NodeSendIPRecord, error) {
+	return scanNodeSendIP(rows)
 }
 
 func scanNodePortRange(row rowScanner) (NodePortRangeRecord, error) {
@@ -237,6 +259,8 @@ func scanRule(row rowScanner) (RuleRecord, error) {
 		&rule.ProxyProtocolIn,
 		&rule.ProxyProtocolOut,
 		&rule.FailurePolicy,
+		&rule.DataplanePreference,
+		&rule.SendIP,
 		&rule.ConfigVersion,
 		&rule.CreatedAt,
 		&rule.UpdatedAt,
@@ -282,6 +306,69 @@ func scanRegistrationTokenRows(rows *sql.Rows) (AgentRegistrationTokenRecord, er
 	return scanRegistrationToken(rows)
 }
 
+func scanNodeEnrollmentProfile(row rowScanner) (NodeEnrollmentProfileRecord, error) {
+	var profile NodeEnrollmentProfileRecord
+	if err := row.Scan(
+		&profile.ID,
+		&profile.OrganizationID,
+		&profile.Name,
+		&profile.Description,
+		&profile.TokenHash,
+		&profile.Enabled,
+		&profile.ExpiresAt,
+		&profile.MaxUses,
+		&profile.UsedCount,
+		&profile.NodeNameTemplate,
+		&profile.GroupIDsJSON,
+		&profile.ListenIPsJSON,
+		&profile.SendIPsJSON,
+		&profile.PortRangesJSON,
+		&profile.MaxRulePorts,
+		&profile.DNSPublishAddressesJSON,
+		&profile.DataplaneMode,
+		&profile.DataplaneConflictPolicy,
+		&profile.AutoUpdateEnabled,
+		&profile.AllowedCIDRsJSON,
+		&profile.MetadataJSON,
+		&profile.CreatedByUserID,
+		&profile.CreatedAt,
+		&profile.UpdatedAt,
+		&profile.RevokedAt,
+		&profile.DeletedAt,
+	); err != nil {
+		return NodeEnrollmentProfileRecord{}, mapReadError(err)
+	}
+	return profile, nil
+}
+
+func scanNodeEnrollmentProfileRows(rows *sql.Rows) (NodeEnrollmentProfileRecord, error) {
+	return scanNodeEnrollmentProfile(rows)
+}
+
+func scanNodeEnrollmentEvent(row rowScanner) (NodeEnrollmentEventRecord, error) {
+	var event NodeEnrollmentEventRecord
+	if err := row.Scan(
+		&event.ID,
+		&event.OrganizationID,
+		&event.EnrollmentProfileID,
+		&event.NodeID,
+		&event.Status,
+		&event.ReasonCode,
+		&event.Message,
+		&event.RemoteIP,
+		&event.Hostname,
+		&event.MetadataJSON,
+		&event.CreatedAt,
+	); err != nil {
+		return NodeEnrollmentEventRecord{}, mapReadError(err)
+	}
+	return event, nil
+}
+
+func scanNodeEnrollmentEventRows(rows *sql.Rows) (NodeEnrollmentEventRecord, error) {
+	return scanNodeEnrollmentEvent(rows)
+}
+
 func scanAgentCredential(row rowScanner) (AgentCredentialRecord, error) {
 	var credential AgentCredentialRecord
 	if err := row.Scan(
@@ -291,6 +378,8 @@ func scanAgentCredential(row rowScanner) (AgentCredentialRecord, error) {
 		&credential.AgentID,
 		&credential.CredentialHash,
 		&credential.RegistrationTokenID,
+		&credential.EnrollmentProfileID,
+		&credential.EnrollmentTokenHash,
 		&credential.ActivatedAt,
 		&credential.RevokedAt,
 		&credential.CreatedAt,
@@ -299,6 +388,10 @@ func scanAgentCredential(row rowScanner) (AgentCredentialRecord, error) {
 		return AgentCredentialRecord{}, mapReadError(err)
 	}
 	return credential, nil
+}
+
+func scanAgentCredentialRows(rows *sql.Rows) (AgentCredentialRecord, error) {
+	return scanAgentCredential(rows)
 }
 
 func mapReadError(err error) error {

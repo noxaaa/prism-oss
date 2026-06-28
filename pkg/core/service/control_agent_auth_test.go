@@ -104,3 +104,21 @@ func TestNodeInstallCommandKeepsLatestForDevBuilds(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeEnrollmentTokenIssuanceRequiresInstallCommandConfig(t *testing.T) {
+	incomplete := NewControlServiceWithOptions(nil, ControlServiceOptions{
+		AppName:                 "OSS Control Console",
+		AgentTokenSigningSecret: []byte("agent-token-secret-32-byte-test-key"),
+	})
+	if err := incomplete.ensureCanIssueNodeEnrollmentToken(); err == nil {
+		t.Fatalf("expected enrollment token issuance to fail without control plane URL")
+	}
+	complete := NewControlServiceWithOptions(nil, ControlServiceOptions{
+		AppName:                 "OSS Control Console",
+		ControlPlaneURL:         "http://control.example:8080",
+		AgentTokenSigningSecret: []byte("agent-token-secret-32-byte-test-key"),
+	})
+	if err := complete.ensureCanIssueNodeEnrollmentToken(); err != nil {
+		t.Fatalf("expected enrollment token issuance config to pass: %v", err)
+	}
+}

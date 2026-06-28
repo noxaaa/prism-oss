@@ -55,6 +55,16 @@ describe("console i18n", () => {
     expect(localizeControlError(ownerError, "zh-CN")).not.toContain("Only the owner can access this OSS instance.");
   });
 
+  it("localizes BetterAuth origin errors for reverse proxy misconfiguration", () => {
+    const originError = new ControlAPIError(403, "INVALID_ORIGIN", "Invalid origin");
+    const missingOriginError = new ControlAPIError(403, "MISSING_OR_NULL_ORIGIN", "Missing or null Origin");
+
+    expect(localizeControlError(originError, "zh-CN")).toContain("浏览器来源不在认证可信列表中");
+    expect(localizeControlError(missingOriginError, "zh-CN")).toContain("认证请求缺少浏览器来源");
+    expect(localizeControlError(originError, "zh-CN")).not.toContain("Invalid origin");
+    expect(localizeControlError(missingOriginError, "zh-CN")).not.toContain("Missing or null Origin");
+  });
+
   it("localizes structured import issues with row context and translated reason", () => {
     const issue: RuleImportIssue = {
       code: "IMPORT_NYANPASS_TLS_UNSUPPORTED",

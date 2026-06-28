@@ -46,8 +46,26 @@ jobs:
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/migrate" ./cmd/migrate
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/node-agent" ./cmd/node-agent
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$out_dir/monitor-agent" ./cmd/monitor-agent
+            mkdir -p "$out_dir/dataplane/haproxy"
+            container="prism-haproxy-${arch}-${GITHUB_RUN_ID}"
+            docker create --platform "linux/${arch}" --name "$container" haproxy:3.0-alpine >/dev/null
+            trap 'docker rm "$container" >/dev/null 2>&1 || true' EXIT
+            docker cp "$container:/usr/local/sbin/haproxy" "$out_dir/dataplane/haproxy/haproxy.bin"
+            mkdir -p "$out_dir/dataplane/haproxy/rootfs/usr"
+            docker cp "$container:/lib" "$out_dir/dataplane/haproxy/rootfs/lib"
+            docker cp "$container:/usr/lib" "$out_dir/dataplane/haproxy/rootfs/usr/lib"
+            docker rm "$container" >/dev/null
+            trap - EXIT
+            cat > "$out_dir/dataplane/haproxy/haproxy" <<'EOF'
+#!/bin/sh
+set -eu
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+loader=$(find "$dir/rootfs/lib" -maxdepth 1 -name 'ld-musl-*.so.1' | head -n 1)
+exec "$loader" --library-path "$dir/rootfs/lib:$dir/rootfs/usr/lib" "$dir/haproxy.bin" "$@"
+EOF
+            chmod 0755 "$out_dir/dataplane/haproxy/haproxy" "$out_dir/dataplane/haproxy/haproxy.bin"
             cp "$out_dir/control-plane-oss" "$assets_dir/control-plane-oss-linux-${arch}"
-            tar -C "$out_dir" -czf "$assets_dir/node-agent-linux-${arch}.tar.gz" node-agent
+            tar -C "$out_dir" -czf "$assets_dir/node-agent-linux-${arch}.tar.gz" node-agent dataplane
             tar -C "$out_dir" -czf "$assets_dir/monitor-agent-linux-${arch}.tar.gz" monitor-agent
             tar -czf "$assets_dir/migrate-linux-${arch}.tar.gz" -C "$out_dir" migrate -C "$GITHUB_WORKSPACE" migrations/auth migrations/core
           done

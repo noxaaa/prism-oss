@@ -50,6 +50,31 @@ func TestValidateRuleRequestOnlyRequiresSNIForTLSSNI(t *testing.T) {
 	}
 }
 
+func TestValidateRuleRequestPropagatesDataplanePreferenceAndRejectsInvalidSNI(t *testing.T) {
+	request, err := ValidateRuleRequest(validRuleRequest(RuleMatchRequest{Type: "TLS_SNI", SNIHostname: " App.Example.com "}))
+	if err != nil {
+		t.Fatalf("expected valid TLS_SNI hostname: %v", err)
+	}
+	if request.Match.SNIHostname != "app.example.com" {
+		t.Fatalf("expected normalized SNI hostname, got %q", request.Match.SNIHostname)
+	}
+
+	preferred := validRuleRequest(RuleMatchRequest{Type: "ANY_INBOUND"})
+	preferred.DataplanePreference = "haproxy"
+	request, err = ValidateRuleRequest(preferred)
+	if err != nil {
+		t.Fatalf("expected dataplane preference to be accepted: %v", err)
+	}
+	if request.DataplanePreference != "HAPROXY" {
+		t.Fatalf("expected HAPROXY dataplane preference, got %q", request.DataplanePreference)
+	}
+
+	_, err = ValidateRuleRequest(validRuleRequest(RuleMatchRequest{Type: "TLS_SNI", SNIHostname: "app.example.com\nuse_backend injected"}))
+	if err == nil {
+		t.Fatalf("expected SNI hostname with newline to be rejected")
+	}
+}
+
 func TestValidateRuleRequestAcceptsTCPUDPWithoutSNIOrProxyProtocol(t *testing.T) {
 	request, err := ValidateRuleRequest(RuleRequest{
 		Name:        "Rule",
@@ -72,6 +97,46 @@ func TestValidateRuleRequestAcceptsTCPUDPWithoutSNIOrProxyProtocol(t *testing.T)
 	}
 	if request.Protocol != "TCP_UDP" {
 		t.Fatalf("expected normalized TCP_UDP protocol, got %q", request.Protocol)
+	}
+}
+
+func TestValidateRuleRequestNormalizesPortSegmentsAndSendIP(t *testing.T) {
+	request := validRuleRequest(RuleMatchRequest{Type: "ANY_INBOUND"})
+	request.Port = 0
+	request.PortSegments = []RulePortSegmentRequest{
+		{StartPort: 90, EndPort: 100},
+		{StartPort: 20, EndPort: 80},
+		{StartPort: 100, EndPort: 100},
+	}
+	request.SendIP = " 127.0.0.2 "
+	normalized, err := ValidateRuleRequest(request)
+	if err != nil {
+		t.Fatalf("expected port segments and send IP to validate: %v", err)
+	}
+	if normalized.Port != 20 {
+		t.Fatalf("expected normalized port to use first segment start, got %d", normalized.Port)
+	}
+	if normalized.SendIP != "127.0.0.2" {
+		t.Fatalf("expected trimmed send IP, got %q", normalized.SendIP)
+	}
+	expected := []RulePortSegmentRequest{{StartPort: 20, EndPort: 80}, {StartPort: 90, EndPort: 100}}
+	if len(normalized.PortSegments) != len(expected) {
+		t.Fatalf("expected merged port segments %#v, got %#v", expected, normalized.PortSegments)
+	}
+	for index := range expected {
+		if normalized.PortSegments[index] != expected[index] {
+			t.Fatalf("segment %d: expected %#v, got %#v", index, expected[index], normalized.PortSegments[index])
+		}
+	}
+}
+
+func TestValidateRuleRequestRejectsAmbiguousPortWithSegments(t *testing.T) {
+	request := validRuleRequest(RuleMatchRequest{Type: "ANY_INBOUND"})
+	request.Port = 443
+	request.PortSegments = []RulePortSegmentRequest{{StartPort: 10000, EndPort: 10005}}
+	_, err := ValidateRuleRequest(request)
+	if err == nil {
+		t.Fatal("expected mismatched port and port segments to fail")
 	}
 }
 
@@ -199,6 +264,19 @@ func TestValidateNodeRequestDefaultsListenIPsAndPortRange(t *testing.T) {
 	}
 }
 
+func TestValidateNodeRequestDefaultsDataplaneModeToAuto(t *testing.T) {
+	node, err := ValidateNodeRequest(NodeRequest{
+		Name:     "edge-a",
+		GroupIDs: []string{"node_group_a"},
+	})
+	if err != nil {
+		t.Fatalf("validate node request: %v", err)
+	}
+	if node.DataplaneMode != "AUTO" {
+		t.Fatalf("expected omitted dataplane mode to default to AUTO, got %q", node.DataplaneMode)
+	}
+}
+
 func TestValidateNodeRequestNormalizesMultipleListenIPsAndBlankLabels(t *testing.T) {
 	node, err := ValidateNodeRequest(NodeRequest{
 		Name:     "edge-a",
@@ -223,6 +301,40 @@ func TestValidateNodeRequestNormalizesMultipleListenIPsAndBlankLabels(t *testing
 	}
 	if len(node.PortRanges) != 1 || node.PortRanges[0].Protocol != "TCP" || node.PortRanges[0].StartPort != 10000 || node.PortRanges[0].EndPort != 20000 {
 		t.Fatalf("expected blank ports to default under normalized protocol, got %#v", node.PortRanges)
+	}
+}
+
+func TestValidateNodeRequestNormalizesSendIPsAndMaxRulePorts(t *testing.T) {
+	node, err := ValidateNodeRequest(NodeRequest{
+		Name:     "edge-a",
+		GroupIDs: []string{"node_group_a"},
+		SendIPs: []NodeSendIP{
+			{SendIP: " 127.0.0.2 ", DisplayName: " loopback-two "},
+			{SendIP: " 192.0.2.10 "},
+		},
+		MaxRulePorts: 512,
+	})
+	if err != nil {
+		t.Fatalf("send IPs should be valid: %v", err)
+	}
+	if node.MaxRulePorts != 512 {
+		t.Fatalf("expected explicit max rule ports, got %d", node.MaxRulePorts)
+	}
+	if len(node.SendIPs) != 2 || node.SendIPs[0].SendIP != "127.0.0.2" || node.SendIPs[0].DisplayName != "loopback-two" {
+		t.Fatalf("expected normalized send IPs, got %#v", node.SendIPs)
+	}
+	if node.SendIPs[1].DisplayName != "192.0.2.10" {
+		t.Fatalf("expected blank send IP label to use IP, got %#v", node.SendIPs[1])
+	}
+}
+
+func TestValidateNodeRequestDefaultsMaxRulePorts(t *testing.T) {
+	node, err := ValidateNodeRequest(NodeRequest{Name: "edge-a"})
+	if err != nil {
+		t.Fatalf("node defaults should be valid: %v", err)
+	}
+	if node.MaxRulePorts != 256 {
+		t.Fatalf("expected default max rule ports 256, got %d", node.MaxRulePorts)
 	}
 }
 

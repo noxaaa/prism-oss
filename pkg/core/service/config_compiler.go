@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/noxaaa/prism-oss/pkg/core/agent"
@@ -19,9 +20,14 @@ type AgentConfigCompiler interface {
 type BasicAgentConfigCompiler struct{}
 
 type AgentConfigInput struct {
-	NodeID     string
-	NodeGroups []string
-	Rules      []RuleConfig
+	NodeID                  string
+	NodeGroups              []string
+	AgentProtocolVersion    agent.ProtocolVersion
+	AgentProtocolKnown      bool
+	DataplaneMode           string
+	DataplaneInstanceID     string
+	DataplaneConflictPolicy string
+	Rules                   []RuleConfig
 }
 
 type RuleConfig = agent.RuleConfig
@@ -35,6 +41,8 @@ func EmptyNodeAgentConfig(nodeID string) AgentConfig {
 		AgentProtocolVersion: agent.CurrentProtocolVersion(),
 		NodeID:               nodeID,
 		ConfigVersion:        0,
+		DataplaneMode:        NodeDataplaneModeAuto,
+		ConflictPolicy:       NodeDataplaneConflictPolicyFailFast,
 		Rules:                []RuleConfig{},
 	}
 	config.ConfigHash = configHash(config)
@@ -50,10 +58,74 @@ func (compiler BasicAgentConfigCompiler) Compile(ctx context.Context, input Agen
 		AgentProtocolVersion: agent.CurrentProtocolVersion(),
 		NodeID:               input.NodeID,
 		ConfigVersion:        configVersion,
+		DataplaneMode:        defaultNodeDataplaneMode(input.DataplaneMode),
+		DataplaneInstanceID:  strings.TrimSpace(input.DataplaneInstanceID),
+		ConflictPolicy:       defaultNodeDataplaneConflictPolicy(input.DataplaneConflictPolicy),
 		Rules:                rules,
+	}
+	agentProtocolVersion := input.AgentProtocolVersion
+	if !input.AgentProtocolKnown {
+		agentProtocolVersion = agent.ProtocolVersion{}
+	}
+	if !agentSupportsManagedDataplane(agentProtocolVersion) {
+		compiled.DataplaneMode = NodeDataplaneModeNative
+		compiled.DataplaneInstanceID = ""
+		compiled.ConflictPolicy = ""
+		compiled.Rules = nativeCompatibleRulesForLegacyAgent(input.DataplaneMode, compiled.Rules)
+	}
+	if !agentSupportsSendIP(agentProtocolVersion) {
+		compiled.Rules = protocol22CompatibleRulesForAgent(compiled.Rules)
 	}
 	compiled.ConfigHash = configHash(compiled)
 	return compiled, nil
+}
+
+func agentSupportsManagedDataplane(version agent.ProtocolVersion) bool {
+	required := agent.ManagedDataplaneProtocolVersion()
+	if version.Major != required.Major {
+		return version.Major > required.Major
+	}
+	return version.Minor >= required.Minor
+}
+
+func agentSupportsSendIP(version agent.ProtocolVersion) bool {
+	required := agent.SendIPProtocolVersion()
+	if version.Major != required.Major {
+		return version.Major > required.Major
+	}
+	return version.Minor >= required.Minor
+}
+
+func nativeCompatibleRulesForLegacyAgent(inputMode string, rules []RuleConfig) []RuleConfig {
+	if defaultNodeDataplaneMode(inputMode) == NodeDataplaneModeHAProxy || defaultNodeDataplaneMode(inputMode) == NodeDataplaneModeNFTables {
+		return []RuleConfig{}
+	}
+	result := make([]RuleConfig, 0, len(rules))
+	for _, rule := range rules {
+		if strings.TrimSpace(rule.SendIP) != "" {
+			continue
+		}
+		if defaultDataplanePreference(rule.Dataplane) == NodeDataplaneModeHAProxy || defaultDataplanePreference(rule.Dataplane) == NodeDataplaneModeNFTables {
+			continue
+		}
+		rule.Dataplane = ""
+		result = append(result, rule)
+	}
+	return result
+}
+
+func protocol22CompatibleRulesForAgent(rules []RuleConfig) []RuleConfig {
+	result := make([]RuleConfig, 0, len(rules))
+	for _, rule := range rules {
+		if strings.TrimSpace(rule.SendIP) != "" {
+			continue
+		}
+		if strings.TrimSpace(rule.RuntimeID) != "" {
+			continue
+		}
+		result = append(result, rule)
+	}
+	return result
 }
 
 func matchingEnabledRules(nodeID string, nodeGroups []string, rules []RuleConfig) ([]RuleConfig, int, error) {
@@ -79,10 +151,13 @@ func matchingEnabledRules(nodeID string, nodeGroups []string, rules []RuleConfig
 			if !supported {
 				continue
 			}
-			matches = append(matches, normalizedRule(rule))
+			matches = append(matches, expandRulePortSegments(normalizedRule(rule))...)
 		}
 	}
 	sort.SliceStable(matches, func(i int, j int) bool {
+		if matches[i].ID == matches[j].ID {
+			return matches[i].Port < matches[j].Port
+		}
 		return matches[i].ID < matches[j].ID
 	})
 	return matches, configVersion, nil
@@ -138,6 +213,42 @@ func normalizedRule(rule RuleConfig) RuleConfig {
 	sort.Strings(out.NodeGroupIDs)
 	out.Upstream = normalizedUpstream(rule.Upstream)
 	return out
+}
+
+func expandRulePortSegments(rule RuleConfig) []RuleConfig {
+	if len(rule.PortSegments) == 0 {
+		return []RuleConfig{rule}
+	}
+	result := make([]RuleConfig, 0)
+	for _, segment := range rule.PortSegments {
+		start := segment.StartPort
+		end := segment.EndPort
+		if start <= 0 || end <= 0 {
+			continue
+		}
+		if end < start {
+			start, end = end, start
+		}
+		for port := start; port <= end; port++ {
+			expanded := rule
+			expanded.RuntimeID = runtimeRuleID(rule, port)
+			expanded.Port = port
+			expanded.PortSegments = nil
+			result = append(result, expanded)
+		}
+	}
+	if len(result) == 0 {
+		rule.PortSegments = nil
+		return []RuleConfig{rule}
+	}
+	return result
+}
+
+func runtimeRuleID(rule RuleConfig, port int) string {
+	if len(rule.PortSegments) == 1 && rule.PortSegments[0].StartPort == port && rule.PortSegments[0].EndPort == port {
+		return strings.TrimSpace(rule.RuntimeID)
+	}
+	return strings.TrimSpace(rule.ID) + "-p" + strconv.Itoa(port)
 }
 
 func normalizedUpstream(upstream RuleUpstreamConfig) RuleUpstreamConfig {
