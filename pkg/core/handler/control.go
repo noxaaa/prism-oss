@@ -124,6 +124,7 @@ func (server *ControlServer) routes() {
 	server.mux.HandleFunc("PATCH /internal/v1/node-groups/{group_id}", server.withInternalIdentity(server.handleUpdateNodeGroup))
 	server.mux.HandleFunc("DELETE /internal/v1/node-groups/{group_id}", server.withInternalIdentity(server.handleDeleteNodeGroup))
 	server.mux.HandleFunc("GET /internal/v1/nodes", server.withInternalIdentity(server.handleListNodes))
+	server.mux.HandleFunc("GET /internal/v1/nodes/metrics/stream", server.withInternalIdentity(server.handleNodeMetricsStreamByOrganization))
 	server.mux.HandleFunc("POST /internal/v1/nodes/agent-upgrade", server.withInternalIdentity(server.handleRequestNodeAgentUpgrades))
 	server.mux.HandleFunc("POST /internal/v1/nodes", server.withInternalIdentity(server.handleCreateNode))
 	server.mux.HandleFunc("GET /internal/v1/nodes/{node_id}", server.withInternalIdentity(server.handleGetNode))

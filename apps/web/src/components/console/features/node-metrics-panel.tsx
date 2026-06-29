@@ -36,6 +36,7 @@ export function NodeMetricsPanel({ metricsByNode, nodes }: { metricsByNode: Reco
             <TableBody>
               {nodes.map((node) => {
                 const metrics = metricsByNode[node.id];
+                const emptyLabel = missingMetricsLabel(node, t);
                 return (
                   <TableRow key={node.id}>
                     <TableCell>
@@ -48,7 +49,7 @@ export function NodeMetricsPanel({ metricsByNode, nodes }: { metricsByNode: Reco
                     <TableCell>
                       <HoverCard>
                         <HoverCardTrigger asChild>
-                          <span className="inline-flex cursor-default font-medium">{metrics ? formatBitrateBps(metrics.bandwidth_bps) : t("nodes.metricsNotStreamed")}</span>
+                          <span className="inline-flex cursor-default font-medium">{metrics ? formatBitrateBps(metrics.bandwidth_bps) : emptyLabel}</span>
                         </HoverCardTrigger>
                         <HoverCardContent align="start">
                           {metrics ? (
@@ -59,47 +60,47 @@ export function NodeMetricsPanel({ metricsByNode, nodes }: { metricsByNode: Reco
                               <MetricDetail label="UDP/s" value={metrics.udp_packets_per_second ?? 0} />
                             </>
                           ) : (
-                            <MetricDetail label={t("nodes.metrics")} value={t("nodes.metricsNotStreamed")} />
+                            <MetricDetail label={t("nodes.metrics")} value={emptyLabel} />
                           )}
                         </HoverCardContent>
                       </HoverCard>
                     </TableCell>
-                    <TableCell><NodeCPUHover metrics={metrics} /></TableCell>
+                    <TableCell><NodeCPUHover emptyLabel={emptyLabel} metrics={metrics} /></TableCell>
                     <TableCell>
                       {metrics ? (
                         <HoverCard>
                           <HoverCardTrigger asChild>
-                            <div className="inline-flex w-32 cursor-default"><MetricProgress value={ramPercent(metrics)} label={ramLabel(metrics, t("nodes.metricsNotStreamed"))} /></div>
+                            <div className="inline-flex w-32 cursor-default"><MetricProgress value={ramPercent(metrics)} label={ramLabel(metrics, emptyLabel)} /></div>
                           </HoverCardTrigger>
                           <HoverCardContent align="start">
-                            <MetricDetail label="RAM" value={ramDetail(metrics, t("nodes.metricsNotStreamed"))} />
+                            <MetricDetail label="RAM" value={ramDetail(metrics, emptyLabel)} />
                           </HoverCardContent>
                         </HoverCard>
                       ) : (
-                        <span className="text-sm text-muted-foreground">{t("nodes.metricsNotStreamed")}</span>
+                        <span className="text-sm text-muted-foreground">{emptyLabel}</span>
                       )}
                     </TableCell>
                     <TableCell>
                       {metrics ? (
                         <HoverCard>
                           <HoverCardTrigger asChild>
-                            <div className="inline-flex w-32 cursor-default"><MetricProgress value={diskPercent(metrics)} label={diskLabel(metrics, t("nodes.metricsNotStreamed"))} /></div>
+                            <div className="inline-flex w-32 cursor-default"><MetricProgress value={diskPercent(metrics)} label={diskLabel(metrics, emptyLabel)} /></div>
                           </HoverCardTrigger>
                           <HoverCardContent align="start">
-                            <MetricDetail label={t("nodes.disk")} value={diskDetail(metrics, t("nodes.metricsNotStreamed"))} />
+                            <MetricDetail label={t("nodes.disk")} value={diskDetail(metrics, emptyLabel)} />
                           </HoverCardContent>
                         </HoverCard>
                       ) : (
-                        <span className="text-sm text-muted-foreground">{t("nodes.metricsNotStreamed")}</span>
+                        <span className="text-sm text-muted-foreground">{emptyLabel}</span>
                       )}
                     </TableCell>
                     <TableCell>
                       <HoverCard>
                         <HoverCardTrigger asChild>
-                          <span className="inline-flex cursor-default">{metrics ? duration(metrics.uptime_seconds) : t("nodes.metricsNotStreamed")}</span>
+                          <span className="inline-flex cursor-default">{metrics ? duration(metrics.uptime_seconds) : emptyLabel}</span>
                         </HoverCardTrigger>
                         <HoverCardContent align="start">
-                          <MetricDetail label={t("nodes.bootTime")} value={metrics ? shortDate(metrics.boot_time, locale) : t("nodes.metricsNotStreamed")} />
+                          <MetricDetail label={t("nodes.bootTime")} value={metrics ? shortDate(metrics.boot_time, locale) : emptyLabel} />
                           <MetricDetail label={t("overview.lastSeen")} value={metrics ? shortDate(metrics.last_seen_at ?? node.last_seen_at, locale) : shortDate(node.last_seen_at, locale)} />
                         </HoverCardContent>
                       </HoverCard>
@@ -134,6 +135,10 @@ function NodeNameHover({ metrics, node }: { metrics: AgentMetrics | undefined; n
   );
 }
 
+export function missingMetricsLabel(node: Pick<NodeResource, "status">, t: (key: string) => string) {
+  return node.status === "ONLINE" ? t("nodes.metricsWaiting") : t(`status.${node.status}`);
+}
+
 function MetricProgress({ label, value }: { label: string; value: number | undefined }) {
   const normalized = Math.max(0, Math.min(100, value ?? 0));
   return (
@@ -144,10 +149,10 @@ function MetricProgress({ label, value }: { label: string; value: number | undef
   );
 }
 
-function NodeCPUHover({ metrics }: { metrics: AgentMetrics | undefined }) {
+function NodeCPUHover({ emptyLabel, metrics }: { emptyLabel: string; metrics: AgentMetrics | undefined }) {
   const { t } = useI18n();
   if (!metrics) {
-    return <span className="text-sm text-muted-foreground">{t("nodes.metricsNotStreamed")}</span>;
+    return <span className="text-sm text-muted-foreground">{emptyLabel}</span>;
   }
   return (
     <HoverCard>

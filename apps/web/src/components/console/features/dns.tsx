@@ -17,7 +17,7 @@ import { localizeControlError, useI18n } from "@/components/console/i18n";
 import { MultiSelectField } from "@/components/console/multi-select-field";
 import { hasPermission } from "@/components/console/permissions";
 import { useConsoleSession } from "@/components/console/shell";
-import { DataState, EnumSelect, PageStack, StatusBadge, SummaryCard, SummaryGrid, TableSkeleton, useControlList } from "@/components/console/shared";
+import { DataState, EnumSelect, FieldRequirementBadge, PageStack, StatusBadge, SummaryCard, SummaryGrid, TableSkeleton, useControlList } from "@/components/console/shared";
 import type { DNSCredential, DNSInstance, DNSManagedRecord, NotificationChannel, ResourceOption } from "@/components/console/types";
 
 type DrawerMode = "create" | "edit" | "detail";
@@ -435,8 +435,8 @@ function DNSCredentialForm({ credential, saving, onSubmit }: { credential?: DNSC
   const { t } = useI18n();
   return (
     <form className="grid gap-4 px-4" onSubmit={onSubmit}>
-      <Field><FieldLabel htmlFor="dns-credential-name">{t("field.name")}</FieldLabel><Input defaultValue={credential?.name ?? ""} id="dns-credential-name" name="name" required /></Field>
-      <Field><FieldLabel htmlFor="dns-secret">Cloudflare token</FieldLabel><Input id="dns-secret" name="secret" required={!credential} type="password" /></Field>
+      <Field><FieldLabel htmlFor="dns-credential-name">{t("field.name")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={credential?.name ?? ""} id="dns-credential-name" name="name" required /></Field>
+      <Field><FieldLabel htmlFor="dns-secret">Cloudflare token<FieldRequirementBadge required={!credential} /></FieldLabel><Input id="dns-secret" name="secret" required={!credential} type="password" /></Field>
       <Button disabled={saving} type="submit">{t("common.save")}</Button>
     </form>
   );
@@ -469,10 +469,10 @@ function DNSManagedRecordForm({ record, credentials, saving, onSubmit }: DNSMana
     <form className="grid gap-4 px-4" onSubmit={onSubmit}>
       <SelectField label={t("field.dns_credential_id")} name="dns_credential_id" onChange={setCredentialID} options={credentials.map((item) => ({ value: item.id, label: item.name }))} value={credentialID} />
       <SelectField label={t("dns.zone")} name="credential_zone_id" onChange={setZoneID} options={zones.map((item) => ({ value: item.id, label: dnsCredentialZoneWritable(item.status) ? item.zone_name : `${item.zone_name} (${item.status})` }))} value={zoneID} />
-      <Field><FieldLabel htmlFor="dns-record-host">{t("dns.record")}</FieldLabel><div className="flex"><Input className="rounded-r-none" defaultValue={record?.record_host === "@" ? "" : record?.record_host ?? ""} id="dns-record-host" name="record_host" placeholder="www" /><span className="flex h-9 items-center rounded-r-md border border-l-0 bg-muted px-3 text-sm text-muted-foreground">{zone?.zone_name ? `.${zone.zone_name}` : ""}</span></div></Field>
+      <Field><FieldLabel htmlFor="dns-record-host">{t("dns.record")}<FieldRequirementBadge required={false} /></FieldLabel><div className="flex"><Input className="rounded-r-none" defaultValue={record?.record_host === "@" ? "" : record?.record_host ?? ""} id="dns-record-host" name="record_host" placeholder="www" /><span className="flex h-9 items-center rounded-r-md border border-l-0 bg-muted px-3 text-sm text-muted-foreground">{zone?.zone_name ? `.${zone.zone_name}` : ""}</span></div></Field>
       <EnumSelect label={t("dns.type")} onValueChange={setRecordType} options={[{ value: "A", label: "A" }, { value: "AAAA", label: "AAAA" }, { value: "CNAME", label: "CNAME" }]} value={recordType} />
       <input name="record_type" type="hidden" value={recordType} />
-      <Field><FieldLabel htmlFor="dns-ttl">TTL</FieldLabel><Input defaultValue={String(record?.ttl ?? 60)} id="dns-ttl" min="1" name="ttl" required type="number" /></Field>
+      <Field><FieldLabel htmlFor="dns-ttl">TTL<FieldRequirementBadge required /></FieldLabel><Input defaultValue={String(record?.ttl ?? 60)} id="dns-ttl" min="1" name="ttl" required type="number" /></Field>
       <Field orientation="horizontal"><Switch checked={proxied} onCheckedChange={setProxied} /> <FieldLabel>Cloudflare proxy</FieldLabel></Field>
       <input name="proxied" type="hidden" value={proxied ? "true" : "false"} />
       <Button disabled={saving || !credentialID || !zoneID} type="submit">{t("common.save")}</Button>
@@ -496,15 +496,15 @@ function DNSInstanceForm({ instance, managedRecords, instances, nodeGroups, chan
   return (
     <form className="grid gap-4 px-4" onSubmit={onSubmit}>
       <SelectField defaultValue={instance?.managed_record_id ?? managedRecords[0]?.id ?? ""} label={t("dns.record")} name="managed_record_id" options={managedRecords.map((record) => ({ value: record.id, label: `${record.record_name} ${record.record_type}` }))} />
-      <Field><FieldLabel htmlFor="dns-instance-name">{t("field.name")}</FieldLabel><Input defaultValue={instance?.name ?? ""} id="dns-instance-name" name="name" required /></Field>
-      <Field><FieldLabel htmlFor="dns-instance-priority">{t("dns.priority")}</FieldLabel><Input defaultValue={String(instance?.priority ?? 100)} id="dns-instance-priority" min="0" name="priority" required type="number" /></Field>
+      <Field><FieldLabel htmlFor="dns-instance-name">{t("field.name")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={instance?.name ?? ""} id="dns-instance-name" name="name" required /></Field>
+      <Field><FieldLabel htmlFor="dns-instance-priority">{t("dns.priority")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={String(instance?.priority ?? 100)} id="dns-instance-priority" min="0" name="priority" required type="number" /></Field>
       <MultiSelectField defaultValues={instance?.node_group_ids ?? []} label={t("nodes.groups")} name="node_group_id" options={nodeGroups.map((group) => ({ value: group.value, label: group.label, disabled: group.disabled }))} required={false} />
-      <Field><FieldLabel htmlFor="dns-answer-count">{t("dns.answerCount")}</FieldLabel><Input defaultValue={String(instance?.answer_count ?? -1)} id="dns-answer-count" name="answer_count" required type="number" /></Field>
+      <Field><FieldLabel htmlFor="dns-answer-count">{t("dns.answerCount")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={String(instance?.answer_count ?? -1)} id="dns-answer-count" name="answer_count" required type="number" /></Field>
       <DNSConditionBuilder value={instance?.condition ?? {}} />
       <EnumSelect label={t("dns.action")} onValueChange={setActionType} options={[{ value: "ROTATE_ONLINE_NODES", label: "ROTATE_ONLINE_NODES" }, { value: "SET_STATIC_ADDRESSES", label: "SET_STATIC_A/AAAA" }, { value: "SET_STATIC_CNAME", label: "SET_STATIC_CNAME" }, { value: "USE_INSTANCE_OUTPUT", label: "USE_INSTANCE_OUTPUT" }]} value={actionType} />
       <input name="action_type" type="hidden" value={actionType} />
-      {actionType === "SET_STATIC_ADDRESSES" ? <Field><FieldLabel htmlFor="dns-action-values">{t("dns.values")}</FieldLabel><Input defaultValue={Array.isArray(instance?.action.values) ? instance?.action.values.join(", ") : ""} id="dns-action-values" name="action_values" /></Field> : null}
-      {actionType === "SET_STATIC_CNAME" ? <Field><FieldLabel htmlFor="dns-action-cname">CNAME</FieldLabel><Input defaultValue={String(instance?.action.value ?? "")} id="dns-action-cname" name="action_value" /></Field> : null}
+      {actionType === "SET_STATIC_ADDRESSES" ? <Field><FieldLabel htmlFor="dns-action-values">{t("dns.values")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={Array.isArray(instance?.action.values) ? instance?.action.values.join(", ") : ""} id="dns-action-values" name="action_values" /></Field> : null}
+      {actionType === "SET_STATIC_CNAME" ? <Field><FieldLabel htmlFor="dns-action-cname">CNAME<FieldRequirementBadge required /></FieldLabel><Input defaultValue={String(instance?.action.value ?? "")} id="dns-action-cname" name="action_value" /></Field> : null}
       {actionType === "USE_INSTANCE_OUTPUT" ? <SelectField defaultValue={String(instance?.action.instance_id ?? "")} label={t("dns.instance")} name="action_instance_id" options={instances.filter((candidate) => candidate.id !== instance?.id).map((candidate) => ({ value: candidate.id, label: candidate.name }))} /> : null}
       <MultiSelectField defaultValues={instance?.notification_channel_ids ?? []} label={t("dns.notificationChannels")} name="notification_channel_id" options={channels.map((channel) => ({ value: channel.id, label: channel.name }))} required={false} />
       <Field orientation="horizontal"><Switch checked={enabled} onCheckedChange={setEnabled} /> <FieldLabel>{t("common.enabled")}</FieldLabel></Field>
@@ -533,7 +533,7 @@ function DNSConditionBuilder({ value }: { value: Record<string, unknown> }) {
   const [condition, setCondition] = useState<DNSConditionGroup>(() => dnsConditionFromPayload(value));
   return (
     <Field>
-      <FieldLabel>{t("dns.condition")}</FieldLabel>
+      <FieldLabel>{t("dns.condition")}<FieldRequirementBadge required={false} /></FieldLabel>
       <div className="grid gap-2 rounded-md border p-3" data-testid="dns-condition-builder">
         <DNSConditionGroupEditor node={condition} onChange={setCondition} />
         {dnsConditionShowsAlwaysMatch(condition) ? <p className="text-sm text-muted-foreground">{t("dns.conditionAlways")}</p> : null}
@@ -611,11 +611,11 @@ function NotificationChannelForm({ channel, saving, onSubmit }: { channel?: Noti
   }
   return (
     <form className="grid gap-4 px-4" onSubmit={onSubmit}>
-      <Field><FieldLabel htmlFor="notification-name">{t("field.name")}</FieldLabel><Input defaultValue={channel?.name ?? ""} id="notification-name" name="name" required /></Field>
+      <Field><FieldLabel htmlFor="notification-name">{t("field.name")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={channel?.name ?? ""} id="notification-name" name="name" required /></Field>
       <EnumSelect label={t("dns.channelType")} onValueChange={updateChannelType} options={[{ value: "WEBHOOK", label: "WEBHOOK" }, { value: "EMAIL", label: "EMAIL" }]} value={channelType} />
       <input name="channel_type" type="hidden" value={channelType} />
-      <Field><FieldLabel htmlFor="notification-config">{t("health.config")}</FieldLabel><Textarea id="notification-config" name="config_json" onChange={(event) => setConfigText(event.currentTarget.value)} rows={7} value={configText} /></Field>
-      <Field><FieldLabel htmlFor="notification-secret">{channelType === "EMAIL" ? "SMTP password" : "Secret"}</FieldLabel><Input id="notification-secret" name="secret" required={!channel && channelType === "EMAIL"} type="password" /></Field>
+      <Field><FieldLabel htmlFor="notification-config">{t("health.config")}<FieldRequirementBadge required={false} /></FieldLabel><Textarea id="notification-config" name="config_json" onChange={(event) => setConfigText(event.currentTarget.value)} rows={7} value={configText} /></Field>
+      <Field><FieldLabel htmlFor="notification-secret">{channelType === "EMAIL" ? "SMTP password" : "Secret"}<FieldRequirementBadge required={!channel && channelType === "EMAIL"} /></FieldLabel><Input id="notification-secret" name="secret" required={!channel && channelType === "EMAIL"} type="password" /></Field>
       <Field orientation="horizontal"><Switch checked={enabled} onCheckedChange={setEnabled} /> <FieldLabel>{t("common.enabled")}</FieldLabel></Field>
       <input name="enabled" type="hidden" value={enabled ? "true" : "false"} />
       <Button disabled={saving} type="submit">{t("common.save")}</Button>
@@ -639,7 +639,7 @@ function SelectField({ label, name, options, defaultValue, value, onChange }: { 
   const { t } = useI18n();
   return (
     <Field>
-      <FieldLabel htmlFor={name}>{label}</FieldLabel>
+      <FieldLabel htmlFor={name}>{label}<FieldRequirementBadge required /></FieldLabel>
       <select className="h-9 rounded-md border bg-background px-3 text-sm" defaultValue={value === undefined ? defaultValue : undefined} id={name} name={name} onChange={(event) => onChange?.(event.currentTarget.value)} required value={value}>
         <option value="">{t("resource.selectResource")}</option>
         {options.map((option) => <option disabled={option.disabled} key={option.value} value={option.value}>{option.label}</option>)}

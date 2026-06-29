@@ -6,7 +6,6 @@ import (
 	"net"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -388,9 +387,20 @@ func ValidateNodeRequest(request NodeRequest) (NodeRequest, error) {
 	request.DataplaneMode = normalizeDataplaneMode(request.DataplaneMode)
 	request.DataplaneConflictPolicy = normalizeDataplaneConflictPolicy(request.DataplaneConflictPolicy)
 	request.GroupIDs = normalizeIDs(request.GroupIDs)
-	if request.Name == "" || len(request.Name) > 120 || len(request.PublicDescription) > 2000 ||
-		!validDataplaneMode(request.DataplaneMode) || !validDataplaneConflictPolicy(request.DataplaneConflictPolicy) {
-		return NodeRequest{}, ErrInvalidRequest
+	if request.Name == "" {
+		return NodeRequest{}, invalidFieldError("name", "Node name is required.", nil)
+	}
+	if len(request.Name) > 120 {
+		return NodeRequest{}, invalidFieldError("name", "Node name must be at most 120 characters.", nil)
+	}
+	if len(request.PublicDescription) > 2000 {
+		return NodeRequest{}, invalidFieldError("public_description", "Public description must be at most 2000 characters.", nil)
+	}
+	if !validDataplaneMode(request.DataplaneMode) {
+		return NodeRequest{}, invalidFieldError("dataplane_mode", "Dataplane mode is not supported.", map[string]any{"actual": request.DataplaneMode})
+	}
+	if !validDataplaneConflictPolicy(request.DataplaneConflictPolicy) {
+		return NodeRequest{}, invalidFieldError("dataplane_conflict_policy", "Dataplane conflict policy is not supported.", map[string]any{"actual": request.DataplaneConflictPolicy})
 	}
 	listenIPs, err := validateListenIPs(request.ListenIPs)
 	if err != nil {
@@ -423,29 +433,32 @@ func ValidateNodeRequest(request NodeRequest) (NodeRequest, error) {
 func ValidateNodePatchRequest(request NodePatchRequest) (NodePatchRequest, error) {
 	if request.Name != nil {
 		name := strings.TrimSpace(*request.Name)
-		if name == "" || len(name) > 120 {
-			return NodePatchRequest{}, ErrInvalidRequest
+		if name == "" {
+			return NodePatchRequest{}, invalidFieldError("name", "Node name is required.", nil)
+		}
+		if len(name) > 120 {
+			return NodePatchRequest{}, invalidFieldError("name", "Node name must be at most 120 characters.", nil)
 		}
 		request.Name = &name
 	}
 	if request.PublicDescription != nil {
 		description := strings.TrimSpace(*request.PublicDescription)
 		if len(description) > 2000 {
-			return NodePatchRequest{}, ErrInvalidRequest
+			return NodePatchRequest{}, invalidFieldError("public_description", "Public description must be at most 2000 characters.", nil)
 		}
 		request.PublicDescription = &description
 	}
 	if request.DataplaneMode != nil {
 		mode := normalizeDataplaneMode(*request.DataplaneMode)
 		if !validDataplaneMode(mode) {
-			return NodePatchRequest{}, ErrInvalidRequest
+			return NodePatchRequest{}, invalidFieldError("dataplane_mode", "Dataplane mode is not supported.", map[string]any{"actual": mode})
 		}
 		request.DataplaneMode = &mode
 	}
 	if request.DataplaneConflictPolicy != nil {
 		policy := normalizeDataplaneConflictPolicy(*request.DataplaneConflictPolicy)
 		if !validDataplaneConflictPolicy(policy) {
-			return NodePatchRequest{}, ErrInvalidRequest
+			return NodePatchRequest{}, invalidFieldError("dataplane_conflict_policy", "Dataplane conflict policy is not supported.", map[string]any{"actual": policy})
 		}
 		request.DataplaneConflictPolicy = &policy
 	}
@@ -929,68 +942,4 @@ func normalizedProxyProtocol(value string) string {
 		return ""
 	}
 	return value
-}
-
-func validateListenIPs(values []NodeListenIP) ([]NodeListenIP, error) {
-	seen := make(map[string]bool)
-	normalized := make([]NodeListenIP, 0, len(values))
-	for _, value := range values {
-		value.ListenIP = strings.TrimSpace(value.ListenIP)
-		value.DisplayName = strings.TrimSpace(value.DisplayName)
-		if value.ListenIP == "" {
-			continue
-		}
-		if net.ParseIP(value.ListenIP) == nil || len(value.DisplayName) > 120 {
-			return nil, ErrInvalidRequest
-		}
-		if seen[value.ListenIP] {
-			return nil, ErrInvalidRequest
-		}
-		if value.DisplayName == "" {
-			if value.ListenIP == "0.0.0.0" {
-				value.DisplayName = "default"
-			} else {
-				value.DisplayName = value.ListenIP
-			}
-		}
-		seen[value.ListenIP] = true
-		normalized = append(normalized, value)
-	}
-	if len(normalized) == 0 {
-		return []NodeListenIP{{ListenIP: "0.0.0.0", DisplayName: "default"}}, nil
-	}
-	return normalized, nil
-}
-
-func validatePortRanges(values []NodePortRange) ([]NodePortRange, error) {
-	normalized := make([]NodePortRange, 0, len(values))
-	seen := make(map[string]bool)
-	for _, value := range values {
-		value.Protocol = strings.ToUpper(strings.TrimSpace(value.Protocol))
-		if value.Protocol == "" {
-			value.Protocol = "TCP"
-		}
-		if value.StartPort == 0 {
-			value.StartPort = 10000
-		}
-		if value.EndPort == 0 {
-			value.EndPort = 20000
-		}
-		if value.Protocol != "TCP" && value.Protocol != "UDP" {
-			return nil, ErrInvalidRequest
-		}
-		if value.StartPort < 1 || value.StartPort > 65535 || value.EndPort < 1 || value.EndPort > 65535 || value.StartPort > value.EndPort {
-			return nil, ErrInvalidRequest
-		}
-		key := value.Protocol + ":" + strconv.Itoa(value.StartPort) + ":" + strconv.Itoa(value.EndPort)
-		if seen[key] {
-			return nil, ErrInvalidRequest
-		}
-		seen[key] = true
-		normalized = append(normalized, value)
-	}
-	if len(normalized) == 0 {
-		return []NodePortRange{{Protocol: "TCP", StartPort: 10000, EndPort: 20000}}, nil
-	}
-	return normalized, nil
 }

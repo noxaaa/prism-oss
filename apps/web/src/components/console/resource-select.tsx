@@ -15,6 +15,7 @@ import {
 import type { ResourceOption } from "@/components/console/types";
 import { normalizeOptions } from "@/components/console/control-api";
 import { useI18n } from "@/components/console/i18n";
+import { FieldRequirementBadge } from "@/components/console/shared";
 
 type ResourceMultiSelectBadge = {
   label: string;
@@ -27,6 +28,7 @@ export function ResourceSelect({
   onValueChange,
   options,
   placeholder,
+  required = true,
   value,
 }: {
   description?: string;
@@ -34,6 +36,7 @@ export function ResourceSelect({
   onValueChange: (value: string) => void;
   options: ResourceOption[];
   placeholder?: string;
+  required?: boolean;
   value: string;
 }) {
   const { t } = useI18n();
@@ -42,7 +45,7 @@ export function ResourceSelect({
 
   return (
     <Field data-resource-selector="single">
-      <FieldLabel>{label}</FieldLabel>
+      <FieldLabel>{label}<FieldRequirementBadge required={required} /></FieldLabel>
       <Select disabled={enabledOptions.length === 0} onValueChange={onValueChange} value={value}>
         <SelectTrigger className="w-full">
           <SelectValue placeholder={enabledOptions.length === 0 ? t("resource.noAvailableOptions") : (placeholder ?? t("resource.selectResource"))} />
@@ -68,6 +71,7 @@ export function ResourceMultiSelect({
   label,
   onValueChange,
   options,
+  required = true,
   values,
 }: {
   badges?: Record<string, ResourceMultiSelectBadge>;
@@ -75,6 +79,7 @@ export function ResourceMultiSelect({
   label: string;
   onValueChange: (values: string[]) => void;
   options: ResourceOption[];
+  required?: boolean;
   values: string[];
 }) {
   const { t } = useI18n();
@@ -94,7 +99,7 @@ export function ResourceMultiSelect({
 
   return (
     <FieldSet data-resource-selector="multi">
-      <FieldLegend variant="label">{label}</FieldLegend>
+      <FieldLegend variant="label">{label}<FieldRequirementBadge required={required} /></FieldLegend>
       <FieldDescription>{enabledOptions.length === 0 ? t("resource.noAuthorizedResources") : description}</FieldDescription>
       <FieldGroup className="gap-2">
         {normalized.map((option) => {

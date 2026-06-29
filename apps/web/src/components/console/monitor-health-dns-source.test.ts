@@ -77,12 +77,11 @@ describe("monitor health DNS console source", () => {
     expect(nodesText + nodeMutationText).toContain("NodeSendIP");
     expect(nodesText).toContain("NodeGeoIPCell");
     expect(nodesText).toContain("NodeSystemHover");
-    expect(nodesText).toContain("MAX_NODE_METRIC_STREAMS");
     expect(nodesText).toContain("const metricNodes = canReadMetrics ? nodes.data : noMetricNodes");
     expect(nodesText).toContain("<NodeMetricsPanel metricsByNode={metricsByNode} nodes={metricNodes} />");
-    expect(nodesText).toContain("const streamedNodes = nodes.slice(0, MAX_NODE_METRIC_STREAMS)");
-    expect(nodesText).toContain("streamedNodes.map");
-    expect(nodesText).toContain("const nodeIDs = new Set(streamedNodes.map");
+    expect(nodesText).not.toContain("MAX_NODE_METRIC_STREAMS");
+    expect(nodesText).not.toContain("nodes.slice(0");
+    expect(nodesText).toContain("new EventSource(\"/api/control/nodes/metrics/stream\")");
     expect(nodesText).not.toContain("const sources = nodes.map");
     expect(nodeMetricsText).toContain("NodeCPUHover");
     expect(nodeMetricsText).toContain("cpu_model");
@@ -92,7 +91,7 @@ describe("monitor health DNS console source", () => {
     expect(nodeMetricsText).toContain("disk_total_bytes");
     expect(nodeMetricsText).toContain("diskPercent");
     expect(nodeMetricsText).toContain("hasDiskMetrics");
-    expect(nodeMetricsText).toContain("nodes.metricsNotStreamed");
+    expect(nodeMetricsText).toContain("nodes.metricsWaiting");
     expect(nodeMetricsText).toContain("const metrics = metricsByNode[node.id];");
     expect(nodeMetricsText).not.toContain("metricsByNode[node.id] ?? {}");
     expect(nodesText).toContain("geoip");

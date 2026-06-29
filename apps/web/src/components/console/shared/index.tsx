@@ -176,10 +176,10 @@ function cellSkeletonClass(index: number, compact = false) {
 }
 
 export function TextField({
-  defaultValue,
-  label,
-  name,
-  placeholder,
+	defaultValue,
+	label,
+	name,
+	placeholder,
   required = true,
   type = "text",
 }: {
@@ -192,7 +192,7 @@ export function TextField({
 }) {
   return (
     <Field>
-      <FieldLabel htmlFor={name}>{label}</FieldLabel>
+      <FieldLabel htmlFor={name}>{label}<FieldRequirementBadge required={required} /></FieldLabel>
       <Input defaultValue={defaultValue} id={name} name={name} placeholder={placeholder} required={required} type={type} />
     </Field>
   );
@@ -202,29 +202,31 @@ export function ControlledTextField({
   label,
   onValueChange,
   placeholder,
+  required = true,
   type = "text",
   value,
 }: {
   label: string;
   onValueChange: (value: string) => void;
   placeholder: string;
+  required?: boolean;
   type?: string;
   value: string;
 }) {
   const id = label.toLowerCase().replace(/\s+/g, "-");
   return (
     <Field>
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Input id={id} onChange={(event) => onValueChange(event.currentTarget.value)} placeholder={placeholder} required type={type} value={value} />
+      <FieldLabel htmlFor={id}>{label}<FieldRequirementBadge required={required} /></FieldLabel>
+      <Input id={id} onChange={(event) => onValueChange(event.currentTarget.value)} placeholder={placeholder} required={required} type={type} value={value} />
     </Field>
   );
 }
 
-export function TextAreaField({ defaultValue, label, name, placeholder }: { defaultValue?: string; label: string; name: string; placeholder: string }) {
+export function TextAreaField({ defaultValue, label, name, placeholder, required = false }: { defaultValue?: string; label: string; name: string; placeholder: string; required?: boolean }) {
   return (
     <Field>
-      <FieldLabel htmlFor={name}>{label}</FieldLabel>
-      <Textarea defaultValue={defaultValue} id={name} name={name} placeholder={placeholder} />
+      <FieldLabel htmlFor={name}>{label}<FieldRequirementBadge required={required} /></FieldLabel>
+      <Textarea defaultValue={defaultValue} id={name} name={name} placeholder={placeholder} required={required} />
     </Field>
   );
 }
@@ -233,16 +235,18 @@ export function EnumSelect({
   label,
   onValueChange,
   options,
+  required = true,
   value,
 }: {
   label: string;
   onValueChange: (value: string) => void;
   options: Array<{ value: string; label: string }>;
+  required?: boolean;
   value: string;
 }) {
   return (
     <Field>
-      <FieldLabel>{label}</FieldLabel>
+      <FieldLabel>{label}<FieldRequirementBadge required={required} /></FieldLabel>
       <Select onValueChange={onValueChange} value={value}>
         <SelectTrigger className="w-full">
           <SelectValue />
@@ -256,6 +260,15 @@ export function EnumSelect({
         </SelectContent>
       </Select>
     </Field>
+  );
+}
+
+export function FieldRequirementBadge({ required }: { required: boolean }) {
+  const { t } = useI18n();
+  return (
+    <Badge className="ml-2 align-middle text-[10px]" variant={required ? "secondary" : "outline"}>
+      {required ? t("field.required") : t("field.optional")}
+    </Badge>
   );
 }
 

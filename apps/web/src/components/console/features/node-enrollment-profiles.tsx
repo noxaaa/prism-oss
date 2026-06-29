@@ -1,16 +1,18 @@
 "use client";
 
-import { PencilIcon, PlusIcon } from "lucide-react";
+import { PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Field, FieldDescription, FieldLabel, FieldSet, FieldLegend } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { controlDelete, controlGet, controlPatch, controlPost, shortDate } from "@/components/console/control-api";
 import { localizeControlError, localizeEnum, useI18n } from "@/components/console/i18n";
 import { ResourceMultiSelect } from "@/components/console/resource-select";
-import { EnumSelect, StatusBadge, TextAreaField, TextField } from "@/components/console/shared";
+import { EnumSelect, FieldRequirementBadge, StatusBadge, TextAreaField, TextField } from "@/components/console/shared";
 import type { NodeEnrollmentEvent, NodeEnrollmentProfile, NodeGroup } from "@/components/console/types";
 
 const protocolOptions = [
@@ -25,6 +27,11 @@ const dataplaneModeOptions = [
   { value: "HAPROXY", labelKey: "nodes.dataplaneHAProxy" },
   { value: "NFTABLES", labelKey: "nodes.dataplaneNFTables" },
 ];
+
+type EditableIP = {
+  address: string;
+  display_name: string;
+};
 
 function nodePortRangesForSelection(protocol: string, startPort: number, endPort: number) {
   const protocols = protocol === "TCP_UDP" ? ["TCP", "UDP"] : [protocol];
@@ -84,6 +91,13 @@ function NodeEnrollmentMutationForm({ groups, onSaved, profile }: { groups: Node
   const [groupIDs, setGroupIDs] = useState<string[]>(profile?.group_ids ?? []);
   const [protocol, setProtocol] = useState(initialProtocol);
   const [dataplaneMode, setDataplaneMode] = useState(profile?.dataplane_mode ?? "AUTO");
+  const [listenIPs, setListenIPs] = useState<EditableIP[]>(
+    profile?.listen_ips?.length ? profile.listen_ips.map((item) => ({ address: item.listen_ip, display_name: item.display_name })) : [{ address: "0.0.0.0", display_name: "default" }],
+  );
+  const [sendIPs, setSendIPs] = useState<EditableIP[]>(
+    profile?.send_ips?.length ? profile.send_ips.map((item) => ({ address: item.send_ip, display_name: item.display_name })) : [],
+  );
+  const [neverExpires, setNeverExpires] = useState(profile ? !profile.expires_at : false);
   const groupOptions = groups.map((group) => ({ value: group.id, label: group.name }));
   const localizedProtocolOptions = protocolOptions.map((option) => ({ ...option, label: localizeEnum(option.value, locale) }));
   const localizedDataplaneOptions = dataplaneModeOptions.map((option) => ({ value: option.value, label: t(option.labelKey) }));
@@ -92,18 +106,15 @@ function NodeEnrollmentMutationForm({ groups, onSaved, profile }: { groups: Node
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const listenIP = String(form.get("listen_ip") || "0.0.0.0");
-    const listenIPLabel = String(form.get("listen_ip_label") || "default");
-    const listenIPs = profile?.listen_ips?.length
-      ? profile.listen_ips.map((item, index) => (index === 0 ? { ...item, listen_ip: listenIP, display_name: listenIPLabel } : item))
-      : [{ listen_ip: listenIP, display_name: listenIPLabel }];
-    const sendIP = String(form.get("send_ip") || "").trim();
-    const sendIPLabel = String(form.get("send_ip_label") || sendIP).trim();
-    const sendIPs = sendIP
-      ? (profile?.send_ips?.length
-        ? profile.send_ips.map((item, index) => (index === 0 ? { ...item, send_ip: sendIP, display_name: sendIPLabel } : item))
-        : [{ send_ip: sendIP, display_name: sendIPLabel }])
-      : [];
+    const normalizedListenIPs = listenIPs
+      .map((item) => ({ listen_ip: item.address.trim(), display_name: item.display_name.trim() }))
+      .filter((item) => item.listen_ip !== "");
+    if (normalizedListenIPs.length === 0) {
+      normalizedListenIPs.push({ listen_ip: "0.0.0.0", display_name: "default" });
+    }
+    const normalizedSendIPs = sendIPs
+      .map((item) => ({ send_ip: item.address.trim(), display_name: item.display_name.trim() }))
+      .filter((item) => item.send_ip !== "");
     const portRanges = profile && protocol === initialProtocol && String(form.get("start_port") || "") === String(initialPortRange?.start_port ?? "") && String(form.get("end_port") || "") === String(initialPortRange?.end_port ?? "")
       ? profile.port_ranges
       : nodePortRangesForSelection(protocol, Number(form.get("start_port") || 10000), Number(form.get("end_port") || 20000));
@@ -114,8 +125,8 @@ function NodeEnrollmentMutationForm({ groups, onSaved, profile }: { groups: Node
       max_uses: Number(form.get("max_uses") || 0),
       node_name_template: form.get("node_name_template"),
       group_ids: groupIDs,
-      listen_ips: listenIPs,
-      send_ips: sendIPs,
+      listen_ips: normalizedListenIPs,
+      send_ips: normalizedSendIPs,
       port_ranges: portRanges,
       max_rule_ports: Number(form.get("max_rule_ports") || profile?.max_rule_ports || 256),
       dns_publish_addresses: profile?.dns_publish_addresses ?? [],
@@ -124,12 +135,13 @@ function NodeEnrollmentMutationForm({ groups, onSaved, profile }: { groups: Node
       auto_update_enabled: form.get("auto_update_enabled") === "on",
       allowed_cidrs: String(form.get("allowed_cidrs") || "").split(/\s*,\s*|\n/).map((value) => value.trim()).filter(Boolean),
     };
-    const submittedTTLHours = String(form.get("ttl_hours") || "");
-    if (profile && submittedTTLHours === ttlHours) {
-      payload.expires_at = profile.expires_at;
-    } else {
-      payload.ttl_hours = Number(submittedTTLHours || 720);
-    }
+    applyNodeEnrollmentExpiryPayload(payload, {
+      editing: Boolean(profile),
+      initialExpiresAt: profile?.expires_at ?? "",
+      initialTTLHours: ttlHours,
+      neverExpires,
+      submittedTTLHours: String(form.get("ttl_hours") || ""),
+    });
     try {
       const result = profile
         ? await controlPatch<NodeEnrollmentProfile>(`/api/control/node-enrollment-profiles/${profile.id}`, payload)
@@ -148,18 +160,16 @@ function NodeEnrollmentMutationForm({ groups, onSaved, profile }: { groups: Node
       <ResourceMultiSelect label={t("nodes.nodeGroups")} onValueChange={setGroupIDs} options={groupOptions} values={groupIDs} />
       <TextField defaultValue={profile?.node_name_template ?? "{{hostname}}"} label={t("nodes.nodeNameTemplate")} name="node_name_template" placeholder="{{hostname}}" />
       <div className="grid gap-3 md:grid-cols-2">
-        <TextField defaultValue={ttlHours} label={t("nodes.ttlHours")} name="ttl_hours" placeholder="720" type="number" />
+        <TextField defaultValue={ttlHours} label={t("nodes.ttlHours")} name="ttl_hours" placeholder="720" required={!neverExpires} type="number" />
         <TextField defaultValue={String(profile?.max_uses ?? 0)} label={t("nodes.maxUses")} name="max_uses" placeholder="0" required={false} type="number" />
       </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input checked={neverExpires} onChange={(event) => setNeverExpires(event.currentTarget.checked)} type="checkbox" />
+        {t("nodes.neverExpireEnrollment")}
+      </label>
       <EnumSelect label={t("nodes.dataplaneMode")} onValueChange={setDataplaneMode} options={localizedDataplaneOptions} value={dataplaneMode} />
-      <div className="grid gap-3 md:grid-cols-2">
-        <TextField defaultValue={profile?.listen_ips?.[0]?.listen_ip ?? "0.0.0.0"} label={t("rules.listenIP")} name="listen_ip" placeholder="0.0.0.0" />
-        <TextField defaultValue={profile?.listen_ips?.[0]?.display_name ?? "default"} label={t("nodes.listenIPLabel")} name="listen_ip_label" placeholder="default" />
-      </div>
-      <div className="grid gap-3 md:grid-cols-2">
-        <TextField defaultValue={profile?.send_ips?.[0]?.send_ip ?? ""} label={t("nodes.sendIP")} name="send_ip" placeholder="198.51.100.10" required={false} />
-        <TextField defaultValue={profile?.send_ips?.[0]?.display_name ?? ""} label={t("nodes.listenIPLabel")} name="send_ip_label" placeholder="primary" required={false} />
-      </div>
+      <IPListEditor description={t("nodes.listenIPsDescription")} items={listenIPs} label={t("rules.listenIP")} labelPlaceholder="default" legend={t("nodes.listenIPs")} onAdd={() => setListenIPs((current) => [...current, { address: "", display_name: "" }])} onRemove={(index) => setListenIPs((current) => current.filter((_, itemIndex) => itemIndex !== index))} onUpdate={(index, field, value) => setListenIPs((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, [field]: value } : item)))} required />
+      <IPListEditor description={t("nodes.sendIPsDescription")} items={sendIPs} label={t("nodes.sendIP")} labelPlaceholder="primary" legend={t("nodes.sendIPs")} onAdd={() => setSendIPs((current) => [...current, { address: "", display_name: "" }])} onRemove={(index) => setSendIPs((current) => current.filter((_, itemIndex) => itemIndex !== index))} onUpdate={(index, field, value) => setSendIPs((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, [field]: value } : item)))} required={false} />
       <EnumSelect label={t("rules.protocol")} onValueChange={setProtocol} options={localizedProtocolOptions} value={protocol} />
       <div className="grid gap-3 md:grid-cols-3">
         <TextField defaultValue={String(initialPortRange?.start_port ?? 10000)} label={t("nodes.startPort")} name="start_port" placeholder="10000" type="number" />
@@ -181,6 +191,20 @@ function NodeEnrollmentMutationForm({ groups, onSaved, profile }: { groups: Node
       </Button>
     </form>
   );
+}
+
+export function applyNodeEnrollmentExpiryPayload(payload: Record<string, unknown>, options: { editing: boolean; initialExpiresAt: string; initialTTLHours: string; neverExpires: boolean; submittedTTLHours: string }) {
+  if (options.neverExpires) {
+    if (options.editing) {
+      payload.expires_at = "";
+    }
+    return;
+  }
+  if (options.editing && options.initialExpiresAt && options.submittedTTLHours === options.initialTTLHours) {
+    payload.expires_at = options.initialExpiresAt;
+    return;
+  }
+  payload.ttl_hours = Number(options.submittedTTLHours || 720);
 }
 
 export function NodeEnrollmentDetailDrawer({ onOpenChange, profile }: { onOpenChange: (open: boolean) => void; profile: NodeEnrollmentProfile | null }) {
@@ -213,6 +237,13 @@ export function NodeEnrollmentDetailDrawer({ onOpenChange, profile }: { onOpenCh
           <SheetDescription>{t("nodes.enrollmentEventsDescription")}</SheetDescription>
         </SheetHeader>
         <div className="px-4 pb-4">
+          {profile ? (
+            <div className="mb-4 grid gap-2 rounded-md border p-3 text-sm">
+              <div className="flex justify-between gap-4"><span className="text-muted-foreground">{t("nodes.expiresAt")}</span><span>{profile.expires_at ? shortDate(profile.expires_at, locale) : t("nodes.neverExpires")}</span></div>
+              <div className="flex justify-between gap-4"><span className="text-muted-foreground">{t("nodes.listenIPs")}</span><span className="text-right">{profile.listen_ips.map((item) => item.listen_ip).join(", ")}</span></div>
+              <div className="flex justify-between gap-4"><span className="text-muted-foreground">{t("nodes.sendIPs")}</span><span className="text-right">{profile.send_ips?.length ? profile.send_ips.map((item) => item.send_ip).join(", ") : t("rules.defaultSendIP")}</span></div>
+            </div>
+          ) : null}
           <Table>
             <TableHeader>
               <TableRow>
@@ -236,6 +267,57 @@ export function NodeEnrollmentDetailDrawer({ onOpenChange, profile }: { onOpenCh
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+function IPListEditor({
+  description,
+  items,
+  label,
+  labelPlaceholder,
+  legend,
+  onAdd,
+  onRemove,
+  onUpdate,
+  required,
+}: {
+  description: string;
+  items: EditableIP[];
+  label: string;
+  labelPlaceholder: string;
+  legend: string;
+  onAdd: () => void;
+  onRemove: (index: number) => void;
+  onUpdate: (index: number, field: keyof EditableIP, value: string) => void;
+  required: boolean;
+}) {
+  const { t } = useI18n();
+  return (
+    <FieldSet>
+      <FieldLegend>{legend}</FieldLegend>
+      <FieldDescription>{description}</FieldDescription>
+      <div className="flex flex-col gap-3">
+        {items.map((item, index) => (
+          <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]" key={index}>
+            <Field>
+              <FieldLabel>{label}<FieldRequirementBadge required={required} /></FieldLabel>
+              <Input onChange={(event) => onUpdate(index, "address", event.target.value)} placeholder="0.0.0.0" required={required} value={item.address} />
+            </Field>
+            <Field>
+              <FieldLabel>{required ? t("nodes.listenIPLabel") : t("nodes.sendIPLabel")}<FieldRequirementBadge required={false} /></FieldLabel>
+              <Input onChange={(event) => onUpdate(index, "display_name", event.target.value)} placeholder={labelPlaceholder} value={item.display_name} />
+            </Field>
+            <Button className="self-end" onClick={() => onRemove(index)} type="button" variant="outline">
+              <Trash2Icon />
+            </Button>
+          </div>
+        ))}
+      </div>
+      <Button onClick={onAdd} type="button" variant="outline">
+        <PlusIcon data-icon="inline-start" />
+        {t("nodes.addIP")}
+      </Button>
+    </FieldSet>
   );
 }
 

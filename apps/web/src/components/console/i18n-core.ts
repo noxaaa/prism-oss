@@ -230,6 +230,21 @@ const commonMessages = {
   "field.entry.listen_ip_present": { en: "Listen IP", zh: "监听 IP" },
   "field.node_group_id": { en: "Node group", zh: "节点组" },
   "field.listen_ip": { en: "Listen IP", zh: "监听 IP" },
+  "field.required": { en: "Required", zh: "必填" },
+  "field.optional": { en: "Optional", zh: "选填" },
+  "field.ttl_hours": { en: "Validity period", zh: "有效期" },
+  "field.expires_at": { en: "Expiration time", zh: "过期时间" },
+  "field.allowed_cidrs": { en: "Allowed source networks", zh: "允许来源网段" },
+  "field.group_ids": { en: "Node groups", zh: "节点组" },
+  "field.node_name_template": { en: "Node name template", zh: "节点名称模板" },
+  "field.max_uses": { en: "Maximum uses", zh: "最大使用次数" },
+  "field.listen_ips": { en: "Listen IPs", zh: "监听 IP" },
+  "field.send_ips": { en: "Send IPs", zh: "发送 IP" },
+  "field.port_ranges": { en: "Allowed port ranges", zh: "允许端口范围" },
+  "field.max_rule_ports": { en: "Maximum rule ports", zh: "单规则最大端口数" },
+  "field.dns_publish_addresses": { en: "DNS publish address", zh: "DNS 发布地址" },
+  "field.dataplane_mode": { en: "Dataplane mode", zh: "转发后端模式" },
+  "field.dataplane_conflict_policy": { en: "Dataplane conflict policy", zh: "转发冲突策略" },
   "field.status": { en: "Status", zh: "状态" },
   "field.target_id": { en: "Target", zh: "目标" },
   "field.target_group_id": { en: "Target group", zh: "目标组" },
@@ -319,9 +334,11 @@ const commonMessages = {
   "nodes.rotateAndCopyScript": { en: "Rotate & copy", zh: "轮换并复制" },
   "nodes.uses": { en: "Uses", zh: "使用次数" },
   "nodes.expiresAt": { en: "Expires", zh: "过期时间" },
+  "nodes.neverExpires": { en: "Never expires", zh: "永不过期" },
   "nodes.allowedCIDRs": { en: "Allowed CIDRs", zh: "允许 CIDR" },
   "nodes.nodeNameTemplate": { en: "Node name template", zh: "节点名称模板" },
   "nodes.ttlHours": { en: "Token TTL hours", zh: "令牌有效小时数" },
+  "nodes.neverExpireEnrollment": { en: "Never expire this auto join token", zh: "自动加入令牌永不过期" },
   "nodes.maxUses": { en: "Max uses", zh: "最大使用次数" },
   "nodes.hostname": { en: "Hostname", zh: "主机名" },
   "nodes.enrollmentEventsDescription": { en: "Recent node auto-join attempts for this profile.", zh: "该配置最近的节点自动加入记录。" },
@@ -332,6 +349,7 @@ const commonMessages = {
   "nodes.addListenIP": { en: "Add listen IP", zh: "添加监听 IP" },
   "nodes.sendIPs": { en: "Send IPs", zh: "发送 IP" },
   "nodes.sendIP": { en: "Send IP", zh: "发送 IP" },
+  "nodes.sendIPLabel": { en: "Send IP label", zh: "发送 IP 标签" },
   "nodes.sendIPsDescription": { en: "Rules may only choose source addresses present on every node in the selected node group.", zh: "规则只能选择所选节点组内所有节点都允许的源地址。" },
   "nodes.addIP": { en: "Add IP", zh: "添加 IP" },
   "nodes.maxRulePorts": { en: "Max rule ports", zh: "最大规则端口数" },
@@ -342,7 +360,8 @@ const commonMessages = {
   "nodes.nodeMetrics": { en: "Node metrics", zh: "节点指标" },
   "nodes.nodeMetricsDescription": { en: "Latest realtime metrics from every visible node.", zh: "每个可见节点的最新实时指标。" },
   "nodes.metrics": { en: "Metrics", zh: "指标" },
-  "nodes.metricsNotStreamed": { en: "Not streamed", zh: "未订阅" },
+  "nodes.metricsNotStreamed": { en: "Waiting for metrics", zh: "等待指标上报" },
+  "nodes.metricsWaiting": { en: "Waiting for metrics", zh: "等待指标上报" },
   "nodes.bandwidth": { en: "Bandwidth", zh: "带宽" },
   "nodes.disk": { en: "Disk", zh: "磁盘" },
   "nodes.country": { en: "Country", zh: "国家/地区" },
@@ -521,9 +540,18 @@ const commonMessages = {
   "error.RULE_PORT_CONFLICT": { en: "The listen port is already reserved by another enabled rule.", zh: "监听端口已被其他开启中的规则占用。" },
   "error.RULE_DUPLICATE_SNI": { en: "Another enabled rule already uses this SNI on the selected listener.", zh: "所选入口上已有开启中的规则使用该 SNI。" },
   "error.NODE_GROUP_IN_USE": { en: "The node group is still used by nodes or rules.", zh: "节点组仍被节点或规则使用。" },
+  "error.NODE_RULE_COVERAGE_CONFLICT": { en: "This node configuration would break an enabled rule. Adjust the rule or expand the node listener coverage before saving.", zh: "当前节点配置会影响已有开启规则。请先调整相关规则，或扩大节点监听地址和端口范围后再保存。" },
+  "error.NODE_RULE_SEND_IP_CONFLICT": { en: "This node configuration does not allow the send IP used by an enabled rule. Add the required send IP to every node in the group or adjust the rule.", zh: "当前节点配置不允许已有规则使用的发送 IP。请把该发送 IP 加到节点组内所有节点，或先调整相关规则。" },
   "error.INTERNAL_ERROR": { en: "An internal error occurred.", zh: "服务内部错误。" },
   "error.validationField": { en: "{field} is invalid.", zh: "{field}填写无效。" },
   "error.validationRequired": { en: "{field} is required.", zh: "请填写{field}。" },
+  "error.validationTTLTooLong": { en: "The validity period cannot exceed 366 days. Shorten it or choose never expires.", zh: "有效期不能超过 366 天，请缩短时间或选择“永不过期”。" },
+  "error.validationCIDR": { en: "Allowed source networks must use CIDR format, for example 203.0.113.0/24.", zh: "允许来源网段格式不正确，请输入类似 203.0.113.0/24 的 CIDR。" },
+  "error.validationPortRange": { en: "Port ranges must be within 1-65535, and the start port cannot be greater than the end port.", zh: "端口范围必须在 1-65535 内，起始端口不能大于结束端口。" },
+  "error.validationSendIP": { en: "Send IP must be a valid IP address.", zh: "发送 IP 必须是有效 IP 地址。" },
+  "error.validationListenIP": { en: "Listen IP must be a valid IP address.", zh: "监听 IP 必须是有效 IP 地址。" },
+  "error.validationDNSPublishAddress": { en: "DNS publish address must be a public IPv4 or IPv6 address.", zh: "DNS 发布地址必须是公网 IPv4 或 IPv6 地址。" },
+  "error.validationNodeGroups": { en: "Select at least one node group.", zh: "请至少选择一个节点组。" },
   "error.supportedFormats": { en: "Supported formats: {formats}.", zh: "支持格式：{formats}。" },
   "error.actualValue": { en: "Actual value: {value}.", zh: "当前值：{value}。" },
   "error.expectedValue": { en: "Expected value: {value}.", zh: "期望值：{value}。" },
@@ -667,6 +695,10 @@ function localizeControlErrorDetails(details: Record<string, unknown> | undefine
   if (!details) {
     return "";
   }
+  const specific = localizeSpecificControlErrorDetails(details, locale);
+  if (specific) {
+    return specific;
+  }
   const pieces: string[] = [];
   const field = typeof details.field === "string" ? details.field : "";
   if (field) {
@@ -675,16 +707,33 @@ function localizeControlErrorDetails(details: Record<string, unknown> | undefine
   if (Array.isArray(details.supported_formats)) {
     pieces.push(formatMessage(locale, "error.supportedFormats", { formats: details.supported_formats.map((value) => localizeEnum(String(value), locale)).join(locale === "zh-CN" ? "、" : ", ") }));
   }
-  if (details.actual !== undefined && details.actual !== null && details.actual !== "") {
-    pieces.push(formatMessage(locale, "error.actualValue", { value: localizeDetailValue(details.actual, locale) }));
-  }
-  if (details.expected !== undefined && details.expected !== null && details.expected !== "") {
-    pieces.push(formatMessage(locale, "error.expectedValue", { value: localizeDetailValue(details.expected, locale) }));
-  }
-  if (details.min !== undefined && details.max !== undefined) {
-    pieces.push(formatMessage(locale, "error.portRange", { min: localizeDetailValue(details.min, locale), max: localizeDetailValue(details.max, locale) }));
-  }
   return pieces.join(locale === "zh-CN" ? "" : " ");
+}
+
+function localizeSpecificControlErrorDetails(details: Record<string, unknown>, locale: Locale): string {
+  const field = typeof details.field === "string" ? details.field : "";
+  if (field === "ttl_hours") {
+    return formatMessage(locale, "error.validationTTLTooLong");
+  }
+  if (field === "allowed_cidrs") {
+    return formatMessage(locale, "error.validationCIDR");
+  }
+  if (field === "port_ranges" || field === "port_segments") {
+    return formatMessage(locale, "error.validationPortRange");
+  }
+  if (field === "send_ips") {
+    return formatMessage(locale, "error.validationSendIP");
+  }
+  if (field === "listen_ips") {
+    return formatMessage(locale, "error.validationListenIP");
+  }
+  if (field === "dns_publish_addresses") {
+    return formatMessage(locale, "error.validationDNSPublishAddress");
+  }
+  if (field === "group_ids") {
+    return formatMessage(locale, "error.validationNodeGroups");
+  }
+  return "";
 }
 
 function localizeField(field: string, locale: Locale): string {
@@ -701,14 +750,4 @@ function localizeImportReason(issue: RuleImportIssue, locale: Locale): string {
     return reason;
   }
   return formatMessage(locale, "error.withCode", { code: issue.code });
-}
-
-function localizeDetailValue(value: unknown, locale: Locale): string {
-  if (Array.isArray(value)) {
-    return value.map((item) => localizeDetailValue(item, locale)).join(locale === "zh-CN" ? "、" : ", ");
-  }
-  if (typeof value === "string") {
-    return localizeEnum(value, locale);
-  }
-  return String(value);
 }

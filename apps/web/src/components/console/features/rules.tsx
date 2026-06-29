@@ -62,6 +62,7 @@ import { useConsoleSession } from "@/components/console/shell";
 import {
   DataState,
   EnumSelect,
+  FieldRequirementBadge,
   PageStack,
   StatusBadge,
   SummaryCard,
@@ -715,7 +716,7 @@ function RuleExportDialog({
         </DialogHeader>
         <FieldGroup>
           <Field>
-            <FieldLabel>{t("rules.exportJson")}</FieldLabel>
+            <FieldLabel>{t("rules.exportJson")}<FieldRequirementBadge required={false} /></FieldLabel>
             <Textarea readOnly rows={16} value={exportText} />
             <FieldDescription>
               {exportPayload ? t("rules.exportCount", { rules: exportPayload.rules.length, targets: exportPayload.targets.length, targetGroups: exportPayload.target_groups.length }) : t("rules.exportChooseAction")}
@@ -806,7 +807,7 @@ function RuleImportDrawer({ onChanged, onOpenChange, open }: { onChanged: () => 
             <ResourceSelect label={t("rules.listenIP")} onValueChange={setListenIP} options={listenIPs.data} value={listenIP} />
             <EnumSelect label={t("field.format")} onValueChange={setImportFormat} options={localizedImportFormatOptions} value={importFormat} />
             <Field>
-              <FieldLabel htmlFor="rules-import-json">{t("rules.importSource")}</FieldLabel>
+              <FieldLabel htmlFor="rules-import-json">{t("rules.importSource")}<FieldRequirementBadge required /></FieldLabel>
               <Textarea
                 id="rules-import-json"
                 onChange={(event) => setImportText(event.currentTarget.value)}

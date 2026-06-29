@@ -81,6 +81,7 @@ import {
   ControlledTextField,
   DataState,
   EnumSelect,
+  FieldRequirementBadge,
   PageStack,
   ResourceTable,
   StatusBadge,
@@ -727,7 +728,7 @@ function TargetGroupEditForm({ onChanged, targetGroup, targetOptions }: { onChan
       <FieldGroup>
         <TextField defaultValue={targetGroup.name} label={t("field.name")} name="name" placeholder={t("targets.groupNamePlaceholder")} />
         <Field>
-          <FieldLabel htmlFor="edit-target-group-description">{t("field.description")}</FieldLabel>
+          <FieldLabel htmlFor="edit-target-group-description">{t("field.description")}<FieldRequirementBadge required={false} /></FieldLabel>
           <Textarea defaultValue={targetGroup.description} id="edit-target-group-description" name="description" placeholder={t("targets.groupDescriptionPlaceholder")} />
         </Field>
         <TargetGroupSchedulerSelect id="edit-target-group-scheduler" value={targetGroup.scheduler} />
@@ -743,7 +744,7 @@ function TargetGroupSchedulerSelect({ id, value = TARGET_GROUP_SCHEDULER_PRIORIT
   const normalizedValue = value?.trim().toUpperCase() || TARGET_GROUP_SCHEDULER_PRIORITY_IPHASH;
   return (
     <Field>
-      <FieldLabel htmlFor={id}>{t("targets.scheduler")}</FieldLabel>
+      <FieldLabel htmlFor={id}>{t("targets.scheduler")}<FieldRequirementBadge required /></FieldLabel>
       <Select disabled value={normalizedValue}>
         <SelectTrigger id={id} className="w-full">
           <SelectValue />
@@ -794,7 +795,7 @@ function TargetGroupMembersEditor({
                 <div className="truncate text-sm font-medium">{optionLabel(targetOptions, member.target_id)}</div>
               </div>
               <Field className="gap-1">
-                <FieldLabel className="text-xs" htmlFor={`target-group-priority-${member.target_id}`}>{t("targets.memberPriority")}</FieldLabel>
+                <FieldLabel className="text-xs" htmlFor={`target-group-priority-${member.target_id}`}>{t("targets.memberPriority")}<FieldRequirementBadge required /></FieldLabel>
                 <Input
                   id={`target-group-priority-${member.target_id}`}
                   min={0}

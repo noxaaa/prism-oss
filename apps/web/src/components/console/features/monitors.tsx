@@ -28,7 +28,7 @@ import { localizeControlError, useI18n } from "@/components/console/i18n";
 import { MultiSelectField } from "@/components/console/multi-select-field";
 import { hasPermission } from "@/components/console/permissions";
 import { useConsoleSession } from "@/components/console/shell";
-import { DataState, EnumSelect, PageStack, StatusBadge, SummaryCard, SummaryGrid, TableSkeleton, copyText, useControlList } from "@/components/console/shared";
+import { DataState, EnumSelect, FieldRequirementBadge, PageStack, StatusBadge, SummaryCard, SummaryGrid, TableSkeleton, copyText, useControlList } from "@/components/console/shared";
 import type { HealthCheck, HealthResult, Monitor, MonitorGroup, RegistrationToken, ResourceOption, Target, TargetGroup } from "@/components/console/types";
 
 type DrawerMode = "create" | "edit" | "detail";
@@ -481,8 +481,8 @@ function MonitorGroupForm({ group, saving, onSubmit }: { group?: MonitorGroup; s
   return (
     <form className="grid gap-4 px-4" onSubmit={onSubmit}>
       <FieldGroup>
-        <Field><FieldLabel htmlFor="monitor-group-name">{t("field.name")}</FieldLabel><Input defaultValue={group?.name ?? ""} id="monitor-group-name" name="name" required /></Field>
-        <Field><FieldLabel htmlFor="monitor-group-description">{t("field.description")}</FieldLabel><Input defaultValue={group?.description ?? ""} id="monitor-group-description" name="description" /></Field>
+        <Field><FieldLabel htmlFor="monitor-group-name">{t("field.name")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={group?.name ?? ""} id="monitor-group-name" name="name" required /></Field>
+        <Field><FieldLabel htmlFor="monitor-group-description">{t("field.description")}<FieldRequirementBadge required={false} /></FieldLabel><Input defaultValue={group?.description ?? ""} id="monitor-group-description" name="description" /></Field>
       </FieldGroup>
       <Button disabled={saving} type="submit">{t("common.save")}</Button>
     </form>
@@ -492,7 +492,7 @@ function MonitorForm({ groups, monitor, saving, onSubmit }: { groups: MonitorGro
   const { t } = useI18n();
   return (
     <form className="grid gap-4 px-4" onSubmit={onSubmit}>
-      <Field><FieldLabel htmlFor="monitor-name">{t("field.name")}</FieldLabel><Input defaultValue={monitor?.name ?? ""} id="monitor-name" name="name" required /></Field>
+      <Field><FieldLabel htmlFor="monitor-name">{t("field.name")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={monitor?.name ?? ""} id="monitor-name" name="name" required /></Field>
       <MultiSelectField defaultValues={monitor?.group_ids ?? []} label={t("monitors.groups")} name="group_id" options={groups.map((group) => ({ value: group.id, label: group.name }))} />
       <Button disabled={saving || (!monitor && groups.length === 0)} type="submit">{t("common.save")}</Button>
     </form>
@@ -517,11 +517,11 @@ function HealthCheckForm({ check, targets, targetGroups, monitors, monitorGroups
   const defaultTargetIDs = directTargetIDs.length > 0 ? directTargetIDs : check?.target_scope?.target_ids ?? [];
   return (
     <form className="grid gap-4 px-4" onSubmit={onSubmit}>
-      <Field><FieldLabel htmlFor="health-name">{t("field.name")}</FieldLabel><Input defaultValue={check?.name ?? ""} id="health-name" name="name" required /></Field>
+      <Field><FieldLabel htmlFor="health-name">{t("field.name")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={check?.name ?? ""} id="health-name" name="name" required /></Field>
       <EnumSelect label={t("health.probeType")} onValueChange={setProbeType} options={[{ value: "TCP_PORT", label: "TCP_PORT" }, { value: "HTTP", label: "HTTP" }, { value: "ICMP", label: "ICMP" }]} value={probeType} />
       <input name="probe_type" type="hidden" value={probeType} />
-      <Field><FieldLabel htmlFor="health-interval">{t("health.interval")}</FieldLabel><Input defaultValue={String(check?.interval_seconds ?? 30)} id="health-interval" min="1" name="interval_seconds" required type="number" /></Field>
-      <Field><FieldLabel htmlFor="health-timeout">{t("health.timeout")}</FieldLabel><Input defaultValue={String(check?.timeout_seconds ?? 5)} id="health-timeout" min="1" name="timeout_seconds" required type="number" /></Field>
+      <Field><FieldLabel htmlFor="health-interval">{t("health.interval")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={String(check?.interval_seconds ?? 30)} id="health-interval" min="1" name="interval_seconds" required type="number" /></Field>
+      <Field><FieldLabel htmlFor="health-timeout">{t("health.timeout")}<FieldRequirementBadge required /></FieldLabel><Input defaultValue={String(check?.timeout_seconds ?? 5)} id="health-timeout" min="1" name="timeout_seconds" required type="number" /></Field>
       <EnumSelect label={t("health.targetScope")} onValueChange={setTargetScopeType} options={[{ value: "TARGETS", label: t("targets.targets") }, { value: "TARGET_GROUP", label: t("targets.targetGroup") }]} value={targetScopeType} />
       <input name="target_scope_type" type="hidden" value={targetScopeType} />
       {targetScopeType === "TARGETS" ? (
@@ -544,17 +544,17 @@ function HealthProbeConfigFields({ config, probeType }: { config: Record<string,
   if (normalized === "ICMP") {
     return (
       <Field>
-        <FieldLabel>{t("health.config")}</FieldLabel>
+        <FieldLabel>{t("health.config")}<FieldRequirementBadge required={false} /></FieldLabel>
         <p className="text-sm text-muted-foreground">{t("health.noProbeConfig")}</p>
       </Field>
     );
   }
   return (
     <FieldGroup>
-      <FieldLabel>{t("health.config")}</FieldLabel>
+      <FieldLabel>{t("health.config")}<FieldRequirementBadge required={false} /></FieldLabel>
       {(normalized === "TCP_PORT" || normalized === "HTTP") ? (
         <Field>
-          <FieldLabel htmlFor="health-config-port">{t("health.portOverride")}</FieldLabel>
+          <FieldLabel htmlFor="health-config-port">{t("health.portOverride")}<FieldRequirementBadge required={false} /></FieldLabel>
           <Input defaultValue={probeConfigNumber(config, "port_override")} id="health-config-port" max="65535" min="1" name="config_port_override" placeholder="443" type="number" />
         </Field>
       ) : null}
@@ -562,23 +562,23 @@ function HealthProbeConfigFields({ config, probeType }: { config: Record<string,
         <div className="grid gap-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field>
-              <FieldLabel htmlFor="health-config-scheme">{t("health.httpScheme")}</FieldLabel>
+              <FieldLabel htmlFor="health-config-scheme">{t("health.httpScheme")}<FieldRequirementBadge required={false} /></FieldLabel>
               <select className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 text-sm" defaultValue={healthProbeSchemeDefault(config)} id="health-config-scheme" name="config_http_scheme">
                 <option value="http">http</option>
                 <option value="https">https</option>
               </select>
             </Field>
             <Field>
-              <FieldLabel htmlFor="health-config-method">{t("health.httpMethod")}</FieldLabel>
+              <FieldLabel htmlFor="health-config-method">{t("health.httpMethod")}<FieldRequirementBadge required={false} /></FieldLabel>
               <Input defaultValue={probeConfigString(config, "method", "GET")} id="health-config-method" name="config_http_method" placeholder="GET" />
             </Field>
           </div>
           <Field>
-            <FieldLabel htmlFor="health-config-path">{t("health.httpPath")}</FieldLabel>
+            <FieldLabel htmlFor="health-config-path">{t("health.httpPath")}<FieldRequirementBadge required={false} /></FieldLabel>
             <Input defaultValue={probeConfigString(config, "path", "/")} id="health-config-path" name="config_http_path" placeholder="/" />
           </Field>
           <Field>
-            <FieldLabel htmlFor="health-config-statuses">{t("health.expectedStatuses")}</FieldLabel>
+            <FieldLabel htmlFor="health-config-statuses">{t("health.expectedStatuses")}<FieldRequirementBadge required={false} /></FieldLabel>
             <Input defaultValue={probeConfigStatusesText(config)} id="health-config-statuses" name="config_http_expected_statuses" placeholder="200, 204, 301" />
           </Field>
         </div>
@@ -640,7 +640,7 @@ function SelectField({ label, name, options, defaultValue, value, onChange }: { 
   const { t } = useI18n();
   return (
     <Field>
-      <FieldLabel htmlFor={name}>{label}</FieldLabel>
+      <FieldLabel htmlFor={name}>{label}<FieldRequirementBadge required /></FieldLabel>
       <select className="h-9 rounded-md border bg-background px-3 text-sm" defaultValue={value === undefined ? defaultValue : undefined} id={name} name={name} onChange={(event) => onChange?.(event.currentTarget.value)} required value={value}>
         <option value="">{t("resource.selectResource")}</option>
         {options.map((option) => <option disabled={option.disabled} key={option.value} value={option.value}>{option.label}</option>)}
@@ -653,7 +653,7 @@ function OptionalSelectField({ label, name, options }: { label: string; name: st
   const { t } = useI18n();
   return (
     <Field>
-      <FieldLabel htmlFor={name}>{label}</FieldLabel>
+      <FieldLabel htmlFor={name}>{label}<FieldRequirementBadge required={false} /></FieldLabel>
       <select className="h-9 rounded-md border bg-background px-3 text-sm" id={name} name={name}>
         <option value="">{t("common.none")}</option>
         {options.map((option) => <option disabled={option.disabled} key={option.value} value={option.value}>{option.label}</option>)}

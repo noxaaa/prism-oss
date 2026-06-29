@@ -79,10 +79,32 @@ func validateEnabledRulesForNodeSet(ctx context.Context, repositories repo.Repos
 	for _, rule := range rules {
 		groupNodes := nodesInGroupFromSet(nodes, rule.Binding.NodeGroupID)
 		if !nodesCoverListenIPAndPortSegments(groupNodes, rule.Binding.ListenIP, rule.Protocol, rulePortSegments(rule.Binding)) {
-			return ErrConflict
+			return &controlServiceError{
+				Code:    "NODE_RULE_COVERAGE_CONFLICT",
+				Message: "The node configuration does not cover an enabled rule listener.",
+				Details: map[string]any{
+					"node_group_id": rule.Binding.NodeGroupID,
+					"rule_id":       rule.ID,
+					"rule_name":     rule.Name,
+					"listen_ip":     rule.Binding.ListenIP,
+					"protocol":      rule.Protocol,
+					"port":          rule.Binding.Port,
+				},
+				Cause: ErrConflict,
+			}
 		}
 		if !nodesShareSendIP(groupNodes, rule.SendIP) {
-			return ErrConflict
+			return &controlServiceError{
+				Code:    "NODE_RULE_SEND_IP_CONFLICT",
+				Message: "The node configuration does not allow the send IP required by an enabled rule.",
+				Details: map[string]any{
+					"node_group_id": rule.Binding.NodeGroupID,
+					"rule_id":       rule.ID,
+					"rule_name":     rule.Name,
+					"send_ip":       rule.SendIP,
+				},
+				Cause: ErrConflict,
+			}
 		}
 		ruleBindings := bindingsForNodes(groupNodes, rule.Binding.NodeGroupID, rule.Binding.ListenIP, rule.Protocol, rulePortSegments(rule.Binding), rule.MatchType, rule.SNIHostname, rule.ProxyProtocolIn, rule.ID)
 		for _, binding := range ruleBindings {

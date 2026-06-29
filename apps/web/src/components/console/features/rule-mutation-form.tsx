@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { controlPatch, controlPost } from "@/components/console/control-api";
 import { localizeControlError, localizeEnum, useI18n } from "@/components/console/i18n";
 import { ResourceSelect } from "@/components/console/resource-select";
-import { ControlledTextField, EnumSelect, TextField, ensureFirstValue, useControlList } from "@/components/console/shared";
+import { ControlledTextField, EnumSelect, FieldRequirementBadge, TextField, ensureFirstValue, useControlList } from "@/components/console/shared";
 import { cn } from "@/lib/utils";
 import type { ResourceOption, Rule, RulePortSegment } from "@/components/console/types";
 
@@ -194,7 +194,7 @@ export function PortSegmentsEditor({ onChange, segments }: { onChange: (segments
   }
   return (
     <Field>
-      <FieldLabel>{t("rules.portSegments")}</FieldLabel>
+      <FieldLabel>{t("rules.portSegments")}<FieldRequirementBadge required /></FieldLabel>
       <div className="flex flex-col gap-3">
         {segments.map((segment, index) => (
           <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]" key={index}>

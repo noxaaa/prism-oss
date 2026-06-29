@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { controlPatch, controlPost } from "@/components/console/control-api";
 import { localizeControlError, localizeEnum, useI18n } from "@/components/console/i18n";
 import { ResourceMultiSelect } from "@/components/console/resource-select";
-import { EnumSelect, TextAreaField, TextField } from "@/components/console/shared";
+import { EnumSelect, FieldRequirementBadge, TextAreaField, TextField } from "@/components/console/shared";
 import type { NodeGroup, NodeResource, NodeSendIP } from "@/components/console/types";
 
 const protocolOptions = [
@@ -142,6 +142,7 @@ export function NodeMutationForm({ groups, node, onSaved }: { groups: NodeGroup[
 function IPListEditor({
   description,
   items,
+  kind,
   label,
   labelPlaceholder,
   onAdd,
@@ -168,11 +169,11 @@ function IPListEditor({
         {items.map((item, index) => (
           <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]" key={index}>
             <Field>
-              <FieldLabel>{label}</FieldLabel>
+              <FieldLabel>{label}<FieldRequirementBadge required={kind === "listen"} /></FieldLabel>
               <Input onChange={(event) => onUpdate(index, "address", event.target.value)} placeholder="0.0.0.0" value={item.address} />
             </Field>
             <Field>
-              <FieldLabel>{t("nodes.listenIPLabel")}</FieldLabel>
+              <FieldLabel>{kind === "listen" ? t("nodes.listenIPLabel") : t("nodes.sendIPLabel")}<FieldRequirementBadge required={false} /></FieldLabel>
               <Input onChange={(event) => onUpdate(index, "display_name", event.target.value)} placeholder={labelPlaceholder} value={item.display_name} />
             </Field>
             <Button className="self-end" disabled={items.length === 0} onClick={() => onRemove(index)} type="button" variant="outline">

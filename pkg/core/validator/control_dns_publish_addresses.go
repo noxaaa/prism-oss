@@ -16,7 +16,7 @@ func validateDNSPublishAddresses(values []NodeDNSPublishAddress) ([]NodeDNSPubli
 		}
 		ip := net.ParseIP(value.Address)
 		if ip == nil || !isPublicIP(ip) {
-			return nil, ErrInvalidRequest
+			return nil, invalidFieldError("dns_publish_addresses", "DNS publish address must be a public IP address.", map[string]any{"actual": value.Address})
 		}
 		if value.AddressType == "" {
 			if ip.To4() == nil {
@@ -26,14 +26,14 @@ func validateDNSPublishAddresses(values []NodeDNSPublishAddress) ([]NodeDNSPubli
 			}
 		}
 		if (value.AddressType == "A" && ip.To4() == nil) || (value.AddressType == "AAAA" && ip.To4() != nil) {
-			return nil, ErrInvalidRequest
+			return nil, invalidFieldError("dns_publish_addresses", "DNS publish address type must match the IP version.", map[string]any{"actual": value.AddressType})
 		}
 		if value.AddressType != "A" && value.AddressType != "AAAA" {
-			return nil, ErrInvalidRequest
+			return nil, invalidFieldError("dns_publish_addresses", "DNS publish address type must be A or AAAA.", map[string]any{"actual": value.AddressType})
 		}
 		key := value.AddressType + "\x00" + value.Address
 		if seen[key] {
-			return nil, ErrInvalidRequest
+			return nil, invalidFieldError("dns_publish_addresses", "DNS publish address entries must be unique.", map[string]any{"actual": value.Address})
 		}
 		seen[key] = true
 		normalized = append(normalized, value)

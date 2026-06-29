@@ -34,7 +34,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ControlAPIError, controlGet, controlPost } from "@/components/console/control-api";
 import { defaultConsoleRegistry, type ConsoleNavItem, type Workspace } from "@/components/console/edition-registry";
-import { CardTableSkeleton, SummaryCard, SummaryGrid } from "@/components/console/shared";
+import { CardTableSkeleton, FieldRequirementBadge, SummaryCard, SummaryGrid } from "@/components/console/shared";
 import { I18nProvider, LanguageSwitch, localizeControlError, useI18n, type Locale, type MessageKey } from "@/components/console/i18n";
 import { canUseAdminWorkspace, hasAnyPermission, roleSummary } from "@/components/console/permissions";
 import type { ControlSession, InitialUser } from "@/components/console/types";
@@ -349,16 +349,16 @@ export function AuthScreen({ appName, registrationClosed }: { appName: string; r
             <FieldGroup>
               {mode === "sign-up" ? (
                 <Field>
-                  <FieldLabel htmlFor="name">{t("auth.name")}</FieldLabel>
+                  <FieldLabel htmlFor="name">{t("auth.name")}<FieldRequirementBadge required /></FieldLabel>
                   <Input id="name" name="name" placeholder={t("auth.namePlaceholder")} />
                 </Field>
               ) : null}
               <Field>
-                <FieldLabel htmlFor="email">{t("auth.email")}</FieldLabel>
+                <FieldLabel htmlFor="email">{t("auth.email")}<FieldRequirementBadge required /></FieldLabel>
                 <Input id="email" name="email" placeholder="you@example.com" required type="email" />
               </Field>
               <Field>
-                <FieldLabel htmlFor="password">{t("auth.password")}</FieldLabel>
+                <FieldLabel htmlFor="password">{t("auth.password")}<FieldRequirementBadge required /></FieldLabel>
                 <Input id="password" minLength={8} name="password" required type="password" />
               </Field>
             </FieldGroup>
@@ -485,11 +485,11 @@ function SetupScreen({
           <form className="flex flex-col gap-5" onSubmit={submit}>
             <FieldGroup>
               <Field>
-                <FieldLabel htmlFor="organization_name">{t("setup.organizationName")}</FieldLabel>
+                <FieldLabel htmlFor="organization_name">{t("setup.organizationName")}<FieldRequirementBadge required /></FieldLabel>
                 <Input id="organization_name" name="organization_name" placeholder={t("setup.organizationNamePlaceholder")} required />
               </Field>
               <Field>
-                <FieldLabel htmlFor="organization_slug">{t("setup.organizationSlug")}</FieldLabel>
+                <FieldLabel htmlFor="organization_slug">{t("setup.organizationSlug")}<FieldRequirementBadge required /></FieldLabel>
                 <Input id="organization_slug" name="organization_slug" pattern="[a-z0-9][a-z0-9-]{1,61}[a-z0-9]" placeholder="acme-network" required />
                 <FieldDescription>{t("setup.organizationSlugHelp")}</FieldDescription>
               </Field>

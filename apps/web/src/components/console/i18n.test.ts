@@ -42,6 +42,28 @@ describe("console i18n", () => {
     expect(message).not.toContain("supported_formats");
   });
 
+  it("renders validation details as user-facing text instead of backend field names", () => {
+    const ttlError = new ControlAPIError(400, "VALIDATION_FAILED", "Node enrollment profile TTL must be between 1 hour and 366 days.", {
+      field: "ttl_hours",
+      actual: 99999,
+      min: 1,
+      max: 8784,
+    });
+    const cidrError = new ControlAPIError(400, "VALIDATION_FAILED", "Allowed source CIDR is invalid.", {
+      field: "allowed_cidrs",
+      actual: "1.1.1.0",
+    });
+
+    const ttlMessage = localizeControlError(ttlError, "zh-CN");
+    const cidrMessage = localizeControlError(cidrError, "zh-CN");
+
+    expect(ttlMessage).toContain("有效期不能超过 366 天");
+    expect(ttlMessage).not.toContain("ttl_hours");
+    expect(ttlMessage).not.toContain("VALIDATION_FAILED");
+    expect(cidrMessage).toContain("允许来源网段格式不正确");
+    expect(cidrMessage).not.toContain("allowed_cidrs");
+  });
+
   it("localizes OSS single-user auth errors without rendering backend English messages", () => {
     const signupError = new ControlAPIError(403, "OSS_SIGNUP_DISABLED", "OSS registration is closed.");
     const setupTokenError = new ControlAPIError(403, "OSS_SETUP_TOKEN_REQUIRED", "A valid OSS setup token is required.");

@@ -80,7 +80,6 @@ import type {
 } from "@/components/console/types";
 
 const noMetricNodes: NodeResource[] = [];
-const MAX_NODE_METRIC_STREAMS = 4;
 
 function nodeGroupIDs(node: NodeResource): string[] {
   return Array.isArray(node.group_ids) ? node.group_ids : [];
@@ -95,7 +94,7 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
   const nodes = useControlList<NodeResource>("/api/control/nodes");
   const enrollmentProfiles = useControlList<NodeEnrollmentProfile>("/api/control/node-enrollment-profiles");
   const metricNodes = canReadMetrics ? nodes.data : noMetricNodes;
-  const metricsByNode = useNodeMetrics(metricNodes);
+  const metricsByNode = useNodeMetrics(canReadMetrics, metricNodes);
   const [nodeGroupCreateOpen, setNodeGroupCreateOpen] = useState(false);
   const [nodeCreateOpen, setNodeCreateOpen] = useState(false);
   const [editingNodeGroup, setEditingNodeGroup] = useState<NodeGroup | null>(null);
@@ -465,32 +464,33 @@ export function NodesPage({ mode }: { mode: "admin" | "user" }) {
   );
 }
 
-function useNodeMetrics(nodes: NodeResource[]) {
+function useNodeMetrics(canReadMetrics: boolean, nodes: NodeResource[]) {
   const [metricsByNode, setMetricsByNode] = useState<Record<string, AgentMetrics>>({});
+  const nodeIDsKey = nodes.map((node) => node.id).sort().join(",");
 
   useEffect(() => {
-    const streamedNodes = nodes.slice(0, MAX_NODE_METRIC_STREAMS);
-    const nodeIDs = new Set(streamedNodes.map((node) => node.id));
+    const nodeIDs = new Set(nodeIDsKey ? nodeIDsKey.split(",") : []);
     setMetricsByNode((current) => Object.fromEntries(Object.entries(current).filter(([nodeID]) => nodeIDs.has(nodeID))));
-    if (streamedNodes.length === 0) {
+    if (!canReadMetrics || nodeIDs.size === 0) {
       return undefined;
     }
 
-    const sources = streamedNodes.map((node) => {
-      const source = new EventSource(`/api/control/nodes/${node.id}/metrics/stream`);
-      source.addEventListener("metrics", (event) => {
-        setMetricsByNode((current) => ({
-          ...current,
-          [node.id]: JSON.parse((event as MessageEvent).data) as AgentMetrics,
-        }));
-      });
-      return source;
+    const source = new EventSource("/api/control/nodes/metrics/stream");
+    source.addEventListener("metrics", (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as { node_id?: string; metrics?: AgentMetrics };
+      if (!payload.node_id || !payload.metrics || !nodeIDs.has(payload.node_id)) {
+        return;
+      }
+      setMetricsByNode((current) => ({
+        ...current,
+        [payload.node_id as string]: payload.metrics as AgentMetrics,
+      }));
     });
 
     return () => {
-      sources.forEach((source) => source.close());
+      source.close();
     };
-  }, [nodes]);
+  }, [canReadMetrics, nodeIDsKey]);
 
   return metricsByNode;
 }

@@ -15,11 +15,14 @@ func validateSendIPs(values []NodeSendIP) ([]NodeSendIP, error) {
 		if value.SendIP == "" {
 			continue
 		}
-		if net.ParseIP(value.SendIP) == nil || len(value.DisplayName) > 120 {
-			return nil, ErrInvalidRequest
+		if net.ParseIP(value.SendIP) == nil {
+			return nil, invalidFieldError("send_ips", "Send IP must be a valid IP address.", map[string]any{"actual": value.SendIP})
+		}
+		if len(value.DisplayName) > 120 {
+			return nil, invalidFieldError("send_ips", "Send IP label must be at most 120 characters.", nil)
 		}
 		if seen[value.SendIP] {
-			return nil, ErrInvalidRequest
+			return nil, invalidFieldError("send_ips", "Send IP entries must be unique.", map[string]any{"actual": value.SendIP})
 		}
 		if value.DisplayName == "" {
 			value.DisplayName = value.SendIP
@@ -35,7 +38,7 @@ func validateMaxRulePorts(value int) (int, error) {
 		return 256, nil
 	}
 	if value < 1 || value > 65535 {
-		return 0, ErrInvalidRequest
+		return 0, invalidFieldError("max_rule_ports", "Maximum rule ports must be between 1 and 65535.", map[string]any{"actual": value, "min": 1, "max": 65535})
 	}
 	return value, nil
 }

@@ -10,17 +10,14 @@ import (
 	"github.com/noxaaa/prism-oss/pkg/core/validator"
 )
 
-const (
-	defaultEnrollmentProfileTTLHours = 24 * 30
-	maxEnrollmentProfileTTLHours     = 24 * 366
-)
+const maxEnrollmentProfileTTLHours = 24 * 366
 
 func decodeNodeEnrollmentProfileInput(response http.ResponseWriter, request *http.Request) (service.NodeEnrollmentProfileMutationInput, bool) {
 	var raw struct {
 		Name                    string                            `json:"name"`
 		Description             string                            `json:"description"`
 		Enabled                 *bool                             `json:"enabled"`
-		TTLHours                int                               `json:"ttl_hours"`
+		TTLHours                *int                              `json:"ttl_hours"`
 		ExpiresAt               string                            `json:"expires_at"`
 		MaxUses                 int                               `json:"max_uses"`
 		NodeNameTemplate        string                            `json:"node_name_template"`
@@ -36,7 +33,7 @@ func decodeNodeEnrollmentProfileInput(response http.ResponseWriter, request *htt
 		AllowedCIDRs            []string                          `json:"allowed_cidrs"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&raw); err != nil {
-		writeError(response, http.StatusBadRequest, "VALIDATION_FAILED")
+		writeJSONDecodeError(response, err)
 		return service.NodeEnrollmentProfileMutationInput{}, false
 	}
 	enabled := true
@@ -48,7 +45,11 @@ func decodeNodeEnrollmentProfileInput(response http.ResponseWriter, request *htt
 		autoUpdate = *raw.AutoUpdateEnabled
 	}
 	expiresAt := strings.TrimSpace(raw.ExpiresAt)
-	expiresAt, ok := decodeNodeEnrollmentProfileExpiresAt(response, expiresAt, raw.TTLHours, true)
+	ttlHours := 0
+	if raw.TTLHours != nil {
+		ttlHours = *raw.TTLHours
+	}
+	expiresAt, ok := decodeNodeEnrollmentProfileExpiresAt(response, expiresAt, ttlHours, raw.TTLHours != nil)
 	if !ok {
 		return service.NodeEnrollmentProfileMutationInput{}, false
 	}
@@ -97,7 +98,7 @@ func decodeNodeEnrollmentProfilePatchInput(response http.ResponseWriter, request
 		AllowedCIDRs            *[]string                          `json:"allowed_cidrs"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&raw); err != nil {
-		writeError(response, http.StatusBadRequest, "VALIDATION_FAILED")
+		writeJSONDecodeError(response, err)
 		return service.NodeEnrollmentProfileMutationInput{}, false
 	}
 
@@ -124,11 +125,16 @@ func decodeNodeEnrollmentProfilePatchInput(response http.ResponseWriter, request
 			expiresAt = strings.TrimSpace(*raw.ExpiresAt)
 		}
 		if expiresAt == "" && raw.TTLHours != nil && (ttlHours < 1 || ttlHours > maxEnrollmentProfileTTLHours) {
-			writeError(response, http.StatusBadRequest, "VALIDATION_FAILED")
+			writeValidationError(response, http.StatusBadRequest, "Node enrollment profile TTL must be between 1 hour and 366 days.", map[string]any{
+				"field":  "ttl_hours",
+				"actual": ttlHours,
+				"min":    1,
+				"max":    maxEnrollmentProfileTTLHours,
+			})
 			return service.NodeEnrollmentProfileMutationInput{}, false
 		}
 		var ok bool
-		input.ExpiresAt, ok = decodeNodeEnrollmentProfileExpiresAt(response, expiresAt, ttlHours, false)
+		input.ExpiresAt, ok = decodeNodeEnrollmentProfileExpiresAt(response, expiresAt, ttlHours, raw.TTLHours != nil)
 		if !ok {
 			return service.NodeEnrollmentProfileMutationInput{}, false
 		}
@@ -155,7 +161,7 @@ func decodeNodeEnrollmentProfilePatchInput(response http.ResponseWriter, request
 		}
 		normalized, err := validator.ValidateNodePatchRequest(nodePatch)
 		if err != nil {
-			writeError(response, http.StatusBadRequest, "VALIDATION_FAILED")
+			writeValidatorError(response, err)
 			return service.NodeEnrollmentProfileMutationInput{}, false
 		}
 		if normalized.GroupIDs != nil {
@@ -202,22 +208,28 @@ func decodeNodeEnrollmentProfilePatchInput(response http.ResponseWriter, request
 	return input, true
 }
 
-func decodeNodeEnrollmentProfileExpiresAt(response http.ResponseWriter, expiresAt string, ttlHours int, applyDefaultTTL bool) (string, bool) {
-	if expiresAt == "" && ttlHours <= 0 && applyDefaultTTL {
-		ttlHours = defaultEnrollmentProfileTTLHours
-	}
-	if expiresAt == "" && ttlHours <= 0 {
+func decodeNodeEnrollmentProfileExpiresAt(response http.ResponseWriter, expiresAt string, ttlHours int, ttlHoursProvided bool) (string, bool) {
+	if expiresAt == "" && !ttlHoursProvided {
 		return "", true
 	}
 	if expiresAt == "" && (ttlHours < 1 || ttlHours > maxEnrollmentProfileTTLHours) {
-		writeError(response, http.StatusBadRequest, "VALIDATION_FAILED")
+		writeValidationError(response, http.StatusBadRequest, "Node enrollment profile TTL must be between 1 hour and 366 days.", map[string]any{
+			"field":  "ttl_hours",
+			"actual": ttlHours,
+			"min":    1,
+			"max":    maxEnrollmentProfileTTLHours,
+		})
 		return "", false
 	}
 	if expiresAt != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, expiresAt)
 		now := time.Now().UTC()
 		if err != nil || !parsed.After(now) || parsed.After(now.Add(time.Duration(maxEnrollmentProfileTTLHours)*time.Hour)) {
-			writeError(response, http.StatusBadRequest, "VALIDATION_FAILED")
+			writeValidationError(response, http.StatusBadRequest, "Node enrollment profile expiration must be a future time within 366 days.", map[string]any{
+				"field": "expires_at",
+				"min":   "now",
+				"max":   maxEnrollmentProfileTTLHours,
+			})
 			return "", false
 		}
 		return expiresAt, true
@@ -254,7 +266,7 @@ func decodeNodeEnrollmentProfileDefaults(
 		DataplaneConflictPolicy: dataplaneConflictPolicy,
 	})
 	if err != nil {
-		writeError(response, http.StatusBadRequest, "VALIDATION_FAILED")
+		writeValidatorError(response, err)
 		return validator.NodeRequest{}, false
 	}
 	return nodeDefaults, true

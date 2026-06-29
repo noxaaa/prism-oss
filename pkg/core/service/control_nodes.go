@@ -263,6 +263,13 @@ func (service *ControlService) AuthorizeNodeMetricsStream(ctx context.Context, i
 	return mapServiceError(err)
 }
 
+func (service *ControlService) AuthorizeOrganizationNodeMetricsStream(_ context.Context, identity InternalIdentity) error {
+	if !service.hasPermission(identity, string(domain.PermissionNodesRead)) || !service.hasPermission(identity, string(domain.PermissionTrafficReadAll)) {
+		return ErrForbidden
+	}
+	return nil
+}
+
 func (service *ControlService) CreateNode(ctx context.Context, identity InternalIdentity, input NodeMutationInput) (NodePayload, error) {
 	if !service.hasPermission(identity, string(domain.PermissionNodesManage)) {
 		return NodePayload{}, ErrForbidden

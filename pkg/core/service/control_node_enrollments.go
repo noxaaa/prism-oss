@@ -600,14 +600,14 @@ func normalizeNodeEnrollmentProfileInput(input NodeEnrollmentProfileMutationInpu
 	input.Description = strings.TrimSpace(input.Description)
 	input.NodeNameTemplate = strings.TrimSpace(input.NodeNameTemplate)
 	if input.Name == "" {
-		return NodeEnrollmentProfileMutationInput{}, ErrInvalidInput
+		return NodeEnrollmentProfileMutationInput{}, validationFieldError("name", "Node enrollment profile name is required.", nil)
 	}
 	if input.MaxUses < 0 {
-		return NodeEnrollmentProfileMutationInput{}, ErrInvalidInput
+		return NodeEnrollmentProfileMutationInput{}, validationFieldError("max_uses", "Maximum uses cannot be negative.", map[string]any{"actual": input.MaxUses, "min": 0})
 	}
 	if strings.TrimSpace(input.ExpiresAt) != "" {
 		if _, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(input.ExpiresAt)); err != nil {
-			return NodeEnrollmentProfileMutationInput{}, ErrInvalidInput
+			return NodeEnrollmentProfileMutationInput{}, validationFieldError("expires_at", "Expiration must be a valid RFC3339 timestamp.", nil)
 		}
 		input.ExpiresAt = strings.TrimSpace(input.ExpiresAt)
 	}
@@ -615,10 +615,10 @@ func normalizeNodeEnrollmentProfileInput(input NodeEnrollmentProfileMutationInpu
 		input.NodeNameTemplate = "{{hostname}}"
 	}
 	if !enrollmentNodeNameTemplateCanFit(input.NodeNameTemplate) {
-		return NodeEnrollmentProfileMutationInput{}, ErrInvalidInput
+		return NodeEnrollmentProfileMutationInput{}, validationFieldError("node_name_template", "Node name template is too long.", nil)
 	}
 	if len(input.GroupIDs) == 0 {
-		return NodeEnrollmentProfileMutationInput{}, ErrInvalidInput
+		return NodeEnrollmentProfileMutationInput{}, validationFieldError("group_ids", "At least one node group is required.", nil)
 	}
 	if strings.TrimSpace(input.DataplaneMode) == "" {
 		input.DataplaneMode = "AUTO"
@@ -639,7 +639,7 @@ func normalizeNodeEnrollmentProfileInput(input NodeEnrollmentProfileMutationInpu
 			continue
 		}
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
-			return NodeEnrollmentProfileMutationInput{}, ErrInvalidInput
+			return NodeEnrollmentProfileMutationInput{}, validationFieldError("allowed_cidrs", "Allowed source CIDR is invalid.", map[string]any{"actual": strings.TrimSpace(cidr)})
 		}
 	}
 	if len(input.ListenIPs) == 0 {
