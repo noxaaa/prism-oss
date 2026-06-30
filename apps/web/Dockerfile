@@ -5,6 +5,7 @@ FROM --platform=$BUILDPLATFORM node:22-bookworm AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
+COPY packages/web-core/package.json packages/web-core/package.json
 RUN --mount=type=cache,id=prism-oss-web-npm,target=/root/.npm,sharing=locked npm ci --no-audit --no-fund
 COPY . .
 ENV NEXT_PUBLIC_PRISM_EDITION=oss
@@ -16,6 +17,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
+COPY packages/web-core/package.json packages/web-core/package.json
 RUN --mount=type=cache,id=prism-oss-web-npm,target=/root/.npm,sharing=locked npm ci --omit=dev --no-audit --no-fund
 
 FROM --platform=$TARGETPLATFORM node:22-bookworm-slim
@@ -25,7 +27,9 @@ ENV NEXT_PUBLIC_PRISM_EDITION=oss
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=runtime-deps /app/package.json /app/package-lock.json ./
 COPY --from=runtime-deps /app/apps/web/package.json apps/web/package.json
+COPY --from=runtime-deps /app/packages/web-core/package.json packages/web-core/package.json
 COPY --from=runtime-deps /app/node_modules node_modules
+COPY --from=build /src/packages/web-core/src packages/web-core/src
 COPY --from=build /src/apps/web/.next apps/web/.next
 COPY --from=build /src/apps/web/next.config.mjs apps/web/next.config.mjs
 EXPOSE 3000

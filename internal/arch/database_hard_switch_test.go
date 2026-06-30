@@ -164,7 +164,7 @@ func TestRuleDeploymentDiagnosticsUsePostgresSafeState(t *testing.T) {
 		"INSERT INTO rule_deployment_statuses",
 		"JOIN node_group_members",
 		"forwarding_rules.match_type IN ('ANY_INBOUND', 'TLS_SNI')",
-		"target_groups.scheduler = 'PRIORITY_IPHASH'",
+		"target_groups.scheduler IN ('PRIORITY_IPHASH', 'LEAST_LOAD')",
 	} {
 		if !strings.Contains(deploymentMigration, required) {
 			t.Fatalf("rule deployment migration must backfill current OSS deployments; missing %q", required)

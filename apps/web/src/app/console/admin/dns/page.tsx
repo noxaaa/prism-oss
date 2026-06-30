@@ -1,5 +1,5 @@
-import { DNSPage } from "@/components/console/features/dns";
-import { ConsoleShell } from "@/components/console/shell";
+import { DNSPage } from "@noxaaa/prism-oss-web-core/console/features/dns";
+import { ConsoleShell } from "@noxaaa/prism-oss-web-core/console/shell";
 import { getConsoleServerContext } from "@/lib/server-console";
 
 export const dynamic = "force-dynamic";

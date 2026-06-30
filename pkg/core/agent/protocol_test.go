@@ -17,6 +17,14 @@ func TestCurrentProtocolVersionCoversManagedDataplaneConfigContract(t *testing.T
 	}
 }
 
+func TestCurrentProtocolVersionCoversLeastLoadTargetGroupConfigContract(t *testing.T) {
+	current := CurrentProtocolVersion()
+	required := LeastLoadTargetGroupProtocolVersion()
+	if current.Major < required.Major || (current.Major == required.Major && current.Minor < required.Minor) {
+		t.Fatalf("least-load target group config requires agent protocol %d.%d+, got %d.%d", required.Major, required.Minor, current.Major, current.Minor)
+	}
+}
+
 func TestProtocolVersionAcceptsSameMajorAndCompatibleMinor(t *testing.T) {
 	server := ProtocolVersion{Major: 1, Minor: 2}
 	agent := ProtocolVersion{Major: 1, Minor: 1}

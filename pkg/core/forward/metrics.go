@@ -21,13 +21,15 @@ type targetMetricKey struct {
 }
 
 type targetMetricCounter struct {
-	tcpConnections      int64
-	tcpConnectionEvents int64
-	udpSessions         int64
-	udpPackets          int64
-	uploadBytes         int64
-	downloadBytes       int64
-	latencyMS           int64
+	tcpConnections         int64
+	tcpConnectionEvents    int64
+	tcpDialReservations    int64
+	udpSessions            int64
+	udpSessionReservations int64
+	udpPackets             int64
+	uploadBytes            int64
+	downloadBytes          int64
+	latencyMS              int64
 }
 
 type targetMetricSnapshot struct {
@@ -81,7 +83,7 @@ func activeTargetKeys(rules []agent.RuleConfig) map[targetMetricKey]bool {
 				activeTargets[targetMetricKey{ruleID: rule.ID, targetID: rule.Upstream.Target.ID}] = true
 			}
 		case "TARGET_GROUP":
-			for _, target := range enabledTargetGroupCandidates(rule) {
+			for _, target := range activeTargetGroupCandidates(rule) {
 				if target.ID != "" {
 					activeTargets[targetMetricKey{ruleID: rule.ID, targetID: target.ID}] = true
 				}
@@ -89,6 +91,24 @@ func activeTargetKeys(rules []agent.RuleConfig) map[targetMetricKey]bool {
 		}
 	}
 	return activeTargets
+}
+
+func (metrics *metricsCounter) openConnectionsForTargets(ruleID string, targets []agent.TargetEndpoint) map[string]int64 {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	counts := make(map[string]int64, len(targets))
+	for _, target := range targets {
+		if target.ID == "" {
+			continue
+		}
+		counter := metrics.targets[targetMetricKey{ruleID: ruleID, targetID: target.ID}]
+		if counter == nil {
+			counts[target.ID] = 0
+			continue
+		}
+		counts[target.ID] = counter.openConnections()
+	}
+	return counts
 }
 
 func (metrics *metricsCounter) pruneInactiveTargetsLocked() {
@@ -331,6 +351,128 @@ func (metrics *metricsCounter) addTargetTCPConnection(ruleID string, targetID st
 	metrics.pruneClosedInactiveTargetLocked(key, target)
 }
 
+func (metrics *metricsCounter) reserveTargetTCPDial(ruleID string, targetID string) bool {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	target, ok := metrics.targetLocked(ruleID, targetID)
+	if !ok {
+		return false
+	}
+	target.tcpDialReservations++
+	return true
+}
+
+func (metrics *metricsCounter) reserveLeastLoadTargetTCPDial(ruleID string, targets []agent.TargetEndpoint) (agent.TargetEndpoint, bool, bool) {
+	if len(targets) == 0 {
+		return agent.TargetEndpoint{}, false, false
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	best := targets[0]
+	bestConnections := metrics.targetOpenConnectionsLocked(ruleID, best.ID)
+	for _, candidate := range targets[1:] {
+		candidateConnections := metrics.targetOpenConnectionsLocked(ruleID, candidate.ID)
+		if candidateConnections*int64(best.Weight) < bestConnections*int64(candidate.Weight) {
+			best = candidate
+			bestConnections = candidateConnections
+		}
+	}
+	target, ok := metrics.targetLocked(ruleID, best.ID)
+	if !ok {
+		return best, false, true
+	}
+	target.tcpDialReservations++
+	return best, true, true
+}
+
+func (metrics *metricsCounter) reserveLeastLoadTargetUDPSession(ruleID string, targets []agent.TargetEndpoint) (agent.TargetEndpoint, bool, bool) {
+	if len(targets) == 0 {
+		return agent.TargetEndpoint{}, false, false
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	best := targets[0]
+	bestConnections := metrics.targetOpenConnectionsLocked(ruleID, best.ID)
+	for _, candidate := range targets[1:] {
+		candidateConnections := metrics.targetOpenConnectionsLocked(ruleID, candidate.ID)
+		if candidateConnections*int64(best.Weight) < bestConnections*int64(candidate.Weight) {
+			best = candidate
+			bestConnections = candidateConnections
+		}
+	}
+	target, ok := metrics.targetLocked(ruleID, best.ID)
+	if !ok {
+		return best, false, true
+	}
+	target.udpSessionReservations++
+	return best, true, true
+}
+
+func (metrics *metricsCounter) targetOpenConnectionsLocked(ruleID string, targetID string) int64 {
+	return metrics.targets[targetMetricKey{ruleID: ruleID, targetID: targetID}].openConnections()
+}
+
+func (metrics *metricsCounter) releaseTargetTCPDial(ruleID string, targetID string) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	key := targetMetricKey{ruleID: ruleID, targetID: targetID}
+	target := metrics.targets[key]
+	if target == nil {
+		return
+	}
+	target.tcpDialReservations--
+	if target.tcpDialReservations < 0 {
+		target.tcpDialReservations = 0
+	}
+	metrics.pruneClosedInactiveTargetLocked(key, target)
+}
+
+func (metrics *metricsCounter) promoteTargetTCPDial(ruleID string, targetID string) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	key := targetMetricKey{ruleID: ruleID, targetID: targetID}
+	target := metrics.targets[key]
+	if target == nil {
+		target = &targetMetricCounter{}
+		metrics.targets[key] = target
+	}
+	if target.tcpDialReservations > 0 {
+		target.tcpDialReservations--
+	}
+	target.tcpConnections++
+	target.tcpConnectionEvents++
+}
+
+func (metrics *metricsCounter) releaseTargetUDPSessionReservation(ruleID string, targetID string) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	key := targetMetricKey{ruleID: ruleID, targetID: targetID}
+	target := metrics.targets[key]
+	if target == nil {
+		return
+	}
+	target.udpSessionReservations--
+	if target.udpSessionReservations < 0 {
+		target.udpSessionReservations = 0
+	}
+	metrics.pruneClosedInactiveTargetLocked(key, target)
+}
+
+func (metrics *metricsCounter) promoteTargetUDPSessionReservation(ruleID string, targetID string) {
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	key := targetMetricKey{ruleID: ruleID, targetID: targetID}
+	target := metrics.targets[key]
+	if target == nil {
+		target = &targetMetricCounter{}
+		metrics.targets[key] = target
+	}
+	if target.udpSessionReservations > 0 {
+		target.udpSessionReservations--
+	}
+	target.udpSessions++
+}
+
 func (metrics *metricsCounter) addTargetUDPSession(ruleID string, targetID string, delta int64) {
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
@@ -362,7 +504,7 @@ func (target *targetMetricCounter) openConnections() int64 {
 	if target == nil {
 		return 0
 	}
-	return target.tcpConnections + target.udpSessions
+	return target.tcpConnections + target.tcpDialReservations + target.udpSessions + target.udpSessionReservations
 }
 
 func (metrics *metricsCounter) addTargetUDP(ruleID string, targetID string, delta int64) {

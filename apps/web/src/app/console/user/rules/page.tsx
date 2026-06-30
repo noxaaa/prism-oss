@@ -1,5 +1,5 @@
-import { RulesPage } from "@/components/console/features/rules";
-import { ConsoleShell } from "@/components/console/shell";
+import { RulesPage } from "@noxaaa/prism-oss-web-core/console/features/rules";
+import { ConsoleShell } from "@noxaaa/prism-oss-web-core/console/shell";
 import { getConsoleServerContext } from "@/lib/server-console";
 
 export const dynamic = "force-dynamic";

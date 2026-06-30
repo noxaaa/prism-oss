@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/noxaaa/prism-oss/pkg/core/repo"
 )
 
 func TestNyanpassRuleToPortableDoesNotCommitTargetRefsOnError(t *testing.T) {
@@ -63,6 +66,107 @@ func TestNyanpassImportSourceReturnsStructuredIssues(t *testing.T) {
 	if result.Errors[3].Details["actual"] != 9 {
 		t.Fatalf("expected invalid proxy protocol detail, got %#v", result.Errors[3].Details)
 	}
+}
+
+func TestNyanpassLeastLoadPolicyImportsTargetGroupScheduler(t *testing.T) {
+	_, _, group, err := nyanpassRuleToPortable(0, nyanpassRulePayload{
+		Name:       "least",
+		ListenPort: 8001,
+		DestPolicy: "least_load",
+		Dest:       []string{"1.1.1.1:443", "1.1.1.2:443"},
+	}, map[string]string{})
+	if err != nil {
+		t.Fatalf("import least_load rule: %v", err)
+	}
+	if group == nil || group.Scheduler != "LEAST_LOAD" {
+		t.Fatalf("expected least-load target group, got %#v", group)
+	}
+	if group.Members[0].Weight == nil || *group.Members[0].Weight != 1 {
+		t.Fatalf("expected imported member weight 1, got %#v", group.Members[0].Weight)
+	}
+}
+
+func TestRuleImportAllowsStagedZeroWeightLeastLoadGroupAndRejectsOutOfRangeWeight(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	service := NewControlService(store)
+	identity := targetGroupServiceTestIdentity()
+	zero := 0
+	tooHigh := 257
+	payloads := []PortableTargetGroupPayload{
+		{
+			Ref:       "zero",
+			Name:      "Zero pool",
+			Scheduler: "LEAST_LOAD",
+			Members: []PortableTargetGroupMemberPayload{
+				{TargetRef: "target_a", Priority: 10, Weight: &zero, Enabled: true},
+			},
+		},
+		{
+			Ref:       "too_high",
+			Name:      "High pool",
+			Scheduler: "LEAST_LOAD",
+			Members: []PortableTargetGroupMemberPayload{
+				{TargetRef: "target_b", Priority: 10, Weight: &tooHigh, Enabled: true},
+			},
+		},
+	}
+	result := RulesImportResult{}
+	targetGroupIDsByRef := map[string]string{}
+
+	err := store.WithinTx(context.Background(), func(ctx context.Context, repositories repo.Repositories) error {
+		var err error
+		targetGroupIDsByRef, err = service.resolveImportTargetGroups(ctx, repositories, identity, payloads, map[string]string{"target_a": "target_a", "target_b": "target_b"}, "2026-01-01T00:00:00Z", &result)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("resolve import target groups: %v", err)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected only out-of-range weight to be rejected, got %#v", result.Errors)
+	}
+	assertImportIssue(t, result.Errors[0], "IMPORT_TARGET_GROUP_MEMBER_INVALID", "target_groups", 1)
+	if _, ok := targetGroupIDsByRef["zero"]; !ok {
+		t.Fatalf("expected zero-weight least-load group to be staged, got refs %#v", targetGroupIDsByRef)
+	}
+	if len(store.targetGroups) != 1 {
+		t.Fatalf("expected only staged zero-weight least-load group to be persisted, got %#v", store.targetGroups)
+	}
+}
+
+func TestRuleImportRejectsExistingTargetGroupSchedulerMismatch(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	store.targetGroups["group_existing"] = repo.TargetGroupRecord{
+		ID:             "group_existing",
+		OrganizationID: "org_1",
+		Name:           "Shared pool",
+		Scheduler:      "PRIORITY_IPHASH",
+		Members: []repo.TargetGroupMemberRecord{
+			{OrganizationID: "org_1", TargetGroupID: "group_existing", TargetID: "target_a", Priority: 10, Weight: 1, Enabled: true},
+		},
+	}
+	service := NewControlService(store)
+	identity := targetGroupServiceTestIdentity()
+	weight := 1
+	result := RulesImportResult{}
+
+	err := store.WithinTx(context.Background(), func(ctx context.Context, repositories repo.Repositories) error {
+		_, err := service.resolveImportTargetGroups(ctx, repositories, identity, []PortableTargetGroupPayload{{
+			Ref:       "least",
+			Name:      "Shared pool",
+			Scheduler: "LEAST_LOAD",
+			Members: []PortableTargetGroupMemberPayload{
+				{TargetRef: "target_a", Priority: 10, Weight: &weight, Enabled: true},
+			},
+		}}, map[string]string{"target_a": "target_a"}, "2026-01-01T00:00:00Z", &result)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("resolve import target groups: %v", err)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected scheduler mismatch to be rejected, got %#v", result.Errors)
+	}
+	assertImportIssue(t, result.Errors[0], "IMPORT_TARGET_GROUP_SCHEDULER_MISMATCH", "target_groups", 0)
 }
 
 func TestBoundedImportNameTruncatesByUTF8Bytes(t *testing.T) {

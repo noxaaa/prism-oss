@@ -248,6 +248,39 @@ func TestValidateTargetGroupRequestDefaultsSchedulerWithoutBlockingExtensions(t 
 	}
 }
 
+func TestValidateTargetGroupRequestDefaultsMissingMemberWeightButAllowsZero(t *testing.T) {
+	zero := 0
+	group, err := ValidateTargetGroupRequest(TargetGroupRequest{
+		Name:        "Weighted pool",
+		Description: "Targets can be weighted.",
+		Members: []TargetGroupMemberRequest{
+			{TargetID: "target_a", Priority: 10, Enabled: true},
+			{TargetID: "target_b", Priority: 10, Weight: &zero, Enabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("target group weight should validate: %v", err)
+	}
+	if group.Members[0].Weight == nil || *group.Members[0].Weight != 1 {
+		t.Fatalf("expected missing weight to default to 1, got %#v", group.Members[0].Weight)
+	}
+	if group.Members[1].Weight == nil || *group.Members[1].Weight != 0 {
+		t.Fatalf("expected explicit weight 0 to be preserved, got %#v", group.Members[1].Weight)
+	}
+}
+
+func TestValidateTargetGroupRequestRejectsWeightAboveHAProxyLimit(t *testing.T) {
+	tooHigh := 257
+	_, err := ValidateTargetGroupRequest(TargetGroupRequest{
+		Name:      "Weighted pool",
+		Scheduler: "LEAST_LOAD",
+		Members:   []TargetGroupMemberRequest{{TargetID: "target_a", Priority: 10, Weight: &tooHigh, Enabled: true}},
+	})
+	if err == nil {
+		t.Fatalf("expected weight above HAProxy limit to be rejected")
+	}
+}
+
 func TestValidateNodeRequestDefaultsListenIPsAndPortRange(t *testing.T) {
 	node, err := ValidateNodeRequest(NodeRequest{
 		Name:     "edge-a",

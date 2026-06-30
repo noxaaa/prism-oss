@@ -165,6 +165,7 @@ func parseNyanpassRules(sourceText string) ([]nyanpassRulePayload, error) {
 func nyanpassRuleToPortable(index int, rule nyanpassRulePayload, targetRefsByHostPort map[string]string) (PortableRulePayload, []PortableTargetPayload, *PortableTargetGroupPayload, error) {
 	name := strings.TrimSpace(rule.Name)
 	destPolicy := strings.ToLower(strings.TrimSpace(rule.DestPolicy))
+	scheduler, schedulerOK := nyanpassDestPolicyScheduler(destPolicy)
 	if rule.TLSPresent {
 		return PortableRulePayload{}, nil, nil, newRuleImportIssueError("IMPORT_NYANPASS_TLS_UNSUPPORTED", "nyanpass tls/origin fetch import is not supported by the current runtime", map[string]any{
 			"format": ruleImportFormatNyanpass,
@@ -185,10 +186,10 @@ func nyanpassRuleToPortable(index int, rule nyanpassRulePayload, targetRefsByHos
 	if len(rule.Dest) == 0 {
 		return PortableRulePayload{}, nil, nil, newRuleImportIssueError("IMPORT_NYANPASS_DEST_REQUIRED", "nyanpass dest is required", nil)
 	}
-	if destPolicy != "" && destPolicy != "ip_hash" {
+	if !schedulerOK {
 		return PortableRulePayload{}, nil, nil, newRuleImportIssueError("IMPORT_NYANPASS_UNSUPPORTED_DEST_POLICY", "unsupported nyanpass dest_policy", map[string]any{
 			"actual":           rule.DestPolicy,
-			"supported_values": []string{"", "ip_hash"},
+			"supported_values": []string{"", "ip_hash", "least_load"},
 		})
 	}
 	proxyIn, err := nyanpassProxyProtocol(rule.AcceptProxyProtocol)
@@ -246,7 +247,8 @@ func nyanpassRuleToPortable(index int, rule nyanpassRulePayload, targetRefsByHos
 			}
 		}
 		targetRefs = append(targetRefs, targetRef)
-		members = append(members, PortableTargetGroupMemberPayload{TargetRef: targetRef, Priority: 10, Enabled: true})
+		weight := 1
+		members = append(members, PortableTargetGroupMemberPayload{TargetRef: targetRef, Priority: 10, Weight: &weight, Enabled: true})
 	}
 	for key, targetRef := range pendingTargetRefsByHostPort {
 		targetRefsByHostPort[key] = targetRef
@@ -260,7 +262,7 @@ func nyanpassRuleToPortable(index int, rule nyanpassRulePayload, targetRefsByHos
 			Ref:         groupRef,
 			Name:        boundedImportName(name, "-group", 120),
 			Description: "Imported from Nyanpass",
-			Scheduler:   targetGroupSchedulerPriorityIPHash,
+			Scheduler:   scheduler,
 			Members:     members,
 		}
 	}
@@ -274,6 +276,17 @@ func nyanpassRuleToPortable(index int, rule nyanpassRulePayload, targetRefsByHos
 		ProxyProtocol:  RuleProxyProtocolInput{In: proxyIn, Out: proxyOut},
 		Upstream:       upstream,
 	}, targets, group, nil
+}
+
+func nyanpassDestPolicyScheduler(policy string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "", "ip_hash":
+		return targetGroupSchedulerPriorityIPHash, true
+	case "least_load":
+		return targetGroupSchedulerLeastLoad, true
+	default:
+		return "", false
+	}
 }
 
 func newRuleImportIssueError(code string, message string, details map[string]any) error {

@@ -1,5 +1,5 @@
-import { MonitorsPage } from "@/components/console/features/monitors";
-import { ConsoleShell } from "@/components/console/shell";
+import { MonitorsPage } from "@noxaaa/prism-oss-web-core/console/features/monitors";
+import { ConsoleShell } from "@noxaaa/prism-oss-web-core/console/shell";
 import { getConsoleServerContext } from "@/lib/server-console";
 
 export const dynamic = "force-dynamic";

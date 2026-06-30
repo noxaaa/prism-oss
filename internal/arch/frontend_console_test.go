@@ -8,8 +8,8 @@ import (
 
 func TestOSSNodesConsoleKeepsAgentControlsInDropdownAndMetricsFocused(t *testing.T) {
 	root := repoRoot(t)
-	source := readText(t, filepath.Join(root, "apps", "web", "src", "components", "console", "features", "nodes.tsx"))
-	metricsSource := readText(t, filepath.Join(root, "apps", "web", "src", "components", "console", "features", "node-metrics-panel.tsx"))
+	source := readText(t, filepath.Join(root, "packages", "web-core", "src", "components", "console", "features", "nodes.tsx"))
+	metricsSource := readText(t, filepath.Join(root, "packages", "web-core", "src", "components", "console", "features", "node-metrics-panel.tsx"))
 
 	if !strings.Contains(metricsSource, "function NodeMetricsPanel") {
 		t.Fatalf("nodes console must keep a NodeMetricsPanel component")
@@ -53,7 +53,7 @@ func TestOSSNodesConsoleKeepsAgentControlsInDropdownAndMetricsFocused(t *testing
 
 func TestOSSRulesConsoleLoadsTrafficAutomatically(t *testing.T) {
 	root := repoRoot(t)
-	source := readText(t, filepath.Join(root, "apps", "web", "src", "components", "console", "features", "rules.tsx"))
+	source := readText(t, filepath.Join(root, "packages", "web-core", "src", "components", "console", "features", "rules.tsx"))
 	for _, required := range []string{
 		"trafficReadableRules",
 		"void loadTraffic()",
@@ -75,7 +75,7 @@ func TestOSSRulesConsoleLoadsTrafficAutomatically(t *testing.T) {
 
 func TestOSSUsageConsoleGatesAutoTrafficByPermission(t *testing.T) {
 	root := repoRoot(t)
-	source := readText(t, filepath.Join(root, "apps", "web", "src", "components", "console", "features", "usage.tsx"))
+	source := readText(t, filepath.Join(root, "packages", "web-core", "src", "components", "console", "features", "usage.tsx"))
 	for _, required := range []string{
 		"canReadTraffic && (canReadAllTraffic || rule.owner_user_id === session?.user.id)",
 		"if (!canReadTraffic || trafficReadableRules.length === 0)",

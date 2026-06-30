@@ -1,5 +1,5 @@
-import { AdminOverviewPage } from "@/components/console/features/overview";
-import { ConsoleShell } from "@/components/console/shell";
+import { AdminOverviewPage } from "@noxaaa/prism-oss-web-core/console/features/overview";
+import { ConsoleShell } from "@noxaaa/prism-oss-web-core/console/shell";
 import { getConsoleServerContext } from "@/lib/server-console";
 
 export const dynamic = "force-dynamic";

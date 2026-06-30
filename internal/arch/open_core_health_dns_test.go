@@ -70,7 +70,7 @@ func TestOSSReadmesExposeMonitorAgentLifecycleCommands(t *testing.T) {
 
 func TestMonitorConsoleNavigationRequiresReadPermission(t *testing.T) {
 	root := repoRoot(t)
-	source := readText(t, filepath.Join(root, "apps", "web", "src", "components", "console", "edition-registry.ts"))
+	source := readText(t, filepath.Join(root, "packages", "web-core", "src", "components", "console", "edition-registry.ts"))
 	required := `{ href: "/console/admin/monitors", icon: RadarIcon, key: "monitors", labelKey: "nav.monitors", permissions: ["monitors.read"] }`
 	if !strings.Contains(source, required) {
 		t.Fatalf("monitors nav item must require monitors.read because the page reads monitor lists")

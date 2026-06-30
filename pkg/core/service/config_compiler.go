@@ -76,6 +76,9 @@ func (compiler BasicAgentConfigCompiler) Compile(ctx context.Context, input Agen
 	if !agentSupportsSendIP(agentProtocolVersion) {
 		compiled.Rules = protocol22CompatibleRulesForAgent(compiled.Rules)
 	}
+	if !agentSupportsLeastLoadTargetGroups(agentProtocolVersion) {
+		compiled.Rules = protocol23CompatibleRulesForAgent(compiled.Rules)
+	}
 	compiled.ConfigHash = configHash(compiled)
 	return compiled, nil
 }
@@ -90,6 +93,14 @@ func agentSupportsManagedDataplane(version agent.ProtocolVersion) bool {
 
 func agentSupportsSendIP(version agent.ProtocolVersion) bool {
 	required := agent.SendIPProtocolVersion()
+	if version.Major != required.Major {
+		return version.Major > required.Major
+	}
+	return version.Minor >= required.Minor
+}
+
+func agentSupportsLeastLoadTargetGroups(version agent.ProtocolVersion) bool {
+	required := agent.LeastLoadTargetGroupProtocolVersion()
 	if version.Major != required.Major {
 		return version.Major > required.Major
 	}
@@ -121,6 +132,17 @@ func protocol22CompatibleRulesForAgent(rules []RuleConfig) []RuleConfig {
 			continue
 		}
 		if strings.TrimSpace(rule.RuntimeID) != "" {
+			continue
+		}
+		result = append(result, rule)
+	}
+	return result
+}
+
+func protocol23CompatibleRulesForAgent(rules []RuleConfig) []RuleConfig {
+	result := make([]RuleConfig, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Upstream.Type == "TARGET_GROUP" && normalizeTargetGroupScheduler(rule.Upstream.Scheduler) == targetGroupSchedulerLeastLoad {
 			continue
 		}
 		result = append(result, rule)
@@ -253,6 +275,11 @@ func runtimeRuleID(rule RuleConfig, port int) string {
 
 func normalizedUpstream(upstream RuleUpstreamConfig) RuleUpstreamConfig {
 	out := upstream
+	if out.Type == "TARGET_GROUP" {
+		out.Scheduler = normalizeTargetGroupScheduler(out.Scheduler)
+	} else {
+		out.Scheduler = ""
+	}
 	if upstream.Target != nil {
 		target := *upstream.Target
 		out.Target = &target

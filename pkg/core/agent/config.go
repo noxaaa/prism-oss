@@ -81,6 +81,7 @@ type PortSegmentConfig struct {
 type RuleUpstreamConfig struct {
 	Type        string                 `json:"type"`
 	Target      *TargetEndpoint        `json:"target,omitempty"`
+	Scheduler   string                 `json:"scheduler,omitempty"`
 	TargetGroup []TargetPriorityBucket `json:"target_group,omitempty"`
 }
 
@@ -93,6 +94,7 @@ type TargetEndpoint struct {
 	ID      string `json:"id"`
 	Host    string `json:"host"`
 	Port    int    `json:"port"`
+	Weight  int    `json:"weight,omitempty"`
 	Enabled bool   `json:"enabled"`
 }
 

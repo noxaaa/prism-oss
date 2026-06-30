@@ -818,8 +818,13 @@ func decodeTargetGroupInput(response http.ResponseWriter, request *http.Request)
 		return service.TargetGroupMutationInput{}, false
 	}
 	members := make([]service.TargetGroupMemberInput, 0, len(normalized.Members))
-	for _, member := range normalized.Members {
-		members = append(members, service.TargetGroupMemberInput{TargetID: member.TargetID, Priority: member.Priority, Enabled: member.Enabled})
+	for index, member := range normalized.Members {
+		weight := 1
+		if member.Weight != nil {
+			weight = *member.Weight
+		}
+		weightProvided := index < len(raw.Members) && raw.Members[index].Weight != nil
+		members = append(members, service.TargetGroupMemberInput{TargetID: member.TargetID, Priority: member.Priority, Weight: weight, WeightProvided: weightProvided, Enabled: member.Enabled})
 	}
 	return service.TargetGroupMutationInput{Name: normalized.Name, Description: normalized.Description, Scheduler: normalized.Scheduler, Members: members}, true
 }

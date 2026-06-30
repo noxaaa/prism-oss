@@ -1,5 +1,5 @@
 import { cookies, headers } from "next/headers";
-import { localeCandidatesFromAcceptLanguage, localeStorageKey, resolveLocale, type Locale } from "@/components/console/i18n-core";
+import { localeCandidatesFromAcceptLanguage, localeStorageKey, resolveLocale, type Locale } from "@noxaaa/prism-oss-web-core/console/i18n-core";
 import { auth } from "@/lib/auth";
 import { resolveSignupPolicy } from "@/lib/oss-signup-policy";
 

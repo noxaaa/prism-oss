@@ -301,9 +301,11 @@ type TargetGroupMutationInput struct {
 }
 
 type TargetGroupMemberInput struct {
-	TargetID string
-	Priority int
-	Enabled  bool
+	TargetID       string
+	Priority       int
+	Weight         int
+	WeightProvided bool
+	Enabled        bool
 }
 
 type RuleMutationInput struct {
@@ -730,6 +732,7 @@ type TargetGroupPayload struct {
 type TargetGroupMemberPayload struct {
 	TargetID string `json:"target_id"`
 	Priority int    `json:"priority"`
+	Weight   int    `json:"weight"`
 	Enabled  bool   `json:"enabled"`
 }
 
@@ -905,6 +908,7 @@ type PortableTargetGroupPayload struct {
 type PortableTargetGroupMemberPayload struct {
 	TargetRef string `json:"target_ref"`
 	Priority  int    `json:"priority"`
+	Weight    *int   `json:"weight,omitempty"`
 	Enabled   bool   `json:"enabled"`
 }
 

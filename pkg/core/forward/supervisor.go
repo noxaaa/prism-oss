@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"net"
 	"strconv"
@@ -407,20 +406,27 @@ func (supervisor *Supervisor) proxyTCP(ctx context.Context, downstream net.Conn,
 	if !ok && rule.ID == "" {
 		return
 	}
-	target, ok := selectTarget(rule, sourceAddress)
+	target, reserved, ok := supervisor.selectTCPTarget(rule, sourceAddress)
 	if !ok {
 		return
 	}
 	dialStarted := time.Now()
 	upstream, err := dialTCPUpstream(rule.SendIP, targetAddress(target))
 	if err != nil {
+		if reserved {
+			supervisor.metrics.releaseTargetTCPDial(rule.ID, target.ID)
+		}
 		return
 	}
 	supervisor.metrics.recordTargetLatency(rule.ID, target.ID, time.Since(dialStarted))
 	defer func() { _ = upstream.Close() }()
 
 	supervisor.metrics.addTCPConnection(1)
-	supervisor.metrics.addTargetTCPConnection(rule.ID, target.ID, 1)
+	if reserved {
+		supervisor.metrics.promoteTargetTCPDial(rule.ID, target.ID)
+	} else {
+		supervisor.metrics.addTargetTCPConnection(rule.ID, target.ID, 1)
+	}
 	defer func() {
 		supervisor.metrics.addTCPConnection(-1)
 		supervisor.metrics.addTargetTCPConnection(rule.ID, target.ID, -1)
@@ -491,17 +497,27 @@ func (supervisor *Supervisor) proxyUDP(ctx context.Context, sessions *udpSession
 	if !ok {
 		return
 	}
-	target, ok := selectTarget(rule, clientAddress)
+	target, reserved, ok := supervisor.selectUDPTarget(rule, clientAddress)
 	if !ok {
 		return
 	}
-	if err := sessions.write(ctx, rule, target, clientAddress, payload); err != nil {
+	targetID, created, err := sessions.write(ctx, rule, target, clientAddress, payload)
+	if reserved {
+		if !created {
+			supervisor.metrics.releaseTargetUDPSessionReservation(rule.ID, target.ID)
+		} else {
+			supervisor.metrics.promoteTargetUDPSessionReservation(rule.ID, target.ID)
+		}
+	} else if created {
+		supervisor.metrics.addTargetUDPSession(rule.ID, target.ID, 1)
+	}
+	if err != nil {
 		return
 	}
 	supervisor.metrics.addUDP(1)
 	supervisor.metrics.addUpload(int64(len(payload)))
-	supervisor.metrics.addTargetUDP(rule.ID, target.ID, 1)
-	supervisor.metrics.addTargetUpload(rule.ID, target.ID, int64(len(payload)))
+	supervisor.metrics.addTargetUDP(rule.ID, targetID, 1)
+	supervisor.metrics.addTargetUpload(rule.ID, targetID, int64(len(payload)))
 }
 
 func newUDPSessionTable(listener net.PacketConn, metrics *metricsCounter) *udpSessionTable {
@@ -512,24 +528,26 @@ func newUDPSessionTable(listener net.PacketConn, metrics *metricsCounter) *udpSe
 	}
 }
 
-func (table *udpSessionTable) write(ctx context.Context, rule agent.RuleConfig, target agent.TargetEndpoint, clientAddress net.Addr, payload []byte) error {
+func (table *udpSessionTable) write(ctx context.Context, rule agent.RuleConfig, target agent.TargetEndpoint, clientAddress net.Addr, payload []byte) (string, bool, error) {
 	key := udpSessionKey(clientAddress, rule.ID, rule.SendIP)
 	upstreamTargetAddress := targetAddress(target)
 	table.mu.Lock()
 	session := table.sessions[key]
-	if session == nil || session.targetID != target.ID || session.targetAddress != upstreamTargetAddress {
-		if session != nil {
-			table.closeSessionLocked(key, session)
-		}
+	created := false
+	if session != nil && !targetStillConfiguredForRule(rule, session.targetID, session.targetAddress) {
+		table.closeSessionLocked(key, session)
+		session = nil
+	}
+	if session == nil {
 		upstreamAddress, err := net.ResolveUDPAddr("udp", upstreamTargetAddress)
 		if err != nil {
 			table.mu.Unlock()
-			return err
+			return "", false, err
 		}
 		upstream, err := dialUDPUpstream(rule.SendIP, upstreamAddress)
 		if err != nil {
 			table.mu.Unlock()
-			return err
+			return "", false, err
 		}
 		session = &udpSession{
 			key:           key,
@@ -541,14 +559,32 @@ func (table *udpSessionTable) write(ctx context.Context, rule agent.RuleConfig, 
 			lastSeen:      time.Now(),
 		}
 		table.sessions[key] = session
-		table.metrics.addTargetUDPSession(rule.ID, target.ID, 1)
 		go table.readLoop(ctx, session)
+		created = true
 	}
 	session.lastSeen = time.Now()
 	upstream := session.upstream
+	targetID := session.targetID
 	table.mu.Unlock()
 	_, err := upstream.Write(payload)
-	return err
+	if err != nil {
+		return targetID, created, err
+	}
+	return targetID, created, nil
+}
+
+func targetStillConfiguredForRule(rule agent.RuleConfig, targetID string, targetAddr string) bool {
+	switch rule.Upstream.Type {
+	case "TARGET":
+		return rule.Upstream.Target != nil && rule.Upstream.Target.Enabled && rule.Upstream.Target.ID == targetID && targetAddress(*rule.Upstream.Target) == targetAddr
+	case "TARGET_GROUP":
+		for _, target := range activeTargetGroupCandidates(rule) {
+			if target.ID == targetID && targetAddress(target) == targetAddr {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (table *udpSessionTable) readLoop(ctx context.Context, session *udpSession) {
@@ -707,16 +743,6 @@ func normalizedProxyProtocol(version string) string {
 		return ""
 	}
 	return version
-}
-
-func selectTarget(rule agent.RuleConfig, source net.Addr) (agent.TargetEndpoint, bool) {
-	if rule.Upstream.Type == "TARGET" && rule.Upstream.Target != nil && rule.Upstream.Target.Enabled {
-		return *rule.Upstream.Target, true
-	}
-	if rule.Upstream.Type == "TARGET_GROUP" {
-		return selectTargetGroupEndpoint(rule, source)
-	}
-	return agent.TargetEndpoint{}, false
 }
 
 func readTLSClientHelloSNI(reader io.Reader) ([]byte, string, error) {
@@ -928,58 +954,6 @@ func splitAddr(address net.Addr) (net.IP, int) {
 
 func (info ProxyInfo) sourceAddr() net.Addr {
 	return &net.TCPAddr{IP: info.SourceIP, Port: info.SourcePort}
-}
-
-func selectTargetGroupEndpoint(rule agent.RuleConfig, source net.Addr) (agent.TargetEndpoint, bool) {
-	candidates := enabledTargetGroupCandidates(rule)
-	if len(candidates) == 0 {
-		return agent.TargetEndpoint{}, false
-	}
-	index := int(stableTargetHash(sourceIPKey(source), rule.ID, string(rule.Protocol)) % uint32(len(candidates)))
-	return candidates[index], true
-}
-
-func enabledTargetGroupCandidates(rule agent.RuleConfig) []agent.TargetEndpoint {
-	bestPrioritySet := false
-	bestPriority := 0
-	var candidates []agent.TargetEndpoint
-	for _, bucket := range rule.Upstream.TargetGroup {
-		enabledTargets := make([]agent.TargetEndpoint, 0, len(bucket.Targets))
-		for _, target := range bucket.Targets {
-			if target.Enabled {
-				enabledTargets = append(enabledTargets, target)
-			}
-		}
-		if len(enabledTargets) == 0 {
-			continue
-		}
-		if !bestPrioritySet || bucket.Priority < bestPriority {
-			bestPrioritySet = true
-			bestPriority = bucket.Priority
-			candidates = enabledTargets
-		}
-	}
-	return candidates
-}
-
-func sourceIPKey(address net.Addr) string {
-	if address == nil {
-		return ""
-	}
-	host, _, err := net.SplitHostPort(address.String())
-	if err != nil {
-		return address.String()
-	}
-	return host
-}
-
-func stableTargetHash(parts ...string) uint32 {
-	hash := fnv.New32a()
-	for _, part := range parts {
-		_, _ = hash.Write([]byte(part))
-		_, _ = hash.Write([]byte{0})
-	}
-	return hash.Sum32()
 }
 
 func targetAddress(target agent.TargetEndpoint) string {

@@ -132,12 +132,14 @@ CREATE TABLE target_group_members (
   target_group_id uuid NOT NULL,
   target_id uuid NOT NULL,
   priority integer NOT NULL,
+  weight integer NOT NULL DEFAULT 1,
   enabled boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
   UNIQUE (target_group_id, target_id),
   FOREIGN KEY (organization_id, target_group_id) REFERENCES target_groups(organization_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (organization_id, target_id) REFERENCES targets(organization_id, id) ON DELETE CASCADE
+  FOREIGN KEY (organization_id, target_id) REFERENCES targets(organization_id, id) ON DELETE CASCADE,
+  CHECK (weight >= 0)
 );
 
 CREATE TABLE inbound_bindings (

@@ -525,6 +525,95 @@ func TestRuleConfigConversionSkipsUnknownTargetGroupScheduler(t *testing.T) {
 	}
 }
 
+func TestRuleConfigConversionIncludesLeastLoadSchedulerAndWeights(t *testing.T) {
+	configs, err := toRuleConfigs(
+		[]repo.RuleRecord{
+			{
+				ID:             "rule_group",
+				ConfigVersion:  3,
+				Enabled:        true,
+				ForwardingType: string(domain.ForwardingTypeDirect),
+				MatchType:      string(domain.MatchTypeAnyInbound),
+				TargetType:     "TARGET_GROUP",
+				TargetGroupID:  "target_group_least",
+				Binding: repo.InboundBindingRecord{
+					NodeGroupID: "ng_01",
+					Protocol:    string(domain.ProtocolTCP),
+					MatchType:   string(domain.MatchTypeAnyInbound),
+				},
+			},
+		},
+		[]repo.TargetRecord{
+			{ID: "target_a", Host: "10.0.0.1", Port: 443, Enabled: true},
+			{ID: "target_b", Host: "10.0.0.2", Port: 443, Enabled: true},
+		},
+		[]repo.TargetGroupRecord{
+			{
+				ID:        "target_group_least",
+				Scheduler: "LEAST_LOAD",
+				Members: []repo.TargetGroupMemberRecord{
+					{TargetID: "target_a", Priority: 10, Weight: 2, Enabled: true},
+					{TargetID: "target_b", Priority: 10, Weight: 0, Enabled: true},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("convert configs: %v", err)
+	}
+	if len(configs) != 1 || configs[0].Upstream.Scheduler != "LEAST_LOAD" {
+		t.Fatalf("expected least-load scheduler in config, got %#v", configs)
+	}
+	targets := configs[0].Upstream.TargetGroup[0].Targets
+	if len(targets) != 2 || targets[0].Weight != 2 || targets[1].Weight != 0 {
+		t.Fatalf("expected target weights in config, got %#v", targets)
+	}
+}
+
+func TestBasicAgentConfigCompilerFiltersLeastLoadForOlderAgents(t *testing.T) {
+	rule := RuleConfig{
+		ID:           "rule_least",
+		Enabled:      true,
+		NodeGroupIDs: []string{"ng_01"},
+		MatchType:    string(domain.MatchTypeAnyInbound),
+		Upstream: RuleUpstreamConfig{
+			Type:      "TARGET_GROUP",
+			Scheduler: "LEAST_LOAD",
+			TargetGroup: []TargetPriorityBucket{{
+				Priority: 10,
+				Targets:  []TargetEndpoint{{ID: "target_a", Weight: 1, Enabled: true}},
+			}},
+		},
+	}
+	compiler := BasicAgentConfigCompiler{}
+	legacy, err := compiler.Compile(context.Background(), AgentConfigInput{
+		NodeID:               "node_1",
+		NodeGroups:           []string{"ng_01"},
+		AgentProtocolKnown:   true,
+		AgentProtocolVersion: agent.SendIPProtocolVersion(),
+		Rules:                []RuleConfig{rule},
+	})
+	if err != nil {
+		t.Fatalf("compile legacy: %v", err)
+	}
+	if len(legacy.Rules) != 0 {
+		t.Fatalf("expected least-load to be filtered for older protocol, got %#v", legacy.Rules)
+	}
+	current, err := compiler.Compile(context.Background(), AgentConfigInput{
+		NodeID:               "node_1",
+		NodeGroups:           []string{"ng_01"},
+		AgentProtocolKnown:   true,
+		AgentProtocolVersion: agent.CurrentProtocolVersion(),
+		Rules:                []RuleConfig{rule},
+	})
+	if err != nil {
+		t.Fatalf("compile current: %v", err)
+	}
+	if len(current.Rules) != 1 {
+		t.Fatalf("expected least-load for current protocol, got %#v", current.Rules)
+	}
+}
+
 func TestRuleConfigConversionSkipsUnsupportedCommercialRules(t *testing.T) {
 	configs, err := toRuleConfigs(
 		[]repo.RuleRecord{

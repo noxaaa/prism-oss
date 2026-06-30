@@ -75,7 +75,7 @@ WITH eligible_rule_deployments AS (
     AND nodes.deleted_at IS NULL
     AND (
       forwarding_rules.target_type != 'TARGET_GROUP'
-      OR target_groups.scheduler = 'PRIORITY_IPHASH'
+      OR target_groups.scheduler IN ('PRIORITY_IPHASH', 'LEAST_LOAD')
     )
 )
 INSERT INTO rule_deployment_statuses (

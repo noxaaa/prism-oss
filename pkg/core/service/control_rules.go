@@ -598,7 +598,7 @@ func (service *ControlService) resolveImportTargetGroups(ctx context.Context, re
 		if scheduler == "" {
 			scheduler = targetGroupSchedulerPriorityIPHash
 		}
-		if ref == "" || name == "" || len(name) > 120 || len(description) > 1000 || scheduler != targetGroupSchedulerPriorityIPHash {
+		if ref == "" || name == "" || len(name) > 120 || len(description) > 1000 || !targetGroupSchedulerSupportedByOSS(scheduler) {
 			result.Errors = append(result.Errors, newRuleImportIssue("IMPORT_TARGET_GROUP_INVALID", "target_groups", index, map[string]any{
 				"ref_present":  ref != "",
 				"name_present": name != "",
@@ -613,6 +613,15 @@ func (service *ControlService) resolveImportTargetGroups(ctx context.Context, re
 			continue
 		}
 		if existing, ok := targetGroupsByName[name]; ok {
+			if normalizeTargetGroupScheduler(existing.Scheduler) != scheduler {
+				result.Errors = append(result.Errors, newRuleImportIssue("IMPORT_TARGET_GROUP_SCHEDULER_MISMATCH", "target_groups", index, map[string]any{
+					"ref":                 ref,
+					"name":                name,
+					"requested_scheduler": scheduler,
+					"existing_scheduler":  normalizeTargetGroupScheduler(existing.Scheduler),
+				}))
+				continue
+			}
 			targetGroupIDsByRef[ref] = existing.ID
 			continue
 		}
@@ -629,20 +638,31 @@ func (service *ControlService) resolveImportTargetGroups(ctx context.Context, re
 		for memberIndex, member := range group.Members {
 			targetRef := strings.TrimSpace(member.TargetRef)
 			targetID, ok := targetIDsByRef[targetRef]
-			if targetRef == "" || !ok || member.Priority < 0 || seenMembers[targetID] {
+			weight := 1
+			if member.Weight != nil {
+				weight = *member.Weight
+			}
+			if targetRef == "" || !ok || member.Priority < 0 || weight < 0 || weight > maxTargetGroupMemberWeight || seenMembers[targetID] {
 				result.Errors = append(result.Errors, newRuleImportIssue("IMPORT_TARGET_GROUP_MEMBER_INVALID", "target_groups", index, map[string]any{
 					"member_index":        memberIndex,
 					"target_ref":          targetRef,
 					"target_ref_resolved": ok,
 					"priority":            member.Priority,
+					"weight":              weight,
 				}))
 				memberValid = false
 				continue
 			}
 			seenMembers[targetID] = true
-			members = append(members, TargetGroupMemberInput{TargetID: targetID, Priority: member.Priority, Enabled: member.Enabled})
+			members = append(members, TargetGroupMemberInput{TargetID: targetID, Priority: member.Priority, Weight: weight, WeightProvided: member.Weight != nil, Enabled: member.Enabled})
 		}
 		if !memberValid {
+			continue
+		}
+		if err := ensureTargetGroupMembersValid(ctx, repositories, identity.OrganizationID, scheduler, members); err != nil {
+			result.Errors = append(result.Errors, importIssueWithReason("IMPORT_TARGET_GROUP_MEMBER_INVALID", "target_groups", index, err, map[string]any{
+				"scheduler": scheduler,
+			}))
 			continue
 		}
 		record := repo.TargetGroupRecord{
@@ -650,7 +670,7 @@ func (service *ControlService) resolveImportTargetGroups(ctx context.Context, re
 			OrganizationID: identity.OrganizationID,
 			Name:           name,
 			Description:    description,
-			Scheduler:      targetGroupSchedulerPriorityIPHash,
+			Scheduler:      scheduler,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		}

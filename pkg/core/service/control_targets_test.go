@@ -19,8 +19,8 @@ func TestControlServicePersistsTargetGroupSchedulerAndMembers(t *testing.T) {
 		Description: "Priority iphash pool",
 		Scheduler:   "PRIORITY_IPHASH",
 		Members: []TargetGroupMemberInput{
-			{TargetID: "target_a", Priority: 10, Enabled: true},
-			{TargetID: "target_b", Priority: 20, Enabled: false},
+			{TargetID: "target_a", Priority: 10, Weight: 2, WeightProvided: true, Enabled: true},
+			{TargetID: "target_b", Priority: 20, Weight: 0, WeightProvided: true, Enabled: false},
 		},
 	})
 	if err != nil {
@@ -29,7 +29,7 @@ func TestControlServicePersistsTargetGroupSchedulerAndMembers(t *testing.T) {
 	if result.Scheduler != "PRIORITY_IPHASH" {
 		t.Fatalf("expected scheduler to be persisted, got %#v", result)
 	}
-	if len(result.Members) != 2 || result.Members[0].Priority != 10 || result.Members[1].Priority != 20 || result.Members[1].Enabled {
+	if len(result.Members) != 2 || result.Members[0].Priority != 10 || result.Members[0].Weight != 2 || result.Members[1].Priority != 20 || result.Members[1].Weight != 0 || result.Members[1].Enabled {
 		t.Fatalf("expected per-member priority and enabled state to be persisted, got %#v", result.Members)
 	}
 
@@ -38,8 +38,8 @@ func TestControlServicePersistsTargetGroupSchedulerAndMembers(t *testing.T) {
 		Description: "Priority iphash pool",
 		Scheduler:   "PRIORITY_IPHASH",
 		Members: []TargetGroupMemberInput{
-			{TargetID: "target_a", Priority: 30, Enabled: true},
-			{TargetID: "target_b", Priority: 5, Enabled: true},
+			{TargetID: "target_a", Priority: 30, Weight: 3, WeightProvided: true, Enabled: true},
+			{TargetID: "target_b", Priority: 5, Weight: 4, WeightProvided: true, Enabled: true},
 		},
 	})
 	if err != nil {
@@ -48,7 +48,7 @@ func TestControlServicePersistsTargetGroupSchedulerAndMembers(t *testing.T) {
 	if updated.Scheduler != "PRIORITY_IPHASH" {
 		t.Fatalf("expected updated scheduler to remain persisted, got %#v", updated)
 	}
-	if len(updated.Members) != 2 || updated.Members[0].Priority != 30 || updated.Members[1].Priority != 5 || !updated.Members[1].Enabled {
+	if len(updated.Members) != 2 || updated.Members[0].Priority != 30 || updated.Members[0].Weight != 3 || updated.Members[1].Priority != 5 || updated.Members[1].Weight != 4 || !updated.Members[1].Enabled {
 		t.Fatalf("expected updated per-member priority and enabled state, got %#v", updated.Members)
 	}
 }
@@ -69,6 +69,118 @@ func TestControlServiceRejectsUnsupportedOSSTargetGroupScheduler(t *testing.T) {
 	}
 }
 
+func TestControlServiceAllowsStagingLeastLoadGroupWithoutPositiveEnabledWeight(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	control := NewControlService(store)
+	identity := targetGroupServiceTestIdentity()
+
+	result, err := control.CreateTargetGroup(context.Background(), identity, TargetGroupMutationInput{
+		Name:        "Least pool",
+		Description: "No usable members",
+		Scheduler:   "LEAST_LOAD",
+		Members: []TargetGroupMemberInput{
+			{TargetID: "target_a", Priority: 10, Weight: 0, WeightProvided: true, Enabled: true},
+			{TargetID: "target_b", Priority: 10, Weight: 5, WeightProvided: true, Enabled: false},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected unused least-load group to be staged, got %v", err)
+	}
+	if result.Scheduler != "LEAST_LOAD" || len(result.Members) != 2 {
+		t.Fatalf("expected staged least-load group, got %#v", result)
+	}
+}
+
+func TestControlServiceRejectsUsedLeastLoadGroupWithoutPositiveEnabledWeight(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	store.targetGroups["group_least"] = repo.TargetGroupRecord{
+		ID:             "group_least",
+		OrganizationID: "org_1",
+		Name:           "Least pool",
+		Scheduler:      "LEAST_LOAD",
+		Members: []repo.TargetGroupMemberRecord{
+			{OrganizationID: "org_1", TargetGroupID: "group_least", TargetID: "target_a", Priority: 10, Weight: 1, Enabled: true},
+		},
+	}
+	store.rules = []repo.RuleRecord{{ID: "rule_1", OrganizationID: "org_1", TargetType: "TARGET_GROUP", TargetGroupID: "group_least"}}
+	control := NewControlService(store)
+
+	_, err := control.UpdateTargetGroup(context.Background(), targetGroupServiceTestIdentity(), "group_least", TargetGroupMutationInput{
+		Name:        "Least pool",
+		Description: "No usable members",
+		Scheduler:   "LEAST_LOAD",
+		Members:     []TargetGroupMemberInput{{TargetID: "target_a", Priority: 10, Weight: 0, WeightProvided: true, Enabled: true}},
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected used least-load group without positive enabled weight to be rejected, got %v", err)
+	}
+}
+
+func TestControlServiceDisablesLeastLoadOptionWithoutPositiveEnabledWeight(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	store.targetGroups["group_least"] = repo.TargetGroupRecord{
+		ID:             "group_least",
+		OrganizationID: "org_1",
+		Name:           "Least pool",
+		Scheduler:      "LEAST_LOAD",
+		Members: []repo.TargetGroupMemberRecord{
+			{OrganizationID: "org_1", TargetGroupID: "group_least", TargetID: "target_a", Priority: 10, Weight: 0, Enabled: true},
+		},
+	}
+	control := NewControlService(store)
+
+	options, err := control.TargetGroupOptions(context.Background(), targetGroupServiceTestIdentity(), "")
+	if err != nil {
+		t.Fatalf("target group options: %v", err)
+	}
+	if len(options) != 1 || !options[0].Disabled || options[0].DisabledReason == "" {
+		t.Fatalf("expected unusable least-load group to be disabled, got %#v", options)
+	}
+}
+
+func TestControlServiceRejectsTargetGroupMemberWeightAboveHAProxyLimit(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	control := NewControlService(store)
+	identity := targetGroupServiceTestIdentity()
+
+	_, err := control.CreateTargetGroup(context.Background(), identity, TargetGroupMutationInput{
+		Name:        "Least pool",
+		Description: "Too much weight",
+		Scheduler:   "LEAST_LOAD",
+		Members:     []TargetGroupMemberInput{{TargetID: "target_a", Priority: 10, Weight: 257, WeightProvided: true, Enabled: true}},
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected weight above HAProxy limit to be rejected, got %v", err)
+	}
+}
+
+func TestControlServiceUpdateTargetGroupPreservesOmittedMemberWeights(t *testing.T) {
+	store := newTargetGroupServiceTestStore()
+	store.targetGroups["group_least"] = repo.TargetGroupRecord{
+		ID:             "group_least",
+		OrganizationID: "org_1",
+		Name:           "Least pool",
+		Scheduler:      "LEAST_LOAD",
+		Members: []repo.TargetGroupMemberRecord{
+			{OrganizationID: "org_1", TargetGroupID: "group_least", TargetID: "target_a", Priority: 10, Weight: 7, Enabled: true},
+		},
+	}
+	control := NewControlService(store)
+
+	updated, err := control.UpdateTargetGroup(context.Background(), targetGroupServiceTestIdentity(), "group_least", TargetGroupMutationInput{
+		Name:        "Least pool renamed",
+		Description: "Preserve weight",
+		Scheduler:   "LEAST_LOAD",
+		Members:     []TargetGroupMemberInput{{TargetID: "target_a", Priority: 20, Enabled: true}},
+	})
+	if err != nil {
+		t.Fatalf("update target group: %v", err)
+	}
+	if len(updated.Members) != 1 || updated.Members[0].Weight != 7 || updated.Members[0].Priority != 20 {
+		t.Fatalf("expected omitted weight to be preserved while other fields update, got %#v", updated.Members)
+	}
+}
+
 func TestControlServiceCoreSchedulerSupportIgnoresExtensionPolicy(t *testing.T) {
 	control := NewControlServiceWithOptions(nil, ControlServiceOptions{
 		TargetGroupSchedulers: func(string) bool {
@@ -80,10 +192,13 @@ func TestControlServiceCoreSchedulerSupportIgnoresExtensionPolicy(t *testing.T) 
 		t.Fatalf("expected extension policy to allow GEO_IP mutations")
 	}
 	if control.targetGroupSchedulerSupportedByCore(repo.TargetGroupRecord{Scheduler: "GEO_IP"}) {
-		t.Fatalf("expected OSS core compiler support to remain limited to PRIORITY_IPHASH")
+		t.Fatalf("expected OSS core compiler support to remain limited to OSS schedulers")
 	}
 	if !control.targetGroupSchedulerSupportedByCore(repo.TargetGroupRecord{Scheduler: "PRIORITY_IPHASH"}) {
 		t.Fatalf("expected OSS core compiler to support PRIORITY_IPHASH")
+	}
+	if !control.targetGroupSchedulerSupportedByCore(repo.TargetGroupRecord{Scheduler: "LEAST_LOAD"}) {
+		t.Fatalf("expected OSS core compiler to support LEAST_LOAD")
 	}
 }
 
@@ -303,6 +418,7 @@ func newTargetGroupServiceTestStore() *targetGroupServiceTestStore {
 type targetGroupServiceTestStore struct {
 	targets         map[string]repo.TargetRecord
 	targetGroups    map[string]repo.TargetGroupRecord
+	rules           []repo.RuleRecord
 	healthChecks    []repo.HealthCheckRecord
 	auditLogs       []repo.AuditLogRecord
 	deletedTargetID string
@@ -348,7 +464,7 @@ func (repositories targetGroupServiceTestRepositories) TargetGroups() repo.Targe
 	return targetGroupServiceTestTargetGroupRepository(repositories)
 }
 func (repositories targetGroupServiceTestRepositories) Rules() repo.RuleRepository {
-	return targetGroupServiceTestRuleRepository{}
+	return targetGroupServiceTestRuleRepository(repositories)
 }
 func (repositories targetGroupServiceTestRepositories) Quotas() repo.QuotaRepository { return nil }
 func (repositories targetGroupServiceTestRepositories) AgentRegistrationTokens() repo.AgentRegistrationTokenRepository {
@@ -448,10 +564,12 @@ func testTargetGroupMembers(organizationID string, targetGroupID string, members
 	return out
 }
 
-type targetGroupServiceTestRuleRepository struct{}
+type targetGroupServiceTestRuleRepository struct {
+	store *targetGroupServiceTestStore
+}
 
 func (rules targetGroupServiceTestRuleRepository) ListRulesByOrganization(context.Context, string) ([]repo.RuleRecord, error) {
-	return nil, nil
+	return append([]repo.RuleRecord(nil), rules.store.rules...), nil
 }
 
 func (rules targetGroupServiceTestRuleRepository) FindRuleByID(context.Context, string, string) (repo.RuleRecord, error) {

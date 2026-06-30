@@ -649,6 +649,7 @@ type TargetGroupMemberRecord struct {
 	TargetGroupID  string
 	TargetID       string
 	Priority       int
+	Weight         int
 	Enabled        bool
 	CreatedAt      string
 	UpdatedAt      string

@@ -728,10 +728,10 @@ func toRuleConfigs(rules []repo.RuleRecord, targets []repo.TargetRecord, targetG
 			}
 		case "TARGET_GROUP":
 			if group, ok := targetGroupsByID[rule.TargetGroupID]; ok {
-				if group.Scheduler != "PRIORITY_IPHASH" {
+				if !targetGroupSchedulerSupportedByOSS(group.Scheduler) {
 					continue
 				}
-				config.Upstream = RuleUpstreamConfig{Type: "TARGET_GROUP", TargetGroup: toTargetPriorityBuckets(group, targetsByID)}
+				config.Upstream = RuleUpstreamConfig{Type: "TARGET_GROUP", Scheduler: normalizeTargetGroupScheduler(group.Scheduler), TargetGroup: toTargetPriorityBuckets(group, targetsByID)}
 			}
 		}
 		configs = append(configs, config)
@@ -767,6 +767,7 @@ func toTargetEndpoint(target repo.TargetRecord) TargetEndpoint {
 		ID:      target.ID,
 		Host:    target.Host,
 		Port:    target.Port,
+		Weight:  1,
 		Enabled: target.Enabled,
 	}
 }
@@ -780,6 +781,7 @@ func toTargetPriorityBuckets(group repo.TargetGroupRecord, targetsByID map[strin
 		}
 		endpoint := toTargetEndpoint(target)
 		endpoint.Enabled = endpoint.Enabled && member.Enabled
+		endpoint.Weight = member.Weight
 		bucketsByPriority[member.Priority] = append(bucketsByPriority[member.Priority], endpoint)
 	}
 	priorities := make([]int, 0, len(bucketsByPriority))

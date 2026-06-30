@@ -2,7 +2,7 @@ package agent
 
 const (
 	ProtocolMajor = 2
-	ProtocolMinor = 2
+	ProtocolMinor = 3
 )
 
 type ProtocolVersion struct {
@@ -20,6 +20,10 @@ func ManagedDataplaneProtocolVersion() ProtocolVersion {
 
 func SendIPProtocolVersion() ProtocolVersion {
 	return ProtocolVersion{Major: 2, Minor: 2}
+}
+
+func LeastLoadTargetGroupProtocolVersion() ProtocolVersion {
+	return ProtocolVersion{Major: 2, Minor: 3}
 }
 
 func (server ProtocolVersion) Accepts(agent ProtocolVersion) bool {

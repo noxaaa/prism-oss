@@ -104,6 +104,31 @@ jobs:
             -t "${REGISTRY}/prism-oss-web:latest" \
             .
 
+  publish-web-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: "@noxaaa"
+
+      - name: Publish web core package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          npm ci --no-audit --no-fund
+          npm version --workspace packages/web-core "${version}" --no-git-tag-version --allow-same-version
+          if npm view "@noxaaa/prism-oss-web-core@${version}" version >/dev/null 2>&1; then
+            echo "@noxaaa/prism-oss-web-core@${version} is already published; skipping."
+            exit 0
+          fi
+          npm publish --workspace packages/web-core
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build-control-plane-image:
     runs-on: ubuntu-latest
     needs: build-go
@@ -175,6 +200,7 @@ jobs:
     needs:
       - build-go
       - build-web-image
+      - publish-web-core
       - build-control-plane-image
       - build-migrate-image
     steps:

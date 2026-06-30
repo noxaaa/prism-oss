@@ -242,6 +242,7 @@ type TargetGroupRequest struct {
 type TargetGroupMemberRequest struct {
 	TargetID string `json:"target_id"`
 	Priority int    `json:"priority"`
+	Weight   *int   `json:"weight,omitempty"`
 	Enabled  bool   `json:"enabled"`
 }
 
@@ -756,6 +757,14 @@ func ValidateTargetGroupRequest(request TargetGroupRequest) (TargetGroupRequest,
 		if member.TargetID == "" || member.Priority < 0 || seen[member.TargetID] {
 			return TargetGroupRequest{}, ErrInvalidRequest
 		}
+		weight := 1
+		if member.Weight != nil {
+			weight = *member.Weight
+		}
+		if weight < 0 || weight > 256 {
+			return TargetGroupRequest{}, ErrInvalidRequest
+		}
+		member.Weight = &weight
 		seen[member.TargetID] = true
 		request.Members[index] = member
 	}

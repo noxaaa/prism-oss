@@ -39,7 +39,7 @@ jobs:
         with:
           version: v2.11.4
       - run: go test ./...
-      - run: npm --workspace apps/web test
+      - run: npm run test:web
       - run: npm --workspace apps/web run build
         env:
           APP_NAME: "OSS Control Console"

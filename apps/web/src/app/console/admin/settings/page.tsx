@@ -1,5 +1,5 @@
-import { SettingsPage } from "@/components/console/features/settings";
-import { ConsoleShell } from "@/components/console/shell";
+import { SettingsPage } from "@noxaaa/prism-oss-web-core/console/features/settings";
+import { ConsoleShell } from "@noxaaa/prism-oss-web-core/console/shell";
 import { getConsoleServerContext } from "@/lib/server-console";
 
 export const dynamic = "force-dynamic";

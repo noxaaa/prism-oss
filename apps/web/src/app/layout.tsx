@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
-import { localeCandidatesFromAcceptLanguage, localeStorageKey, resolveLocale } from "@/components/console/i18n-core";
+import { localeCandidatesFromAcceptLanguage, localeStorageKey, resolveLocale } from "@noxaaa/prism-oss-web-core/console/i18n-core";
 import "./globals.css";
 
 export const metadata: Metadata = {

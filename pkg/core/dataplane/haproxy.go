@@ -473,7 +473,12 @@ func renderHAProxyBackend(builder *strings.Builder, rule agent.RuleConfig) {
 	builder.WriteString("backend ")
 	builder.WriteString(haproxyBackendName(rule))
 	builder.WriteString("\n")
-	builder.WriteString("  balance source\n")
+	leastLoad := strings.EqualFold(strings.TrimSpace(rule.Upstream.Scheduler), "LEAST_LOAD")
+	if leastLoad {
+		builder.WriteString("  balance leastconn\n")
+	} else {
+		builder.WriteString("  balance source\n")
+	}
 	targets := upstreamTargets(rule)
 	if len(targets) == 0 {
 		builder.WriteString("\n")
@@ -483,6 +488,9 @@ func renderHAProxyBackend(builder *strings.Builder, rule agent.RuleConfig) {
 	hasEnabledTarget := false
 	for _, target := range targets {
 		if !target.endpoint.Enabled {
+			continue
+		}
+		if leastLoad && target.endpoint.Weight <= 0 {
 			continue
 		}
 		if !hasEnabledTarget || target.priority < minPriority {
@@ -496,13 +504,16 @@ func renderHAProxyBackend(builder *strings.Builder, rule agent.RuleConfig) {
 	}
 	hasBackupTarget := false
 	for _, target := range targets {
-		if target.endpoint.Enabled && target.priority > minPriority {
+		if target.endpoint.Enabled && (!leastLoad || target.endpoint.Weight > 0) && target.priority > minPriority {
 			hasBackupTarget = true
 			break
 		}
 	}
 	for index, target := range targets {
 		if !target.endpoint.Enabled {
+			continue
+		}
+		if leastLoad && target.endpoint.Weight <= 0 {
 			continue
 		}
 		builder.WriteString("  server ")
@@ -515,6 +526,10 @@ func renderHAProxyBackend(builder *strings.Builder, rule agent.RuleConfig) {
 		}
 		if target.priority > minPriority {
 			builder.WriteString(" backup")
+		}
+		if leastLoad {
+			builder.WriteString(" weight ")
+			builder.WriteString(strconv.Itoa(target.endpoint.Weight))
 		}
 		if hasBackupTarget {
 			builder.WriteString(" check")

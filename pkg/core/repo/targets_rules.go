@@ -658,7 +658,7 @@ func positiveRuleTrafficDelta(value int64) int64 {
 
 func (store *PostgresStore) loadTargetGroupMembers(ctx context.Context, group *TargetGroupRecord) error {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, organization_id, target_group_id, target_id, priority, enabled, created_at, updated_at
+		SELECT id, organization_id, target_group_id, target_id, priority, weight, enabled, created_at, updated_at
 		FROM target_group_members
 		WHERE organization_id = ? AND target_group_id = ?
 		ORDER BY priority, target_id
@@ -689,9 +689,9 @@ func (store *PostgresStore) replaceTargetGroupMembers(ctx context.Context, organ
 	}
 	for _, member := range members {
 		if _, err := store.db.ExecContext(ctx, `
-			INSERT INTO target_group_members (id, organization_id, target_group_id, target_id, priority, enabled, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`, nextID(), organizationID, targetGroupID, member.TargetID, member.Priority, boolToDB(member.Enabled), now, now); err != nil {
+			INSERT INTO target_group_members (id, organization_id, target_group_id, target_id, priority, weight, enabled, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, nextID(), organizationID, targetGroupID, member.TargetID, member.Priority, member.Weight, boolToDB(member.Enabled), now, now); err != nil {
 			return mapWriteError(err)
 		}
 	}

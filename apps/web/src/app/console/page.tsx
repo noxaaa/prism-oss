@@ -1,4 +1,4 @@
-import { ConsoleGateway } from "@/components/console/shell";
+import { ConsoleGateway } from "@noxaaa/prism-oss-web-core/console/shell";
 import { getConsoleServerContext } from "@/lib/server-console";
 
 export const dynamic = "force-dynamic";

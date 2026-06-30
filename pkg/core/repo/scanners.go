@@ -229,7 +229,7 @@ func scanTargetGroupRows(rows *sql.Rows) (TargetGroupRecord, error) {
 
 func scanTargetGroupMember(row rowScanner) (TargetGroupMemberRecord, error) {
 	var member TargetGroupMemberRecord
-	if err := row.Scan(&member.ID, &member.OrganizationID, &member.TargetGroupID, &member.TargetID, &member.Priority, &member.Enabled, &member.CreatedAt, &member.UpdatedAt); err != nil {
+	if err := row.Scan(&member.ID, &member.OrganizationID, &member.TargetGroupID, &member.TargetID, &member.Priority, &member.Weight, &member.Enabled, &member.CreatedAt, &member.UpdatedAt); err != nil {
 		return TargetGroupMemberRecord{}, mapReadError(err)
 	}
 	return member, nil

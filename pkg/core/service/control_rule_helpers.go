@@ -629,7 +629,8 @@ func toPortableTargetPayload(target repo.TargetRecord, ref string) PortableTarge
 func toPortableTargetGroupPayload(group repo.TargetGroupRecord, ref string, targetRefsByID map[string]string) PortableTargetGroupPayload {
 	members := make([]PortableTargetGroupMemberPayload, 0, len(group.Members))
 	for _, member := range group.Members {
-		members = append(members, PortableTargetGroupMemberPayload{TargetRef: targetRefsByID[member.TargetID], Priority: member.Priority, Enabled: member.Enabled})
+		weight := member.Weight
+		members = append(members, PortableTargetGroupMemberPayload{TargetRef: targetRefsByID[member.TargetID], Priority: member.Priority, Weight: &weight, Enabled: member.Enabled})
 	}
 	return PortableTargetGroupPayload{
 		Ref:         ref,

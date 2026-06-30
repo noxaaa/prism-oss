@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.4.0",
+    "@noxaaa/prism-oss-web-core": "file:../../packages/web-core",
     "@tanstack/react-table": "^8.21.3",
     "better-auth": "^1.2.12",
     "class-variance-authority": "^0.7.1",

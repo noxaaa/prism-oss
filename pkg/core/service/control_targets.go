@@ -11,7 +11,9 @@ import (
 )
 
 const defaultTargetGroupMemberPriority = 10
+const maxTargetGroupMemberWeight = 256
 const targetGroupSchedulerPriorityIPHash = "PRIORITY_IPHASH"
+const targetGroupSchedulerLeastLoad = "LEAST_LOAD"
 
 func (service *ControlService) ListTargets(ctx context.Context, identity InternalIdentity) ([]TargetPayload, error) {
 	if !service.hasPermission(identity, string(domain.PermissionTargetsRead)) && !service.hasPermission(identity, string(domain.PermissionTargetsManage)) {
@@ -207,7 +209,8 @@ func (service *ControlService) CreateTargetGroup(ctx context.Context, identity I
 		if !service.targetGroupSchedulerSupported(scheduler) {
 			return ErrInvalidInput
 		}
-		if err := ensureTargetGroupMembersValid(ctx, repositories, identity.OrganizationID, input.Members); err != nil {
+		input.Members = targetGroupMembersWithPreservedWeights(nil, input.Members)
+		if err := ensureTargetGroupMembersValid(ctx, repositories, identity.OrganizationID, scheduler, input.Members); err != nil {
 			return err
 		}
 		now := service.timestamp()
@@ -254,11 +257,12 @@ func (service *ControlService) UpdateTargetGroup(ctx context.Context, identity I
 		if err != nil {
 			return err
 		}
-		if err := ensureTargetGroupMembersValid(ctx, repositories, identity.OrganizationID, input.Members); err != nil {
+		input.Members = targetGroupMembersWithPreservedWeights(group.Members, input.Members)
+		if err := ensureTargetGroupMembersValid(ctx, repositories, identity.OrganizationID, scheduler, input.Members); err != nil {
 			return err
 		}
 		if usedByRules {
-			if err := ensureTargetGroupMembersUsable(ctx, repositories, identity.OrganizationID, input.Members); err != nil {
+			if err := ensureTargetGroupMembersUsable(ctx, repositories, identity.OrganizationID, scheduler, input.Members); err != nil {
 				return err
 			}
 		}
@@ -446,12 +450,13 @@ func (service *ControlService) ensureUpstreamAvailable(ctx context.Context, repo
 		if !service.targetGroupSchedulerSupportedByCore(group) {
 			return ErrInvalidInput
 		}
-		if len(group.Members) == 0 {
-			return ErrInvalidInput
-		}
+		hasEnabledPositiveWeightMember := false
 		for _, member := range group.Members {
 			if !member.Enabled {
 				return ErrInvalidInput
+			}
+			if member.Weight > 0 {
+				hasEnabledPositiveWeightMember = true
 			}
 			target, err := repositories.Targets().FindTargetByID(ctx, organizationID, member.TargetID)
 			if err != nil {
@@ -460,6 +465,9 @@ func (service *ControlService) ensureUpstreamAvailable(ctx context.Context, repo
 			if !target.Enabled {
 				return ErrInvalidInput
 			}
+		}
+		if len(group.Members) == 0 || (normalizeTargetGroupScheduler(group.Scheduler) == targetGroupSchedulerLeastLoad && !hasEnabledPositiveWeightMember) {
+			return ErrInvalidInput
 		}
 	default:
 		return ErrInvalidInput
@@ -486,9 +494,12 @@ func (service *ControlService) ensureUpstreamExists(ctx context.Context, reposit
 	return nil
 }
 
-func ensureTargetGroupMembersValid(ctx context.Context, repositories repo.Repositories, organizationID string, members []TargetGroupMemberInput) error {
+func ensureTargetGroupMembersValid(ctx context.Context, repositories repo.Repositories, organizationID string, scheduler string, members []TargetGroupMemberInput) error {
 	seen := map[string]struct{}{}
 	for _, member := range members {
+		if member.Weight < 0 || member.Weight > maxTargetGroupMemberWeight {
+			return ErrInvalidInput
+		}
 		if _, ok := seen[member.TargetID]; ok {
 			return ErrInvalidInput
 		}
@@ -526,7 +537,7 @@ func (service *ControlService) syncTargetGroupMemberships(ctx context.Context, r
 			return ErrInvalidInput
 		}
 		input := TargetGroupMutationInput{Name: group.Name, Description: group.Description, Scheduler: group.Scheduler, Members: members}
-		if err := ensureTargetGroupMembersValid(ctx, repositories, organizationID, input.Members); err != nil {
+		if err := ensureTargetGroupMembersValid(ctx, repositories, organizationID, group.Scheduler, input.Members); err != nil {
 			return err
 		}
 		usedByRules, err := targetGroupUsedByRules(ctx, repositories, organizationID, group.ID)
@@ -534,7 +545,7 @@ func (service *ControlService) syncTargetGroupMemberships(ctx context.Context, r
 			return err
 		}
 		if usedByRules {
-			if err := ensureTargetGroupMembersUsable(ctx, repositories, organizationID, input.Members); err != nil {
+			if err := ensureTargetGroupMembersUsable(ctx, repositories, organizationID, group.Scheduler, input.Members); err != nil {
 				return err
 			}
 		}
@@ -563,22 +574,44 @@ func targetGroupMembersWithTarget(members []repo.TargetGroupMemberRecord, target
 				continue
 			}
 		}
-		next = append(next, TargetGroupMemberInput{TargetID: member.TargetID, Priority: member.Priority, Enabled: member.Enabled})
+		next = append(next, TargetGroupMemberInput{TargetID: member.TargetID, Priority: member.Priority, Weight: member.Weight, WeightProvided: true, Enabled: member.Enabled})
 	}
 	if shouldContainTarget && !found {
-		next = append(next, TargetGroupMemberInput{TargetID: targetID, Priority: defaultTargetGroupMemberPriority, Enabled: true})
+		next = append(next, TargetGroupMemberInput{TargetID: targetID, Priority: defaultTargetGroupMemberPriority, Weight: 1, WeightProvided: true, Enabled: true})
 		changed = true
 	}
 	return next, changed
 }
 
-func ensureTargetGroupMembersUsable(ctx context.Context, repositories repo.Repositories, organizationID string, members []TargetGroupMemberInput) error {
+func targetGroupMembersWithPreservedWeights(existing []repo.TargetGroupMemberRecord, next []TargetGroupMemberInput) []TargetGroupMemberInput {
+	existingWeights := make(map[string]int, len(existing))
+	for _, member := range existing {
+		existingWeights[member.TargetID] = member.Weight
+	}
+	for index := range next {
+		if next[index].WeightProvided {
+			continue
+		}
+		if weight, ok := existingWeights[next[index].TargetID]; ok {
+			next[index].Weight = weight
+			continue
+		}
+		next[index].Weight = 1
+	}
+	return next
+}
+
+func ensureTargetGroupMembersUsable(ctx context.Context, repositories repo.Repositories, organizationID string, scheduler string, members []TargetGroupMemberInput) error {
 	if len(members) == 0 {
 		return ErrInvalidInput
 	}
+	hasEnabledPositiveWeightMember := false
 	for _, member := range members {
 		if !member.Enabled {
 			return ErrInvalidInput
+		}
+		if member.Weight > 0 {
+			hasEnabledPositiveWeightMember = true
 		}
 		target, err := repositories.Targets().FindTargetByID(ctx, organizationID, member.TargetID)
 		if err != nil {
@@ -587,6 +620,9 @@ func ensureTargetGroupMembersUsable(ctx context.Context, repositories repo.Repos
 		if !target.Enabled {
 			return ErrInvalidInput
 		}
+	}
+	if normalizeTargetGroupScheduler(scheduler) == targetGroupSchedulerLeastLoad && !hasEnabledPositiveWeightMember {
+		return ErrInvalidInput
 	}
 	return nil
 }
@@ -611,9 +647,13 @@ func (service *ControlService) targetGroupDisabledReason(group repo.TargetGroupR
 	if len(group.Members) == 0 {
 		return "Target group has no targets"
 	}
+	hasEnabledPositiveWeightMember := false
 	for _, member := range group.Members {
 		if !member.Enabled {
 			return "Target group has disabled members"
+		}
+		if member.Weight > 0 {
+			hasEnabledPositiveWeightMember = true
 		}
 		target, ok := targetsByID[member.TargetID]
 		if !ok {
@@ -622,6 +662,9 @@ func (service *ControlService) targetGroupDisabledReason(group repo.TargetGroupR
 		if !target.Enabled {
 			return "Target group contains a disabled target"
 		}
+	}
+	if normalizeTargetGroupScheduler(group.Scheduler) == targetGroupSchedulerLeastLoad && !hasEnabledPositiveWeightMember {
+		return "Least-load target group has no positive-weight targets"
 	}
 	return ""
 }
@@ -641,7 +684,7 @@ func toTargetPayloads(targets []repo.TargetRecord) []TargetPayload {
 func toTargetGroupMemberRecords(organizationID string, targetGroupID string, inputs []TargetGroupMemberInput) []repo.TargetGroupMemberRecord {
 	members := make([]repo.TargetGroupMemberRecord, 0, len(inputs))
 	for _, input := range inputs {
-		members = append(members, repo.TargetGroupMemberRecord{OrganizationID: organizationID, TargetGroupID: targetGroupID, TargetID: input.TargetID, Priority: input.Priority, Enabled: input.Enabled})
+		members = append(members, repo.TargetGroupMemberRecord{OrganizationID: organizationID, TargetGroupID: targetGroupID, TargetID: input.TargetID, Priority: input.Priority, Weight: input.Weight, Enabled: input.Enabled})
 	}
 	return members
 }
@@ -655,11 +698,11 @@ func targetGroupRuntimeChanged(group repo.TargetGroupRecord, input TargetGroupMu
 	}
 	existing := make([]TargetGroupMemberPayload, 0, len(group.Members))
 	for _, member := range group.Members {
-		existing = append(existing, TargetGroupMemberPayload{TargetID: member.TargetID, Priority: member.Priority, Enabled: member.Enabled})
+		existing = append(existing, TargetGroupMemberPayload{TargetID: member.TargetID, Priority: member.Priority, Weight: member.Weight, Enabled: member.Enabled})
 	}
 	next := make([]TargetGroupMemberPayload, 0, len(input.Members))
 	for _, member := range input.Members {
-		next = append(next, TargetGroupMemberPayload(member))
+		next = append(next, TargetGroupMemberPayload{TargetID: member.TargetID, Priority: member.Priority, Weight: member.Weight, Enabled: member.Enabled})
 	}
 	sort.Slice(existing, func(left int, right int) bool {
 		if existing[left].TargetID != existing[right].TargetID {
@@ -667,6 +710,9 @@ func targetGroupRuntimeChanged(group repo.TargetGroupRecord, input TargetGroupMu
 		}
 		if existing[left].Priority != existing[right].Priority {
 			return existing[left].Priority < existing[right].Priority
+		}
+		if existing[left].Weight != existing[right].Weight {
+			return existing[left].Weight < existing[right].Weight
 		}
 		return !existing[left].Enabled && existing[right].Enabled
 	})
@@ -676,6 +722,9 @@ func targetGroupRuntimeChanged(group repo.TargetGroupRecord, input TargetGroupMu
 		}
 		if next[left].Priority != next[right].Priority {
 			return next[left].Priority < next[right].Priority
+		}
+		if next[left].Weight != next[right].Weight {
+			return next[left].Weight < next[right].Weight
 		}
 		return !next[left].Enabled && next[right].Enabled
 	})
@@ -697,14 +746,17 @@ func normalizeTargetGroupScheduler(scheduler string) string {
 
 func (service *ControlService) targetGroupSchedulerSupported(scheduler string) bool {
 	scheduler = normalizeTargetGroupScheduler(scheduler)
+	if targetGroupSchedulerSupportedByOSS(scheduler) {
+		return true
+	}
 	if service.targetGroupSchedulers != nil {
 		return service.targetGroupSchedulers(scheduler)
 	}
-	return scheduler == targetGroupSchedulerPriorityIPHash
+	return false
 }
 
 func (service *ControlService) targetGroupSchedulerSupportedByCore(group repo.TargetGroupRecord) bool {
-	return normalizeTargetGroupScheduler(group.Scheduler) == targetGroupSchedulerPriorityIPHash
+	return targetGroupSchedulerSupportedByOSS(normalizeTargetGroupScheduler(group.Scheduler))
 }
 
 func toTargetGroupPayload(group repo.TargetGroupRecord) TargetGroupPayload {
@@ -722,7 +774,16 @@ func toTargetGroupPayloads(groups []repo.TargetGroupRecord) []TargetGroupPayload
 func toTargetGroupMemberPayloads(members []repo.TargetGroupMemberRecord) []TargetGroupMemberPayload {
 	payloads := make([]TargetGroupMemberPayload, 0, len(members))
 	for _, member := range members {
-		payloads = append(payloads, TargetGroupMemberPayload{TargetID: member.TargetID, Priority: member.Priority, Enabled: member.Enabled})
+		payloads = append(payloads, TargetGroupMemberPayload{TargetID: member.TargetID, Priority: member.Priority, Weight: member.Weight, Enabled: member.Enabled})
 	}
 	return payloads
+}
+
+func targetGroupSchedulerSupportedByOSS(scheduler string) bool {
+	switch normalizeTargetGroupScheduler(scheduler) {
+	case targetGroupSchedulerPriorityIPHash, targetGroupSchedulerLeastLoad:
+		return true
+	default:
+		return false
+	}
 }
